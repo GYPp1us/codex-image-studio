@@ -14,6 +14,7 @@
       document.body.append(dialog);this.dialog=dialog;this.stage=dialog.querySelector('.viewer-stage');this.plane=dialog.querySelector('.viewer-plane');this.image=dialog.querySelector('img');this.overlay=dialog.querySelector('.viewer-selection');
       dialog.querySelector('.viewer-dimensions').textContent=`${asset.width} × ${asset.height}`;
       dialog.querySelector('.viewer-download').href=asset.url+'?download=1';
+      if(!asset.id)dialog.querySelector('.viewer-download').remove();
       const editButton=dialog.querySelector('[data-view=edit]');editButton.disabled=!asset.id&&!asset.source_job_id;editButton.title=editButton.disabled?'生成完成后可对保存的作品重绘':'';
       this.image.addEventListener('load',()=>{dialog.querySelector('.viewer-loading').hidden=true;this.layout();});
       this.image.addEventListener('error',()=>{dialog.querySelector('.viewer-loading').textContent='原图加载失败，请关闭后重试';});
