@@ -338,6 +338,8 @@ async def security(request, call_next):
     response.headers.update({"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "same-origin", "Content-Security-Policy": "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
     if request.url.path.startswith(("/api/", "/media/")):
         response.headers["Cache-Control"] = "no-store"
+    elif request.url.path.startswith('/static/') and request.url.path.endswith(('.js','.css')):
+        response.headers['Cache-Control']='no-cache'
     return response
 
 
@@ -354,12 +356,13 @@ def health():
 
 @app.get("/api/auth/state")
 def auth_state(request: Request):
-    user = query("SELECT username FROM users WHERE id=1", one=True)
+    user = query("SELECT username,created FROM users WHERE id=1", one=True)
     try:
         session = require_user(request)
     except HTTPException:
         session = None
-    return {"initialized": bool(user), "authenticated": bool(session), "username": user["username"] if user and session else "", "csrf": session["csrf"] if session else ""}
+    scope=hashlib.sha256(str(user['created']).encode()).hexdigest()[:24] if user and session else ''
+    return {"initialized": bool(user), "authenticated": bool(session), "username": user["username"] if user and session else "", "csrf": session["csrf"] if session else "", "cache_scope":scope}
 
 
 def rate_limit(request):
@@ -816,6 +819,13 @@ def delete_prompt(pid: str, session=Depends(require_user)):
     return {"ok": True}
 
 
+class Rectangle(BaseModel):
+    x: int = Field(ge=0,strict=True)
+    y: int = Field(ge=0,strict=True)
+    width: int = Field(ge=16,strict=True)
+    height: int = Field(ge=16,strict=True)
+
+
 class JobInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=24000)
     refs: list[str] = Field(default_factory=list, max_length=8)
@@ -826,6 +836,7 @@ class JobInput(BaseModel):
     size: Literal["auto", "1024", "2048", "4096"] = "auto"
     stitch: Literal[0,4,9,16] = 0
     source_asset_id: str | None = Field(default=None, max_length=64)
+    region: Rectangle | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     model: str | None = Field(default=None, max_length=100)
     effort: str | None = Field(default=None, max_length=20)
@@ -909,14 +920,21 @@ def create_jobs(body):
     if body.ratio not in ("1:1", "3:2", "2:3", "16:9", "9:16", "auto"):
         raise HTTPException(400, "画幅不支持")
     refs = list(dict.fromkeys(body.refs))
-    if body.source_asset_id and not body.stitch:
+    if body.region and (not body.source_asset_id or body.stitch or body.count!=1):
+        raise HTTPException(400,'局部重绘需要一张原图、一个矩形选区，且不能同时超分')
+    if body.source_asset_id and not body.stitch and not body.region:
         raise HTTPException(400, "发送现有图片到超分时必须选择倍率")
     if body.source_asset_id:
         source=query('SELECT * FROM assets WHERE id=?',(body.source_asset_id,),True)
-        if not source:raise HTTPException(400,'超分原图不存在')
-        from stitch_engine import layout, StitchError
-        try:layout(source['width'],source['height'],body.stitch)
-        except StitchError as error:raise HTTPException(400,str(error)) from error
+        if not source or source.get('deleted'):raise HTTPException(400,'原图不存在或已删除')
+        if body.region:
+            from local_edit import context_box
+            try:context_box((source['width'],source['height']),body.region.model_dump())
+            except ValueError as error:raise HTTPException(400,str(error)) from error
+        else:
+            from stitch_engine import layout, StitchError
+            try:layout(source['width'],source['height'],body.stitch)
+            except StitchError as error:raise HTTPException(400,str(error)) from error
         if body.source_asset_id not in refs:refs.append(body.source_asset_id)
         if len(refs)>8:raise HTTPException(400,'每次最多使用 8 张参考图')
     for aid in refs:
@@ -929,6 +947,8 @@ def create_jobs(body):
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
     options.update(stitch=body.stitch,source_asset_id=body.source_asset_id,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch else '')
+    if body.region:
+        options.update(region=body.region.model_dump(),polish=False,ratio='auto',size='auto',call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT))
     batch, ids = uid(), []
     collection_id = 'tpl-' + template['id'] if template else 'request-' + batch
     with db() as c:
@@ -955,6 +975,20 @@ class UpscaleInput(BaseModel):
     effort: str | None = Field(default=None,max_length=20)
 
 
+class LocalEditInput(BaseModel):
+    prompt: str = Field(min_length=1,max_length=24000)
+    region: Rectangle
+    model: str | None = Field(default=None,max_length=100)
+    effort: str | None = Field(default=None,max_length=20)
+
+
+@app.post('/api/assets/{aid}/inpaint')
+async def inpaint_asset(aid: str, body: LocalEditInput, session=Depends(require_user)):
+    asset=query('SELECT id FROM assets WHERE id=? AND deleted=0',(aid,),True)
+    if not asset:raise HTTPException(404,'原图不存在')
+    return await add_jobs(JobInput(prompt=body.prompt,source_asset_id=aid,region=body.region,model=body.model,effort=body.effort),session)
+
+
 @app.post('/api/assets/{aid}/upscale')
 async def upscale_asset(aid: str, body: UpscaleInput, session=Depends(require_user)):
     asset=query('SELECT * FROM assets WHERE id=?',(aid,),True)
@@ -974,6 +1008,17 @@ def stitch_artifact(jid: str, artifact: str, session=Depends(require_user)):
     path=DATA/'jobs'/jid/'stitch'/files[artifact]
     if not path.is_file():raise HTTPException(404,'工作文件尚未生成')
     return FileResponse(path,headers={'Cache-Control':'no-store'})
+
+
+@app.post('/api/jobs/{jid}/source-asset')
+async def save_source_asset(jid: str, session=Depends(require_user)):
+    job=query('SELECT options FROM jobs WHERE id=?',(jid,),True)
+    if not job or not re.fullmatch('[a-f0-9]{32}',jid):raise HTTPException(404,'任务不存在')
+    if not json.loads(job['options']).get('stitch'):raise HTTPException(400,'该任务没有独立超分原图')
+    base=DATA/'jobs'/jid/'stitch'/'base.png'
+    if not base.is_file():raise HTTPException(409,'超分原图尚未生成')
+    asset,_=await asyncio.to_thread(lambda:store_image(base.read_bytes(),f'超分原图-{jid[:8]}.png','generated',jid,64_000_000))
+    return asset
 
 
 @app.post("/api/setup/probe")
@@ -1048,7 +1093,20 @@ def get_job(jid: str, session=Depends(require_user)):
     if request_file.is_file():
         with contextlib.suppress(OSError, ValueError):
             instruction = json.loads(request_file.read_text(encoding="utf-8")).get("worker_instruction", "")
-    return serialize_job(j) | {"attempts": query("SELECT * FROM attempts WHERE job_id=? ORDER BY number", (jid,)), "call_instruction": instruction}
+    value=serialize_job(j);options=value['options'];source=None
+    if aid:=options.get('source_asset_id'):
+        source=serialize_asset(query('SELECT * FROM assets WHERE id=?',(aid,),True))
+    elif options.get('stitch'):
+        base=DATA/'jobs'/jid/'stitch'/'base.png'
+        if base.is_file():
+            with Image.open(base) as image:source={'width':image.width,'height':image.height,'url':f'/api/jobs/{jid}/stitch/base','name':'超分原图','source_job_id':jid}
+    dimensions={}
+    if source:
+        dimensions['source']={k:source[k] for k in ('width','height')}
+        scale=int(options.get('stitch',0)**.5) if options.get('stitch') else 1
+        dimensions['target']={k:source[k]*scale for k in ('width','height')}
+    if value['outputs']:dimensions['result']={k:value['outputs'][0][k] for k in ('width','height')}
+    return value | {"attempts": query("SELECT * FROM attempts WHERE job_id=? ORDER BY number", (jid,)), "call_instruction": instruction,'source_image':source,'image_dimensions':dimensions}
 
 
 @app.get("/api/jobs/{jid}/log")
@@ -1151,7 +1209,13 @@ def find_generated_image(jid, directory):
 
 def record_generated_image(jid, source):
     set_job_stage(jid, "receiving")
-    result, _ = store_image(source.read_bytes(), f"生成作品-{jid[:8]}.png", "generated", jid)
+    options=json.loads(query('SELECT options FROM jobs WHERE id=?',(jid,),True)['options'])
+    if options.get('region'):
+        from local_edit import compose
+        original=query('SELECT path FROM assets WHERE id=?',(options['source_asset_id'],),True)
+        source=compose(original['path'],source,options['region'],DATA/'jobs'/jid/'edited.png')
+    if job_cancelled(jid):return
+    result, _ = store_image(source.read_bytes(), f"{'局部重绘' if options.get('region') else '生成作品'}-{jid[:8]}.png", "generated", jid,64_000_000 if options.get('region') else 36_000_000)
     write("UPDATE jobs SET status='succeeded',outputs=?,finished=?,error='' WHERE id=? AND status!='cancelled'", (json.dumps([result["id"]]), now(), jid))
     write("UPDATE attempts SET status='succeeded',finished=?,error='' WHERE job_id=? AND number=(SELECT attempt FROM jobs WHERE id=?) AND status IN ('running','failed')", (now(), jid, jid))
     return result
@@ -1170,6 +1234,11 @@ async def run_job(jid):
     # A private worker directory prevents project instructions and other jobs' artifacts entering context.
     (directory / "AGENTS.md").write_text("This is an isolated image worker workspace. Follow only the current request. Do not inspect other jobs or account credentials.\n", encoding="utf-8")
     try:
+        local=None
+        if options.get('region'):
+            from local_edit import prepare
+            original=query('SELECT path FROM assets WHERE id=?',(options['source_asset_id'],),True)
+            local=await asyncio.to_thread(prepare,original['path'],directory,options['region'],j['prompt'])
         for attempt in range(1, j["max_attempts"] + 1):
             if job_cancelled(jid):
                 return
@@ -1178,15 +1247,15 @@ async def run_job(jid):
             write("UPDATE jobs SET status='running',attempt=?,error='',stage='sending',stage_source='server',stage_updated=? WHERE id=? AND status!='cancelled'", (attempt, now(), jid))
             write("INSERT INTO attempts(job_id,number,status,started) VALUES (?,?,'running',?)", (jid, attempt, now()))
             args = [CODEX_BIN, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--sandbox", "workspace-write", "-C", str(directory), "-m", model, "-c", f'model_reasoning_effort="{effort}"', "-c", 'cli_auth_credentials_store="file"', "--enable", "image_generation"]
-            for index, aid in enumerate(json.loads(j["refs"])):
-                asset = query("SELECT * FROM assets WHERE id=?", (aid,), True)
-                if asset:
-                    ref = directory / f"reference-{index + 1}.png"
-                    shutil.copyfile(asset["path"], ref)
-                    args += ["-i", str(ref)]
+            references=local[1] if local else [Path(asset['path']) for aid in json.loads(j['refs']) if (asset:=query('SELECT * FROM assets WHERE id=?',(aid,),True))]
+            for index, path in enumerate(references):
+                ref = directory / f"reference-{index + 1}.png"
+                shutil.copyfile(path, ref)
+                args += ["-i", str(ref)]
             args += ["-"]
-            instruction = make_instruction(j, directory)
-            (directory / "request.json").write_text(json.dumps({"job_id":jid,"kind":"image","model": model, "effort": effort, "prompt": j["prompt"], "refs": json.loads(j["refs"]), "options": options, "worker_instruction": instruction}, ensure_ascii=False, indent=2), encoding="utf-8")
+            request={**j,'prompt':local[0],'refs':json.dumps(['crop','original','selection'])} if local else j
+            instruction = make_instruction(request, directory)
+            (directory / "request.json").write_text(json.dumps({"job_id":jid,"kind":"local_edit" if local else "image","expected_size":local[2] if local else None,"model": model, "effort": effort, "prompt": j["prompt"], "refs": json.loads(j["refs"]), "options": options, "worker_instruction": instruction}, ensure_ascii=False, indent=2), encoding="utf-8")
             error = ""
             final_text = ""
             try:

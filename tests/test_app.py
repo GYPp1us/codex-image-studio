@@ -48,6 +48,10 @@ elif 'exec' in sys.argv:
     if 'STUDIO_STITCH_REVIEW' in prompt:
         print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps({'pass':True,'issues':[]})}}),flush=True)
         sys.exit(0)
+    if metadata.get('kind')=='local_edit':
+        time.sleep(30 if 'TEST_SLOW' in prompt else .3)
+        Image.new('RGB',tuple(metadata['expected_size']),(12,24,230)).save(directory/'output.png')
+        sys.exit(0)
     if metadata.get('kind')=='redraw':
         slow_marker=directory.parent.parent/'.test-slow-once'
         slow='TEST_SLOW' in prompt and not slow_marker.exists()
@@ -405,8 +409,9 @@ elif 'exec' in sys.argv:
         worker=anonymous.get('/sw.js')
         self.assertEqual(worker.headers['service-worker-allowed'],'/')
         self.assertEqual(worker.headers['cache-control'],'no-cache')
-        self.assertNotIn('/api/',worker.text)
-        self.assertNotIn('/media/',worker.text)
+        self.assertIn("'/api/auth/state'",worker.text)
+        self.assertIn('IMAGE_CACHE_CLEAR',worker.text)
+        self.assertIn('MAX_BYTES=192*1024*1024',worker.text)
         self.assertEqual(anonymous.get('/api/assets?deleted=true').status_code,401)
         self.assertEqual(anonymous.post('/api/assets/unknown/restore').status_code,401)
         anonymous.close()
@@ -564,6 +569,77 @@ elif 'exec' in sys.argv:
         finally:
             if jid and self.client.get('/api/jobs/'+jid).json()['status']=='running':self.post('/api/jobs/'+jid+'/cancel')
             self.client.patch('/api/settings',json={'paused':False,'concurrency':2,'max_attempts':3},headers=self.headers)
+
+
+    def test_27_local_edit_validates_region_and_requires_login(self):
+        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        payload={'prompt':'Change only the selected flower','region':{'x':40,'y':40,'width':80,'height':80}}
+        anonymous=TestClient(self.appmod.app,base_url='https://image.example.com')
+        self.assertEqual(anonymous.post('/api/assets/'+asset['id']+'/inpaint',json=payload).status_code,401);anonymous.close()
+        self.assertEqual(self.post('/api/assets/missing/inpaint',payload).status_code,404)
+        for region,status in (({'x':-1,'y':0,'width':40,'height':40},422),({'x':0,'y':0,'width':8,'height':40},422),({'x':asset['width']-10,'y':0,'width':40,'height':40},400)):
+            self.assertEqual(self.post('/api/assets/'+asset['id']+'/inpaint',{**payload,'region':region}).status_code,status)
+        self.assertEqual(self.post('/api/jobs',{'prompt':'Invalid combined request','source_asset_id':asset['id'],'stitch':4,'region':payload['region']}).status_code,400)
+
+    def test_28_local_edit_publishes_full_image_and_preserves_every_outside_pixel(self):
+        import numpy as np
+        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        region={'x':60,'y':50,'width':120,'height':100}
+        source=np.array(Image.open(io.BytesIO(self.client.get(asset['url']).content)).convert('RGB'))
+        result=self.post('/api/assets/'+asset['id']+'/inpaint',{'prompt':'Replace the selected detail with blue','region':region})
+        self.assertEqual(result.status_code,200,result.text);jid=result.json()['ids'][0]
+        job=self.wait_job(jid);self.assertEqual(job['status'],'succeeded',job['error'])
+        edited=np.array(Image.open(io.BytesIO(self.client.get(job['outputs'][0]['url']).content)).convert('RGB'))
+        self.assertEqual(edited.shape,source.shape)
+        mask=np.ones(source.shape[:2],dtype=bool);mask[50:150,60:180]=False
+        np.testing.assert_array_equal(edited[mask],source[mask]);self.assertFalse(np.array_equal(edited[~mask],source[~mask]))
+        self.assertEqual(job['image_dimensions']['source'],job['image_dimensions']['result'])
+        self.assertEqual(job['source_image']['id'],asset['id'])
+        self.assertIn('reference-3.png',job['call_instruction']);self.assertNotIn('Act as an art director',job['call_instruction'])
+        np.testing.assert_array_equal(np.array(Image.open(io.BytesIO(self.client.get(asset['url']).content)).convert('RGB')),source)
+
+    def test_29_job_dimensions_distinguish_upscale_source_target_and_actual_output(self):
+        jobs=self.client.get('/api/jobs?limit=100').json()['items']
+        job=next(j for j in jobs if j['status']=='succeeded' and j['options'].get('stitch')==4)
+        detail=self.client.get('/api/jobs/'+job['id']).json();sizes=detail['image_dimensions']
+        self.assertEqual(sizes['target'],sizes['result'])
+        self.assertEqual(sizes['source']['width']*2,sizes['result']['width'])
+        ordinary=next(j for j in jobs if j['status']=='succeeded' and not j['options'].get('stitch') and not j['options'].get('region'))
+        actual=self.client.get('/api/jobs/'+ordinary['id']).json()['image_dimensions']['result']
+        self.assertEqual(actual,{'width':96,'height':96})
+
+    def test_30_cancel_local_edit_does_not_publish_or_modify_source(self):
+        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        before=self.client.get(asset['url']).content
+        jid=self.post('/api/assets/'+asset['id']+'/inpaint',{'prompt':'TEST_SLOW local cancellation','region':{'x':20,'y':30,'width':80,'height':80}}).json()['ids'][0]
+        deadline=time.time()+10
+        while time.time()<deadline:
+            if self.appmod.job_processes(jid):break
+            time.sleep(.05)
+        self.assertTrue(self.appmod.job_processes(jid))
+        self.assertEqual(self.post('/api/jobs/'+jid+'/cancel').status_code,200)
+        self.assertEqual(self.client.get('/api/jobs/'+jid).json()['outputs'],[])
+        self.assertEqual(self.appmod.job_processes(jid),[])
+        self.assertEqual(self.client.get(asset['url']).content,before)
+
+
+    def test_31_new_upscale_base_can_be_saved_and_used_for_a_local_edit(self):
+        source=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        self.client.patch('/api/settings',json={'paused':True},headers=self.headers)
+        jid=None
+        try:
+            jid=self.post('/api/jobs',{'prompt':'New creation upscale base fixture','stitch':4}).json()['ids'][0]
+            base=self.appmod.DATA/'jobs'/jid/'stitch'/'base.png';base.parent.mkdir(parents=True,exist_ok=True);base.write_bytes(self.client.get(source['url']).content)
+            detail=self.client.get('/api/jobs/'+jid).json()
+            self.assertEqual(detail['source_image']['source_job_id'],jid)
+            self.assertEqual(detail['image_dimensions']['target']['width'],source['width']*2)
+            saved=self.post('/api/jobs/'+jid+'/source-asset');self.assertEqual(saved.status_code,200,saved.text)
+            self.assertEqual(self.client.get(saved.json()['url']).content,base.read_bytes())
+            anonymous=TestClient(self.appmod.app,base_url='https://image.example.com')
+            self.assertEqual(anonymous.post('/api/jobs/'+jid+'/source-asset').status_code,401);anonymous.close()
+        finally:
+            if jid:self.post('/api/jobs/'+jid+'/cancel')
+            self.client.patch('/api/settings',json={'paused':False},headers=self.headers)
 
 
 if __name__=="__main__":

@@ -4,7 +4,7 @@ const nativeApp = /ImageStudioAndroid\//.test(navigator.userAgent);
 const standaloneApp = () => nativeApp || matchMedia("(display-mode: standalone)").matches || navigator.standalone;
 document.documentElement.classList.toggle("standalone-app", Boolean(standaloneApp()));
 document.documentElement.classList.toggle("native-app", nativeApp);
-if("serviceWorker" in navigator && !nativeApp) navigator.serviceWorker.register("/sw.js", {scope:"/"}).catch(() => {});
+if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", {scope:"/",updateViaCache:"none"}).catch(() => {});
 window.addEventListener("beforeinstallprompt", event => {event.preventDefault();installPrompt=event;});
 window.addEventListener("appinstalled", () => {installPrompt=null;document.documentElement.classList.add("standalone-app");toast("已安装到主屏幕");});
 window.addEventListener("offline", () => {document.body.classList.add("offline");toast("当前离线，已提交任务仍在服务器运行");});

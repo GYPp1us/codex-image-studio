@@ -52,7 +52,7 @@ async function api(path, options = {}) {
   const response = await fetch(path, {...options,headers});
   const data = await response.json().catch(()=>({detail:"服务器返回了意外响应"}));
   if (!response.ok) {
-    if (response.status===401 && !path.startsWith("/api/auth/")) { S.auth=null; renderAuth(true); }
+    if (response.status===401 && !path.startsWith("/api/auth/")) { StudioViewer.close();await StudioImages.clear();S.auth=null; renderAuth(true); }
     let detail = data.detail;
     if (Array.isArray(detail)) detail = "请检查输入内容：密码至少 10 位，提示词不能为空。";
     throw new Error(detail || `请求失败 (${response.status})`);
@@ -61,7 +61,7 @@ async function api(path, options = {}) {
 }
 const post = (path,body={}) => api(path,{method:"POST",body});
 function rememberAssets(assets) { for(const asset of assets) if(asset) S.assetMap.set(asset.id,asset); }
-function rememberJobs(jobs) { for (const j of jobs) { rememberAssets(j.outputs); rememberAssets(j.references); } }
+function rememberJobs(jobs) { for (const j of jobs) { rememberAssets(j.outputs); rememberAssets(j.references);if(j.source_image?.id)rememberAssets([j.source_image]); } }
 function draft() { localStorage.setItem("studio_draft",JSON.stringify({prompt:S.prompt,refs:S.refs,ratio:S.ratio,count:S.count,transparent:S.transparent,polish:S.polish,size:S.size,stitch:S.stitch,template:S.template||null})); }
 function loadDraft() { try { const d=JSON.parse(localStorage.getItem("studio_draft")); if(d) { S.prompt=String(d.prompt||"");S.refs=Array.isArray(d.refs)?d.refs.slice(0,8):[];S.ratio=d.ratio||"1:1";S.count=Math.max(1,Math.min(20,Number(d.count)||1));S.transparent=Boolean(d.transparent);S.polish=Boolean(d.polish);S.stitch=[0,4,9,16].includes(d.stitch)?d.stitch:0;S.size=["auto","1024","2048","4096"].includes(d.size)?d.size:"auto";S.template=d.template?.id?{id:String(d.template.id),title:String(d.template.title||"模板")}:null; } } catch{} }
 function closeModal(){ $("#modal").close(); S.modalJob=null;renderGenerationSummary(); }
@@ -111,13 +111,14 @@ function renderGenerationSummary(){
   el.innerHTML=`<span class="row">${icon("settings")}${esc(S.ratio==="auto"?"自动画幅":S.ratio)} · ${S.count} 张${S.stitch?` · ${S.stitch}×拼接`:""}${S.polish?" · 润色":""}${S.transparent?" · 透明":""}</span><small>${sizeLabel(S.size)} · ${esc(S.config.model)} · ${esc(S.config.effort)}</small>`;
 }
 function syncModelControls(){
-  for(const prefix of ["composer","setting","sheet","upscale"]){const m=$("#"+prefix+"-model"),e=$("#"+prefix+"-effort");if(m)m.innerHTML=modelOptions();if(e)e.innerHTML=effortOptions();}
+  for(const prefix of ["composer","setting","sheet","upscale","edit"]){const m=$("#"+prefix+"-model"),e=$("#"+prefix+"-effort");if(m)m.innerHTML=modelOptions();if(e)e.innerHTML=effortOptions();}
   renderGenerationSummary();
 }
 function openGenerationOptions(){
   modal("生成参数",`<div class="mobile-parameters"><div><div class="section-label">画幅</div><div class="ratio-list">${["1:1","3:2","2:3","16:9","9:16","auto"].map(r=>`<button class="ratio-btn ${S.ratio===r?"selected":""}" data-action="ratio" data-ratio="${r}" aria-pressed="${S.ratio===r}">${r==="auto"?"自动":r}</button>`).join("")}</div></div><div class="row between"><label for="sheet-count">生成数量</label><div class="stepper"><button data-action="count" data-delta="-1" aria-label="减少数量">−</button><input type="number" inputmode="numeric" data-generation-count id="sheet-count" min="1" max="20" value="${S.count}" aria-label="生成数量"><button data-action="count" data-delta="1" aria-label="增加数量">+</button></div></div>${creativeOptions("sheet")}${stitchOptions("sheet")}<label class="switch"><input id="sheet-transparent" type="checkbox" ${S.transparent?"checked":""}>透明背景</label><div><div class="section-label">模型与思考强度</div>${modelControls("sheet")}</div><button class="btn primary" data-action="close-modal">完成${icon("check")}</button></div>`);
 }
 window.studioBack=()=>{
+  if(StudioViewer.isOpen){StudioViewer.close();return true;}
   if($("#modal").open){closeModal();return true;}
   if($("#user-menu")&&!$("#user-menu").classList.contains("hidden")){$("#user-menu").classList.add("hidden");return true;}
   if(S.collection && S.page==="works"){S.collection=null;renderRecent();return true;}
@@ -165,7 +166,7 @@ function renderQueueItems(){
   const counts=Object.fromEntries((S.config.counts||[]).map(c=>[c.status,c.count]));
   $("#queue-stats").innerHTML=[["等待生成",counts.queued||0],["正在生成",(counts.running||0)+(counts.retrying||0)],["已完成",counts.succeeded||0],["并发任务",S.config.concurrency]].map(([l,n])=>`<div class="stat"><p>${l}</p><strong>${n}</strong></div>`).join("");
   const jobs=S.jobs.filter(j=>!S.queueFilter||j.status===S.queueFilter);
-  updateHTML($("#queue-list"),jobs.length?jobs.map(j=>`<article class="queue-item" data-id="${j.id}"><button class="queue-thumb" data-action="job-detail" data-id="${j.id}" aria-label="任务详情">${j.outputs[0]?`<img src="${j.outputs[0].thumbnail}" alt="生成结果">`:["running","retrying"].includes(j.status)?'<span class="spinner"></span>':icon(j.status==="failed"?"retry":"image")}</button><div class="queue-main"><div class="queue-prompt">${esc(j.prompt)}</div><div class="queue-meta">${statusPill(j.status)}<span>${fmtTime(j.created)}</span><span>${j.options.ratio} · ${sizeLabel(j.options.size)}${j.options.polish?" · 润色":""} · ${j.refs.length} 张参考</span><span>尝试 ${j.attempt} / ${j.max_attempts}</span></div>${taskProgress(j)}${j.error?`<p class="queue-error">${esc(j.error)}</p>`:""}</div><div class="queue-buttons"><button class="btn" data-action="job-detail" data-id="${j.id}">详情</button>${["queued","running","retrying"].includes(j.status)?`<button class="btn danger" data-action="cancel-job" data-id="${j.id}">取消</button>`:["failed","cancelled"].includes(j.status)?`<button class="btn secondary" data-action="retry-job" data-id="${j.id}">${icon("retry")}重试</button>`:`<button class="btn secondary" data-action="reroll" data-id="${j.id}">${icon("retry")}再抽一张</button>`}</div></article>`).join(""):`<div class="empty-list">${icon("queue")}</div>`);
+  updateHTML($("#queue-list"),jobs.length?jobs.map(j=>`<article class="queue-item" data-id="${j.id}"><button class="queue-thumb" data-action="job-detail" data-id="${j.id}" aria-label="任务详情">${j.outputs[0]?`<img src="${j.outputs[0].thumbnail}" alt="生成结果">`:["running","retrying"].includes(j.status)?'<span class="spinner"></span>':icon(j.status==="failed"?"retry":"image")}</button><div class="queue-main"><div class="queue-prompt">${esc(j.prompt)}</div><div class="queue-meta">${statusPill(j.status)}<span>${fmtTime(j.created)}</span><span>${j.options.ratio} · ${sizeLabel(j.options.size)}${j.options.polish?" · 润色":""} ${j.options.region?" · 局部重绘":""} · ${j.refs.length} 张参考</span><span>尝试 ${j.attempt} / ${j.max_attempts}</span></div>${taskProgress(j)}${j.error?`<p class="queue-error">${esc(j.error)}</p>`:""}</div><div class="queue-buttons"><button class="btn" data-action="job-detail" data-id="${j.id}">详情</button>${["queued","running","retrying"].includes(j.status)?`<button class="btn danger" data-action="cancel-job" data-id="${j.id}">取消</button>`:["failed","cancelled"].includes(j.status)?`<button class="btn secondary" data-action="retry-job" data-id="${j.id}">${icon("retry")}重试</button>`:`<button class="btn secondary" data-action="reroll" data-id="${j.id}">${icon("retry")}再抽一张</button>`}</div></article>`).join(""):`<div class="empty-list">${icon("queue")}</div>`);
   $("#more-jobs").classList.toggle("hidden",S.jobs.length>=S.totalJobs);
 }
 
@@ -253,7 +254,7 @@ async function poll(){
   S.polling=true;
   try{
     await refresh();
-    if(S.modalJob&&$("#modal").open){const fresh=await api(`/api/jobs/${S.modalJob.id}`);S.modalJob=fresh;updateHTML($("#job-progress-slot"),taskProgress(fresh,true));}
+    if(S.modalJob&&$("#modal").open){const fresh=await api(`/api/jobs/${S.modalJob.id}`);S.modalJob=fresh;rememberJobs([fresh]);updateHTML($("#job-progress-slot"),taskProgress(fresh,true));updateHTML($("#job-image-slot"),jobImages(fresh));updateHTML($("#job-dimensions-slot"),jobDimensions(fresh));}
     if(S.page==="setup"){
       await fetchSetup();
       const signature=JSON.stringify([S.setupStep,S.setup,S.jobs.find(j=>j.id===S.setup.probe)?.status]);
@@ -289,13 +290,31 @@ async function promptPicker(){
   S.prompts=await api("/api/templates");for(const p of S.prompts)rememberAssets(p.references||[]);
   modal("模板",`<div class="queue-list">${S.prompts.length?S.prompts.map(p=>`<button class="queue-item preset-picker-item" data-action="use-prompt" data-id="${p.id}"><div class="queue-main"><h3>${esc(p.title)}</h3><p class="queue-prompt muted">${esc(p.text)}</p>${presetReferences(p)}</div>${icon("arrow")}</button>`).join(""):'<div class="empty-list minimal-empty">'+icon("book")+'</div>'}</div>`);
 }
+function imagePreviewButton(a,label="点击放大"){
+  return `<button class="image-open-button" data-action="image-preview" data-id="${a.id||""}" ${a.id?"":'data-source="true"'} aria-label="放大预览图片"><img class="modal-image" src="${esc(a.url)}" alt="${esc(a.name||"生成结果")}"><span class="viewer-caption">${esc(label)}</span></button>`;
+}
+function jobImages(j){
+  return `${j.outputs[0]?imagePreviewButton(j.outputs[0]):""}${j.source_image?`<button class="image-before" data-action="image-preview" data-id="${j.source_image.id||""}" ${j.source_image.id?"":'data-source="true"'}><img src="${esc(j.source_image.thumbnail||j.source_image.url)}" alt="原图"><span>${j.options.stitch?"超分前":"重绘前"}<small>${j.source_image.width} × ${j.source_image.height} · 点击放大</small></span></button>`:""}`;
+}
+function jobDimensions(j){
+  const sizes=j.image_dimensions||{},size=s=>`${s.width} × ${s.height}`;
+  return `<div class="image-dimensions">${sizes.source?`<span>原图 ${size(sizes.source)}</span>`:""}${sizes.target&&j.options.stitch?`<span>目标 ${size(sizes.target)}</span>`:""}${sizes.result?`<span>${j.options.stitch?"超分后":j.options.region?"重绘后":"图片尺寸"} ${size(sizes.result)}</span>`:""}</div>`;
+}
+function openImagePreview(id,source=false,initial={}){
+  const asset=source?S.modalJob?.source_image:S.assetMap.get(id);if(!asset)return;
+  StudioViewer.open(asset,{...initial,modelHTML:modelControls("edit"),onError:toast,onSubmit:async({asset,region,prompt})=>{
+    const source=asset.id?asset:await post(`/api/jobs/${asset.source_job_id}/source-asset`);rememberAssets([source]);
+    await post(`/api/assets/${source.id}/inpaint`,{prompt,region,model:$("#edit-model").value,effort:$("#edit-effort").value});
+    StudioViewer.close();closeModal();await refresh();await navigate("queue");toast("局部重绘已加入队列");
+  }});
+}
 async function jobDetail(id){
   const j=await api(`/api/jobs/${id}`);rememberJobs([j]);S.modalJob=j;
-  modal("生成记录",`${j.outputs[0]?`<img class="modal-image" src="${j.outputs[0].url}" alt="生成结果">`:""}<div class="row between">${statusPill(j.status)}<span class="tiny muted mono">${j.id.slice(0,12)}</span></div><div id="job-progress-slot">${taskProgress(j,true)}</div>${j.options.stitch?`<div class="stitch-artifacts"><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="inspection" ${j.progress.step<8?"disabled":""}>局部检查图</button><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="report" ${j.progress.step<8?"disabled":""}>配准与检查报告</button><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="candidate" ${j.progress.step<8?"disabled":""}>查看候选图</button></div>`:""}<div class="detail-grid"><span>创建时间：${fmtTime(j.created)}</span><span>模型：${esc(j.model)} / ${esc(j.effort)}</span><span>画幅：${j.options.ratio} · ${sizeLabel(j.options.size)}${j.options.polish?" · 帮我润色":""} · ${j.options.transparent?"透明背景":"普通背景"}</span><span>参考图：${j.refs.length} 张 · 尝试 ${j.attempt} / ${j.max_attempts}</span></div><div class="reference-strip">${j.references.map(a=>`<button class="ref-chip" data-action="asset-detail" data-id="${a.id}"><img src="${a.thumbnail}" alt="${esc(a.name)}"></button>`).join("")}</div><div class="detail-prompt">${esc(j.prompt)}</div>${j.error?`<div class="notice error">${esc(j.error)}</div>`:""}<div class="row wrap"><button class="btn secondary" data-action="reuse-job" data-id="${j.id}">${icon("copy")}载入创作设置</button><button class="btn secondary" data-action="show-log" data-id="${j.id}">${icon("terminal")}诊断日志</button>${j.outputs[0]?`<a class="btn primary" href="${j.outputs[0].url}?download=1" download>${icon("download")}下载图片</a>`:""}${["failed","cancelled"].includes(j.status)?`<button class="btn primary" data-action="retry-job" data-id="${j.id}">重试</button>`:""}</div><details class="call-details"><summary>调用提示词</summary><pre class="log">${esc(j.call_instruction||j.options.call_prompt||"")}</pre></details><div class="detail-grid">${j.attempts.map(a=>`<span>第 ${a.number} 次 · ${labels[a.status]||esc(a.status)} · ${fmtTime(a.started)}</span>`).join("")}</div><div id="job-log"></div>`);
+  modal("生成记录",`<div id="job-image-slot">${jobImages(j)}</div><div id="job-dimensions-slot">${jobDimensions(j)}</div><div class="row between">${statusPill(j.status)}<span class="tiny muted mono">${j.id.slice(0,12)}</span></div><div id="job-progress-slot">${taskProgress(j,true)}</div>${j.options.stitch?`<div class="stitch-artifacts"><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="inspection" ${j.progress.step<8?"disabled":""}>局部检查图</button><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="report" ${j.progress.step<8?"disabled":""}>配准与检查报告</button><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="candidate" ${j.progress.step<8?"disabled":""}>查看候选图</button></div>`:""}<div class="detail-grid"><span>创建时间：${fmtTime(j.created)}</span><span>模型：${esc(j.model)} / ${esc(j.effort)}</span><span>画幅：${j.options.ratio} · ${sizeLabel(j.options.size)}${j.options.polish?" · 帮我润色":""} · ${j.options.transparent?"透明背景":"普通背景"}</span><span>参考图：${j.refs.length} 张 · 尝试 ${j.attempt} / ${j.max_attempts}</span></div><div class="reference-strip">${j.references.map(a=>`<button class="ref-chip" data-action="asset-detail" data-id="${a.id}"><img src="${a.thumbnail}" alt="${esc(a.name)}"></button>`).join("")}</div><div class="detail-prompt">${esc(j.prompt)}</div>${j.error?`<div class="notice error">${esc(j.error)}</div>`:""}<div class="row wrap"><button class="btn secondary" data-action="reuse-job" data-id="${j.id}">${icon("copy")}载入创作设置</button><button class="btn secondary" data-action="show-log" data-id="${j.id}">${icon("terminal")}诊断日志</button>${j.outputs[0]?`<a class="btn primary" href="${j.outputs[0].url}?download=1" download>${icon("download")}下载图片</a>`:""}${["failed","cancelled"].includes(j.status)?`<button class="btn primary" data-action="retry-job" data-id="${j.id}">重试</button>`:""}</div><details class="call-details"><summary>调用提示词</summary><pre class="log">${esc(j.call_instruction||j.options.call_prompt||"")}</pre></details><div class="detail-grid">${j.attempts.map(a=>`<span>第 ${a.number} 次 · ${labels[a.status]||esc(a.status)} · ${fmtTime(a.started)}</span>`).join("")}</div><div id="job-log"></div>`);
 }
 function assetDetail(id){
-  const a=S.assetMap.get(id);if(!a)return;
-  modal(a.name,`<img class="modal-image" src="${a.url}" alt="${esc(a.name)}"><div class="row between"><span class="tiny muted">${a.width} × ${a.height} · ${fmtSize(a.bytes)} · ${fmtTime(a.created)}</span><span class="pill">${a.kind==="reference"?"参考图":"生成作品"}</span></div><div class="form-field"><label for="asset-name">图片名称</label><input id="asset-name" value="${esc(a.name)}" maxlength="160"></div><div class="form-field"><label for="asset-tags">标签</label><input id="asset-tags" placeholder="例如：产品，材质，构图" value="${esc(a.tags)}" maxlength="200"></div><div class="row wrap"><button class="btn secondary" data-action="send-upscale" data-id="${a.id}">${icon("layers")}发送到超分</button><button class="btn secondary" data-action="save-asset" data-id="${a.id}">保存名称与标签</button><button class="btn secondary" data-action="asset-to-composer" data-id="${a.id}">${icon("plus")}用作参考图</button><a class="btn primary" href="${a.url}?download=1" download>${icon("download")}下载</a><button class="icon-btn" data-action="delete-asset" data-id="${a.id}" aria-label="删除图片">${icon("trash")}</button></div>`);
+  const a=S.assetMap.get(id);if(!a)return;S.modalJob=null;
+  modal(a.name,`${imagePreviewButton(a)}<div class="row between"><span class="tiny muted">${a.width} × ${a.height} · ${fmtSize(a.bytes)} · ${fmtTime(a.created)}</span><span class="pill">${a.kind==="reference"?"参考图":"生成作品"}</span></div><div class="form-field"><label for="asset-name">图片名称</label><input id="asset-name" value="${esc(a.name)}" maxlength="160"></div><div class="form-field"><label for="asset-tags">标签</label><input id="asset-tags" placeholder="例如：产品，材质，构图" value="${esc(a.tags)}" maxlength="200"></div><div class="row wrap"><button class="btn secondary" data-action="send-upscale" data-id="${a.id}">${icon("layers")}发送到超分</button><button class="btn secondary" data-action="save-asset" data-id="${a.id}">保存名称与标签</button><button class="btn secondary" data-action="asset-to-composer" data-id="${a.id}">${icon("plus")}用作参考图</button><a class="btn primary" href="${a.url}?download=1" download>${icon("download")}下载</a><button class="icon-btn" data-action="delete-asset" data-id="${a.id}" aria-label="删除图片">${icon("trash")}</button></div>`);
 }
 async function saveSettings(){const body={concurrency:S.config.concurrency,max_attempts:S.config.max_attempts,paused:S.config.paused,model:S.config.model,effort:S.config.effort};const pending=(S.settingsQueue||Promise.resolve()).catch(()=>{}).then(()=>api("/api/settings",{method:"PATCH",body}));S.settingsQueue=pending;await pending;updateNav();renderGenerationSummary();toast("设置已保存");}
 
@@ -321,7 +340,8 @@ function renderCollectionDetail(){
 }
 async function renderAccount(){
   const [a,p]=await Promise.all([api("/api/account"),fetchSetup()]);
-  $("#page").innerHTML=`<div class="settings-layout"><form class="settings-card" id="account-form"><div class="form-field"><label for="account-username">用户名</label><input id="account-username" name="username" value="${esc(a.username)}" minlength="2" maxlength="64" autocomplete="username" required></div><div class="form-field"><label for="account-password">当前密码</label><input id="account-password" name="current_password" type="password" autocomplete="current-password" required></div><div class="row form-actions"><button type="submit" class="btn primary">保存账户</button><button type="button" class="btn secondary" data-action="password">修改密码</button></div></form><section class="settings-card"><div class="settings-field"><label>登录会话</label><div class="row"><span class="pill">${a.session_count}</span><button class="btn secondary" data-action="revoke-sessions">退出其他设备</button></div></div><div class="settings-field"><label>ChatGPT 订阅</label><div class="row"><span class="pill ${p.authenticated?"green":"amber"}">${p.authenticated?"已连接":"未连接"}</span><button class="btn secondary" data-action="open-setup">${p.authenticated?"管理连接":"连接账户"}</button></div></div><div class="settings-field"><label>Codex CLI</label><span class="mono small">${esc(p.version)}</span></div></section></div>`;
+  $("#page").innerHTML=`<div class="settings-layout"><form class="settings-card" id="account-form"><div class="form-field"><label for="account-username">用户名</label><input id="account-username" name="username" value="${esc(a.username)}" minlength="2" maxlength="64" autocomplete="username" required></div><div class="form-field"><label for="account-password">当前密码</label><input id="account-password" name="current_password" type="password" autocomplete="current-password" required></div><div class="row form-actions"><button type="submit" class="btn primary">保存账户</button><button type="button" class="btn secondary" data-action="password">修改密码</button></div></form><section class="settings-card"><div class="settings-field"><label>登录会话</label><div class="row"><span class="pill">${a.session_count}</span><button class="btn secondary" data-action="revoke-sessions">退出其他设备</button></div></div><div class="settings-field"><label>ChatGPT 订阅</label><div class="row"><span class="pill ${p.authenticated?"green":"amber"}">${p.authenticated?"已连接":"未连接"}</span><button class="btn secondary" data-action="open-setup">${p.authenticated?"管理连接":"连接账户"}</button></div></div><div class="settings-field"><label>Codex CLI</label><span class="mono small">${esc(p.version)}</span></div><div class="settings-field"><label>本机图片缓存<p>持久保存原图和缩略图，最多 192 MB；退出登录时清除。</p></label><div class="row"><span class="small muted" id="image-cache-status">正在读取…</span><button class="btn secondary" data-action="clear-image-cache">清除缓存</button></div></div></section></div>`;
+  const cached=await StudioImages.status();if($("#image-cache-status"))$("#image-cache-status").textContent=fmtSize(cached.bytes);
 }
 
 
@@ -359,7 +379,7 @@ document.addEventListener("click",async e=>{
     else if(a==="insert-variable"){const t=$("#call-prompt"),start=t.selectionStart,end=t.selectionEnd;t.value=t.value.slice(0,start)+el.dataset.variable+t.value.slice(end);t.focus();t.setSelectionRange(start+el.dataset.variable.length,start+el.dataset.variable.length);}
     else if(a==="revoke-sessions"){await post("/api/account/revoke-sessions");toast("其他设备已退出");await renderAccount();}
     else if(a==="close-modal")closeModal();
-    else if(a==="logout"){await post("/api/auth/logout");closeModal();S.auth=null;renderAuth(true);}
+    else if(a==="logout"){await post("/api/auth/logout");StudioViewer.close();await StudioImages.clear();closeModal();S.auth=null;renderAuth(true);}
     else if(a==="upload")$("#file-input").click();
     else if(a==="ratio"){S.ratio=el.dataset.ratio;document.querySelectorAll(".ratio-btn").forEach(b=>{b.classList.toggle("selected",b===el);b.setAttribute("aria-pressed",b===el);});draft();renderGenerationSummary();}
     else if(a==="count"){S.count=Math.max(1,Math.min(20,S.count+Number(el.dataset.delta)));document.querySelectorAll("[data-generation-count]").forEach(i=>i.value=S.count);draft();renderGenerationSummary();}
@@ -381,6 +401,8 @@ document.addEventListener("click",async e=>{
     else if(a==="delete-prompt"){await api(`/api/templates/${id}`,{method:"DELETE"});await loadPrompts();toast("已移除提示词记录");}
     else if(a==="new-prompt")openTemplateEditor();
     else if(a==="asset-detail")assetDetail(id);
+    else if(a==="image-preview")openImagePreview(id,el.dataset.source==="true");
+    else if(a==="clear-image-cache"){const state=await StudioImages.clear();if($("#image-cache-status"))$("#image-cache-status").textContent="0 KB";toast("本机图片缓存已清除");}
     else if(a==="stitch-artifact"){const kind=el.dataset.artifact;if(kind==="report"){const report=await api(`/api/jobs/${id}/stitch/report`);modal("配准与检查报告",`<pre class="log">${esc(JSON.stringify(report,null,2))}</pre>`);}else if(["inspection","candidate"].includes(kind))modal(kind==="inspection"?"局部检查图":"拼接候选图",`<img class="modal-image" src="/api/jobs/${id}/stitch/${kind}" alt="拼接检查">`);}
     else if(a==="send-upscale")openUpscale(id);
     else if(a==="upscale-factor"){S.upscaleFactor=Number(el.dataset.factor);renderUpscaleSummary();document.querySelectorAll("[data-action=upscale-factor]").forEach(b=>b.classList.toggle("selected",b===el));}
@@ -399,7 +421,7 @@ document.addEventListener("click",async e=>{
     else if(a==="show-log"){const r=await api(`/api/jobs/${id}/log`);$("#job-log").innerHTML=`<pre class="log">${esc(r.text)}</pre>`;}
     else if(a==="cancel-job"){await post(`/api/jobs/${id}/cancel`);await refresh();toast("任务已取消");}
     else if(a==="retry-job"){await post(`/api/jobs/${id}/retry`);closeModal();await refresh();toast("已重新加入队列");}
-    else if(a==="reroll"||a==="reuse-job"){const j=S.modalJob?.id===id?S.modalJob:S.jobs.find(j=>j.id===id);if(!j)return;if(a==="reroll")await generate({prompt:j.prompt,refs:j.refs,count:1,ratio:j.options.ratio,transparent:j.options.transparent,polish:Boolean(j.options.polish),size:j.options.size||"auto",stitch:j.options.stitch||0,source_asset_id:j.options.source_asset_id||null,model:j.model,effort:j.effort,template_id:j.template_id||null});else{S.prompt=j.prompt;S.refs=[...j.refs];S.template=j.template_id?{id:j.template_id,title:j.template_title||"模板"}:null;S.ratio=j.options.ratio;S.transparent=j.options.transparent;S.polish=Boolean(j.options.polish);S.stitch=j.options.stitch||0;S.size=j.options.size||"auto";S.count=1;S.config.model=j.model;S.config.effort=j.effort;await saveSettings();draft();closeModal();await navigate("create");}}
+    else if(a==="reroll"||a==="reuse-job"){const j=S.modalJob?.id===id?S.modalJob:S.jobs.find(j=>j.id===id);if(!j)return;if(a==="reroll")await generate({prompt:j.prompt,refs:j.refs,count:1,ratio:j.options.ratio,transparent:j.options.transparent,polish:Boolean(j.options.polish),size:j.options.size||"auto",stitch:j.options.stitch||0,source_asset_id:j.options.source_asset_id||null,region:j.options.region||null,model:j.model,effort:j.effort,template_id:j.template_id||null});else if(j.options.region){openImagePreview(j.options.source_asset_id,false,{initialRegion:j.options.region,initialPrompt:j.prompt});}else{S.prompt=j.prompt;S.refs=[...j.refs];S.template=j.template_id?{id:j.template_id,title:j.template_title||"模板"}:null;S.ratio=j.options.ratio;S.transparent=j.options.transparent;S.polish=Boolean(j.options.polish);S.stitch=j.options.stitch||0;S.size=j.options.size||"auto";S.count=1;S.config.model=j.model;S.config.effort=j.effort;await saveSettings();draft();closeModal();await navigate("create");}}
     else if(a==="open-setup"){await fetchSetup();S.setupStep=S.setup.authenticated?3:1;await navigate("setup");}
     else if(a==="setup-step"){S.setupStep=Number(el.dataset.step);await fetchSetup();await renderSetup();}
     else if(a==="login-mode"){S.loginMode=el.dataset.mode;await renderSetup();}
@@ -433,11 +455,11 @@ document.addEventListener("change",async e=>{try{
   if(["transparent","sheet-transparent"].includes(e.target.id)){S.transparent=e.target.checked;document.querySelectorAll("#transparent,#sheet-transparent").forEach(i=>i.checked=S.transparent);draft();renderGenerationSummary();}
   if(e.target.id==="setting-concurrency"){S.config.concurrency=Number(e.target.value);await saveSettings();}
   if(e.target.id==="setting-attempts"){S.config.max_attempts=Number(e.target.value);await saveSettings();}
-  if(["composer-model","setting-model","sheet-model","upscale-model"].includes(e.target.id)){
+  if(["composer-model","setting-model","sheet-model","upscale-model","edit-model"].includes(e.target.id)){
     S.config.model=e.target.value;const m=modelItems().find(m=>m.id===S.config.model);if(!m.efforts.includes(S.config.effort))S.config.effort=m.efforts.includes("xhigh")?"xhigh":m.default_effort||m.efforts[0];
     syncModelControls();await saveSettings();
   }
-  if(["composer-effort","setting-effort","sheet-effort","upscale-effort"].includes(e.target.id)){S.config.effort=e.target.value;syncModelControls();await saveSettings();}
+  if(["composer-effort","setting-effort","sheet-effort","upscale-effort","edit-effort"].includes(e.target.id)){S.config.effort=e.target.value;syncModelControls();await saveSettings();}
 }catch(error){toast(error.message);}});
 document.addEventListener("submit",async e=>{
   e.preventDefault();const form=e.target;const btn=$("button[type=submit]",form);btn.disabled=true;
@@ -464,7 +486,7 @@ document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll();});
 
 async function start(){
   S.auth=await api("/api/auth/state");
-  if(!S.auth.authenticated){renderAuth(S.auth.initialized);return;}
+  if(!S.auth.authenticated){await StudioImages.clear();renderAuth(S.auth.initialized);return;}
   loadDraft();await refresh();S.models=await api("/api/models");await fetchSetup();S.setupStep=S.setup.authenticated?3:1;renderShell();
   await navigate(S.config.onboarded?"create":"setup");
 }
