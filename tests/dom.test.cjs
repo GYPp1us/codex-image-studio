@@ -23,3 +23,10 @@ test('only the changed image source is replaced, while removals and new cards re
   updateHTML(list,'<div data-id="c"><img src="/media/c"></div><div data-id="b"><img src="/media/b-new"></div>');
   assert.equal(list.lastChild,b);assert.equal(b.firstChild,image);assert.equal(image.getAttribute('src'),'/media/b-new');assert.equal(list.children.length,2);
 });
+test('progress updates retain the fill element so CSS easing continues across polls',()=>{
+  const list=fixture();
+  updateHTML(list,'<div class="motion-track"><span class="motion-fill p22"></span></div>');
+  const fill=list.querySelector('.motion-fill');
+  updateHTML(list,'<div class="motion-track"><span class="motion-fill p50"></span></div>');
+  assert.equal(list.querySelector('.motion-fill'),fill);assert.ok(fill.classList.contains('p50'));
+});

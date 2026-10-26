@@ -24,7 +24,7 @@ class StudioTests(unittest.TestCase):
         cls.appmod = importlib.reload(app)
         fake = Path(cls.temp.name) / "fake-codex"
         fake.write_text(f"#!{sys.executable}\n" + '''
-import sys, time, json, os
+import sys, time, json, os, re
 from pathlib import Path
 from PIL import Image
 if '--version' in sys.argv:
@@ -35,6 +35,19 @@ elif 'exec' in sys.argv:
     directory = Path(sys.argv[sys.argv.index('-C')+1])
     prompt = sys.stdin.read()
     print(json.dumps({'type':'thread.started','thread_id':'test-'+directory.name}), flush=True)
+    if 'STUDIO_STITCH_REVIEW' in prompt:
+        print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps({'pass':True,'issues':[]})}}),flush=True)
+        sys.exit(0)
+    if 'STUDIO_TILE_REFINEMENT' in prompt:
+        slow_marker=directory.parent.parent/'.test-slow-once'
+        slow='TEST_SLOW' in prompt and not slow_marker.exists()
+        if slow:slow_marker.touch()
+        time.sleep(30 if slow else 0.2)
+        reference=Path(sys.argv[sys.argv.index('-i')+1])
+        size=re.search(r'([0-9]+)x([0-9]+) pixels',prompt)
+        with Image.open(reference) as image:image.resize((int(size[1]),int(size[2])),Image.Resampling.BICUBIC).save(directory/'output.png')
+        print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'Synthetic test-only refinement fixture'}}),flush=True)
+        sys.exit(0)
     if 'TEST_PERMANENT_FAILURE' in prompt:
         print(json.dumps({'type':'error','message':'image generation tool unavailable'}), flush=True)
         sys.exit(1)
@@ -402,6 +415,59 @@ elif 'exec' in sys.argv:
         finally:
             self.post('/api/jobs/'+jid+'/cancel')
             self.client.patch('/api/settings',json={'paused':False},headers=self.headers)
+
+
+    def test_22_stitch_pipeline_and_asset_send_to_upscale(self):
+        import cv2
+        from test_stitch_engine import texture
+        fixture=io.BytesIO();Image.fromarray(cv2.cvtColor(texture(320,256),cv2.COLOR_BGR2RGB)).save(fixture,'PNG')
+        asset=self.client.post('/api/assets',files={'file':('stitch-fixture.png',fixture.getvalue(),'image/png')},headers=self.headers).json()['asset']
+        self.assertEqual(self.post('/api/assets/'+asset['id']+'/upscale',{'factor':5}).status_code,422)
+        request=self.post('/api/assets/'+asset['id']+'/upscale',{'factor':4})
+        self.assertEqual(request.status_code,200,request.text)
+        jid=request.json()['ids'][0]
+        job=self.wait_job(jid,timeout=75)
+        self.assertEqual(job['status'],'succeeded',job['error'])
+        self.assertEqual((job['outputs'][0]['width'],job['outputs'][0]['height']),(640,512))
+        self.assertEqual(job['progress']['percent'],100)
+        self.assertEqual(job['options']['source_asset_id'],asset['id'])
+        report=self.client.get('/api/jobs/'+jid+'/stitch/report').json()
+        self.assertEqual(report['uncovered_pixels'],0)
+        self.assertEqual(report['bands'],7)
+        self.assertTrue(report['visual_review']['pass'])
+        self.assertEqual(self.client.get('/api/jobs/'+jid+'/stitch/inspection').status_code,200)
+        self.assertEqual(self.client.get('/api/jobs/'+jid+'/stitch/not-allowed').status_code,404)
+        anonymous=TestClient(self.appmod.app,base_url='https://image.example.com')
+        self.assertEqual(anonymous.get('/api/jobs/'+jid+'/stitch/preview').status_code,401)
+        anonymous.close()
+        saved=self.post('/api/templates',{'text':'stitch preset','options':{'stitch':16}}).json()
+        self.assertEqual(saved['options']['stitch'],16)
+
+    def test_23_stitch_cancellation_preserves_checkpoints(self):
+        import cv2
+        from test_stitch_engine import texture
+        fixture=io.BytesIO();Image.fromarray(cv2.cvtColor(texture(320,256),cv2.COLOR_BGR2RGB)).save(fixture,'PNG')
+        asset=self.client.post('/api/assets',files={'file':('TEST_SLOW-stitch.png',fixture.getvalue(),'image/png')},headers=self.headers).json()['asset']
+        # Duplicate normalized pixels reuse the prior asset, so put the trigger in this job's brief.
+        r=self.post('/api/jobs',{'prompt':'TEST_SLOW checkpoint cancellation','refs':[asset['id']],'source_asset_id':asset['id'],'stitch':4})
+        self.assertEqual(r.status_code,200,r.text);jid=r.json()['ids'][0]
+        deadline=time.time()+15
+        while time.time()<deadline:
+            job=self.client.get('/api/jobs/'+jid).json()
+            if job['progress']['stage']=='redraw':break
+            time.sleep(.2)
+        self.assertEqual(self.post('/api/jobs/'+jid+'/cancel').status_code,200)
+        cancelled=self.wait_job(jid)
+        self.assertEqual(cancelled['status'],'cancelled')
+        self.assertFalse(cancelled['progress']['indeterminate'])
+        time.sleep(.5)
+        self.assertNotIn(jid,self.appmod.PROCESSES)
+        self.assertTrue((self.appmod.DATA/'jobs'/jid/'stitch'/'base.png').exists())
+        base=self.appmod.DATA/'jobs'/jid/'stitch'/'base.png';stamp=base.stat().st_mtime_ns
+        self.assertEqual(self.post('/api/jobs/'+jid+'/retry').status_code,200)
+        resumed=self.wait_job(jid,timeout=75)
+        self.assertEqual(resumed['status'],'succeeded',resumed['error'])
+        self.assertEqual(base.stat().st_mtime_ns,stamp)
 
 
 if __name__=="__main__":

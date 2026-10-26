@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec /opt/image-studio/venv/bin/python /opt/image-studio/current/stitch_engine.py "$@"

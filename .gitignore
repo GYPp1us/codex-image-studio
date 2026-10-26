@@ -19,6 +19,9 @@ _mobile_upgrade.py
 _mobile_options.py
 _inspect_events.py
 _progress_ui.py
+_stitch_ui.py
+_stitch_finish.py
+_upscale_probe.py
 android/build/
 android/signing/
 downloads/

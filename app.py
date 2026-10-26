@@ -15,6 +15,7 @@ import signal
 import sqlite3
 import time
 import uuid
+import sys
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Literal
@@ -27,6 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
+from stitch_workflow import DEFAULT_STITCH_PROMPT
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -58,7 +60,7 @@ DEFAULT_POLISH_PROMPT = DEFAULT_CALL_PROMPT.replace(
     "Briefly report the enhanced creative brief in your response so it remains available in the task log."
 ).replace("BEGIN EXACT IMAGE PROMPT", "BEGIN USER CREATIVE BRIEF").replace("END EXACT IMAGE PROMPT", "END USER CREATIVE BRIEF")
 MAX_UPLOAD = 20 * 1024 * 1024
-Image.MAX_IMAGE_PIXELS = 36_000_000
+Image.MAX_IMAGE_PIXELS = 64_000_000
 SESSION_AGE = 7 * 86400
 PROCESSES: dict[str, asyncio.subprocess.Process] = {}
 LOGIN: dict = {"running": False, "output": "", "url": "", "code": "", "mode": "browser"}
@@ -143,6 +145,8 @@ def initialize():
         for name, definition in (("stage", "TEXT NOT NULL DEFAULT ''"), ("stage_source", "TEXT NOT NULL DEFAULT ''"), ("stage_updated", "REAL NOT NULL DEFAULT 0")):
             if name not in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}:
                 c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+        if "progress_detail" not in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}:
+            c.execute("ALTER TABLE jobs ADD COLUMN progress_detail TEXT NOT NULL DEFAULT '{}'")
         c.execute("CREATE INDEX IF NOT EXISTS jobs_collection ON jobs(collection_id,created)")
         for table in ("assets", "collections"):
             if "deleted" not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
@@ -209,7 +213,7 @@ def login_response(request):
 
 def codex_env():
     env = {k: v for k, v in os.environ.items() if k not in {"OPENAI_API_KEY", "STUDIO_SETUP_TOKEN", "STUDIO_SETUP_TOKEN_FILE", "CODEX_ACCESS_TOKEN"}}
-    env.update(CODEX_HOME=str(CODEX_HOME), HOME=str(DATA), NO_COLOR="1", TERM="dumb")
+    env.update(CODEX_HOME=str(CODEX_HOME), HOME=str(DATA), NO_COLOR="1", TERM="dumb", STUDIO_STITCH_PYTHON=sys.executable, STUDIO_STITCH_ENGINE=str(ROOT/"stitch_engine.py"), OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
     return env
 
 
@@ -397,7 +401,7 @@ def revoke_sessions(session=Depends(require_user)):
 
 @app.get("/api/call-settings")
 def call_settings(session=Depends(require_user)):
-    return {"call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "default_call_prompt": DEFAULT_CALL_PROMPT, "polish_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT), "default_polish_prompt": DEFAULT_POLISH_PROMPT, "variables": ["{prompt}", "{ratio}", "{size}", "{transparent}", "{references}"]}
+    return {"call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "default_call_prompt": DEFAULT_CALL_PROMPT, "polish_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT), "default_polish_prompt": DEFAULT_POLISH_PROMPT, "stitch_prompt": setting("stitch_prompt", DEFAULT_STITCH_PROMPT), "default_stitch_prompt": DEFAULT_STITCH_PROMPT, "variables": ["{prompt}", "{ratio}", "{size}", "{transparent}", "{references}"]}
 
 
 def model_catalog():
@@ -447,12 +451,13 @@ class Settings(BaseModel):
     effort: str | None = Field(default=None, max_length=20)
     call_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
     polish_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
+    stitch_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
 
 
 @app.patch("/api/settings")
 def settings(body: Settings, session=Depends(require_user)):
     validate_model_choice(body.model or setting("model", MODEL), body.effort or setting("effort", EFFORT))
-    for template in (body.call_prompt, body.polish_prompt):
+    for template in (body.call_prompt, body.polish_prompt, body.stitch_prompt):
         if template is not None and "{prompt}" not in template:
             raise HTTPException(400, "调用提示词必须包含 {prompt} 变量")
     for key, value in body.model_dump(exclude_none=True).items():
@@ -566,14 +571,16 @@ def serialize_asset(a):
     return {k: v for k, v in a.items() if k not in ("path", "sha")} | {"url": f"/media/{a['id']}", "thumbnail": f"/media/{a['id']}?thumbnail=1"}
 
 
-def store_image(content: bytes, name: str, kind="reference", job_id=None):
+def store_image(content: bytes, name: str, kind="reference", job_id=None, pixel_limit=36_000_000):
     try:
         with Image.open(io.BytesIO(content)) as original:
             original.verify()
         with Image.open(io.BytesIO(content)) as original:
+            if original.width * original.height > pixel_limit:
+                raise ValueError("图片超过允许像素上限")
             im = ImageOps.exif_transpose(original)
-            if im.width * im.height > 36_000_000:
-                raise ValueError("图片超过 3600 万像素")
+            if im.width * im.height > pixel_limit:
+                raise ValueError("图片超过允许像素上限")
             im = im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
             width, height = im.size
             cleaned = io.BytesIO()
@@ -701,7 +708,7 @@ def save_prompt(body: PromptInput, session=Depends(require_user)):
     for aid in refs:
         if not query("SELECT id FROM assets WHERE id=?", (aid,), True):
             raise HTTPException(400, "参考图不存在")
-    options = {k: body.options[k] for k in ("ratio", "transparent", "model", "effort", "polish", "size") if k in body.options}
+    options = {k: body.options[k] for k in ("ratio", "transparent", "model", "effort", "polish", "size", "stitch") if k in body.options}
     return serialize_prompt(cache_prompt(body.text.strip(), body.title, refs, options))
 
 
@@ -724,7 +731,7 @@ def update_template(pid: str, body: PromptInput, session=Depends(require_user)):
     for aid in refs:
         if not query("SELECT id FROM assets WHERE id=?", (aid,), True):
             raise HTTPException(400, "参考图不存在")
-    options = {k:body.options[k] for k in ("ratio", "transparent", "model", "effort", "polish", "size") if k in body.options}
+    options = {k:body.options[k] for k in ("ratio", "transparent", "model", "effort", "polish", "size", "stitch") if k in body.options}
     title = body.title.strip() or body.text.strip()[:48] or "参考图模板"
     write("UPDATE templates SET text=?,title=?,refs=?,options=?,updated=? WHERE id=?", (body.text.strip(),title,json.dumps(refs),json.dumps(options),now(),pid))
     write("UPDATE collections SET name=? WHERE id=? AND name=?", (title,'tpl-'+pid,previous['title']))
@@ -760,6 +767,8 @@ class JobInput(BaseModel):
     transparent: bool = False
     polish: bool = False
     size: Literal["auto", "1024", "2048", "4096"] = "auto"
+    stitch: Literal[0,4,9,16] = 0
+    source_asset_id: str | None = Field(default=None, max_length=64)
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     model: str | None = Field(default=None, max_length=100)
     effort: str | None = Field(default=None, max_length=20)
@@ -785,6 +794,19 @@ STAGES = {"sending": "正在传递", "thinking": "主模型正在思考", "gener
 
 def job_progress(job):
     status = job["status"]
+    options=job.get("options",{})
+    if isinstance(options,str):options=json.loads(options)
+    if options.get("stitch"):
+        from stitch_engine import PHASES, LABELS
+        value=json.loads(job.get("progress_detail") or '{}')
+        value={"stage":"base","label":LABELS[0],"fraction":0,"step":1,"total":len(PHASES),"source":"server",**value}
+        value["indeterminate"]=bool(value.get("waiting"));value["factor"]=options['stitch'];value["stitch"]=True
+        if status=='succeeded':value.update(fraction=1,label='超分已完成',step=len(PHASES),waiting=False,indeterminate=False)
+        elif status in ('failed','cancelled','queued','retrying'):
+            value['label']={'failed':'超分失败，可从检查点重试','cancelled':'已取消','queued':'超分等待调度','retrying':'等待重试'}[status]
+            value.update(waiting=False,indeterminate=False)
+        value['percent']=max(0,min(100,round(value['fraction']*100)))
+        return value
     terminal = {"queued": "等待调度", "retrying": "等待重试", "succeeded": "已完成", "failed": "生成失败", "cancelled": "已取消"}
     if status != "running":
         return {"stage": status, "label": terminal.get(status, status), "step": 4 if status == "succeeded" else 0, "total": 4, "indeterminate": False, "source": "server", "updated": job.get("stage_updated") or job.get("created",0)}
@@ -828,6 +850,16 @@ def create_jobs(body):
     if body.ratio not in ("1:1", "3:2", "2:3", "16:9", "9:16", "auto"):
         raise HTTPException(400, "画幅不支持")
     refs = list(dict.fromkeys(body.refs))
+    if body.source_asset_id and not body.stitch:
+        raise HTTPException(400, "发送现有图片到超分时必须选择倍率")
+    if body.source_asset_id:
+        source=query('SELECT * FROM assets WHERE id=?',(body.source_asset_id,),True)
+        if not source:raise HTTPException(400,'超分原图不存在')
+        from stitch_engine import layout, StitchError
+        try:layout(source['width'],source['height'],body.stitch)
+        except StitchError as error:raise HTTPException(400,str(error)) from error
+        if body.source_asset_id not in refs:refs.append(body.source_asset_id)
+        if len(refs)>8:raise HTTPException(400,'每次最多使用 8 张参考图')
     for aid in refs:
         if not query("SELECT id FROM assets WHERE id=?", (aid,), True):
             raise HTTPException(400, "参考图不存在，请重新选择")
@@ -837,6 +869,7 @@ def create_jobs(body):
     if body.template_id and not template:
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
+    options.update(stitch=body.stitch,source_asset_id=body.source_asset_id,stitch_prompt=setting('stitch_prompt',DEFAULT_STITCH_PROMPT) if body.stitch else '')
     batch, ids = uid(), []
     collection_id = 'tpl-' + template['id'] if template else 'request-' + batch
     with db() as c:
@@ -855,6 +888,33 @@ async def add_jobs(body: JobInput, session=Depends(require_user)):
     if code != 0 or "api key" in status.lower():
         raise HTTPException(409, "请先在连接设置中完成 ChatGPT 订阅登录")
     return create_jobs(body)
+
+
+class UpscaleInput(BaseModel):
+    factor: Literal[4,9,16] = 4
+    model: str | None = Field(default=None,max_length=100)
+    effort: str | None = Field(default=None,max_length=20)
+
+
+@app.post('/api/assets/{aid}/upscale')
+async def upscale_asset(aid: str, body: UpscaleInput, session=Depends(require_user)):
+    asset=query('SELECT * FROM assets WHERE id=?',(aid,),True)
+    if not asset:raise HTTPException(404,'原图不存在')
+    origin=query('SELECT * FROM jobs WHERE id=?',(asset['job_id'],),True) if asset['job_id'] else None
+    options=json.loads(origin['options']) if origin else {}
+    template=origin.get('template_id') if origin else None
+    if template and not query('SELECT id FROM templates WHERE id=?',(template,),True):template=None
+    request=JobInput(prompt=origin['prompt'] if origin else f"严格保留参考图的构图和内容，增强原有细节。{asset['name']}",refs=[aid],stitch=body.factor,source_asset_id=aid,model=body.model or options.get('model') or setting('model',MODEL),effort=body.effort or options.get('effort') or setting('effort',EFFORT),template_id=template,transparent=options.get('transparent',False))
+    return await add_jobs(request,session)
+
+
+@app.get('/api/jobs/{jid}/stitch/{artifact}')
+def stitch_artifact(jid: str, artifact: str, session=Depends(require_user)):
+    files={'preview':'preview.png','overview':'overview.png','inspection':'inspection.png','candidate':'candidate.png','base':'base.png','report':'diagnostics/quality.json'}
+    if not re.fullmatch('[a-f0-9]{32}',jid) or artifact not in files:raise HTTPException(404)
+    path=DATA/'jobs'/jid/'stitch'/files[artifact]
+    if not path.is_file():raise HTTPException(404,'工作文件尚未生成')
+    return FileResponse(path,headers={'Cache-Control':'no-store'})
 
 
 @app.post("/api/setup/probe")
@@ -954,7 +1014,7 @@ async def retry_job(jid: str, session=Depends(require_user)):
         raise HTTPException(404, "任务不存在")
     if j["status"] not in ("failed", "cancelled"):
         raise HTTPException(409, "只有失败或取消的任务可以重试；再次抽卡请使用重新生成")
-    write("UPDATE jobs SET status='queued',attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0 WHERE id=?", (jid,))
+    write("UPDATE jobs SET status='queued',attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail='{}' WHERE id=?", (jid,))
     WAKE.set()
     return {"ok": True}
 
@@ -1036,6 +1096,10 @@ def record_generated_image(jid, source):
 async def run_job(jid):
     j = query("SELECT * FROM jobs WHERE id=?", (jid,), True)
     options = json.loads(j["options"])
+    if options.get('stitch'):
+        from stitch_workflow import run
+        await run(sys.modules[__name__],jid)
+        return
     model, effort = options.get("model", MODEL), options.get("effort", EFFORT)
     directory = DATA / "jobs" / jid
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
