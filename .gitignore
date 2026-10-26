@@ -1,0 +1,17 @@
+__pycache__/
+.venv/
+.env
+.env.*
+!.env.example
+data/
+*.tar.gz
+*.log
+*.sqlite3*
+auth.json
+.codex/
+.pytest_cache/
+_refactor_ui.py
+_finish_ui.py
+_activate_upgrade.py
+studio-*.png
+deploy/image.arcol.site.conf

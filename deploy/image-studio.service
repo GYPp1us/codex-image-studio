@@ -1,0 +1,35 @@
+[Unit]
+Description=Private Codex Image Studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/image-studio/current
+Environment=STUDIO_DATA=/var/lib/image-studio
+Environment=STUDIO_SETUP_TOKEN_FILE=/var/lib/image-studio/setup-token
+Environment=CODEX_BIN=/opt/image-studio/runtime/node_modules/.bin/codex
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/image-studio/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8788 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+Restart=on-failure
+RestartSec=4
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/image-studio
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=8192
+MemoryMax=2500M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
