@@ -22,6 +22,7 @@ _progress_ui.py
 _stitch_ui.py
 _stitch_finish.py
 _upscale_probe.py
+_stitch_diagnostics.py
 android/build/
 android/signing/
 downloads/

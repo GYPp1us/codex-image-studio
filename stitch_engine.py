@@ -15,6 +15,8 @@ MAX_PIXELS = 64_000_000
 BLOCK = 1536
 HALO = 256
 BANDS = 7
+REGISTRATION_VERSION = 2
+OUTER_BORDER = 12
 PHASES = ("base", "cutting", "redraw", "registration", "color", "seams", "blend", "inspection", "receiving")
 LABELS = ("准备原图", "带重叠切图", "逐块 AI 补绘", "SIFT + RANSAC 配准", "匹配大范围色调", "Graph Cut 寻找接缝", "7 层拉普拉斯融合", "局部质量检查", "回传超分结果")
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
@@ -131,11 +133,25 @@ def register_tile(folder,index):
     valid=cv2.warpAffine(np.full((rh,rw),255,np.uint8),transform,size,flags=cv2.INTER_NEAREST,borderMode=cv2.BORDER_CONSTANT,borderValue=0)
     # A small resampling border uses only redrawn pixels, never low-resolution original detail.
     border=cv2.dilate(valid,np.ones((5,5),np.uint8))
+    extended=cv2.dilate(valid,np.ones((OUTER_BORDER*2+1,OUTER_BORDER*2+1),np.uint8))
+    # Affine resampling may expose a few pixels at the outer canvas edge. The RGB
+    # warp already reflects redrawn pixels there; permit this only in a bounded strip.
+    outer=np.zeros_like(valid);x,y=tile['corner'];tw,th=tile['size'];ow,oh=plan['output_size']
+    if x==0:outer[:,:OUTER_BORDER]=255
+    if y==0:outer[:OUTER_BORDER,:]=255
+    if x+tw==ow:outer[:,-OUTER_BORDER:]=255
+    if y+th==oh:outer[-OUTER_BORDER:,:]=255
+    expanded=cv2.bitwise_or(border,cv2.bitwise_and(extended,outer))
+    metrics['outer_border_added_pixels']=int(np.count_nonzero((expanded>0)&(border==0)))
+    border=expanded
+    metrics['registration_version']=REGISTRATION_VERSION
+    metrics['outer_border_max_pixels']=OUTER_BORDER
     metrics["resampling_border_pixels"]=2
     metrics["target_matrix"]=transform.tolist()
     write_png(folder/"registered"/f"{index}.png",registered)
     write_png(folder/"masks"/f"valid-{index}.png",border)
     save_json(folder/"diagnostics"/f"alignment-{index}.json",metrics)
+    (folder/'corrected'/f'{index}.png').unlink(missing_ok=True)
     return metrics
 
 
@@ -157,7 +173,8 @@ def compose(folder):
     folder=Path(folder);plan=json.loads((folder/"plan.json").read_text());count=len(plan["tiles"])
     for tile in plan["tiles"]:
         i=tile["index"]
-        if not (folder/"diagnostics"/f"alignment-{i}.json").exists():
+        diagnostic=folder/'diagnostics'/f'alignment-{i}.json'
+        if not diagnostic.exists() or json.loads(diagnostic.read_text()).get('registration_version',0)<REGISTRATION_VERSION:
             report(folder,"registration",i,count);register_tile(folder,i)
     for tile in plan["tiles"]:
         i=tile["index"];report(folder,"color",i,count)

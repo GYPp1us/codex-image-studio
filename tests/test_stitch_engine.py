@@ -59,6 +59,22 @@ class StitchEngineTests(unittest.TestCase):
             crop=engine.read_bgr(folder/'crops/0.png');engine.write_png(folder/'redraw/0.png',crop)
             with self.assertRaisesRegex(engine.StitchError,'75%'):engine.register_tile(folder,0)
 
+    def test_bounded_outer_edge_extension_handles_affine_translation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder=Path(temporary);engine.write_png(folder/'base.png',texture(320,256));plan=engine.prepare(folder,4)
+            for tile in plan['tiles']:
+                crop=engine.read_bgr(folder/'crops'/f"{tile['index']}.png")
+                redraw=cv2.resize(crop,tuple(tile['size']),interpolation=cv2.INTER_CUBIC)
+                if tile['column']==0:
+                    redraw=cv2.warpAffine(redraw,np.float32([[1,0,-8],[0,1,0]]),tuple(tile['size']),borderMode=cv2.BORDER_REFLECT_101)
+                engine.write_png(folder/'redraw'/f"{tile['index']}.png",redraw)
+            engine.compose(folder)
+            quality=json.loads((folder/'diagnostics/quality.json').read_text())
+            self.assertEqual(quality['uncovered_pixels'],0)
+            self.assertGreater(sum(a['outer_border_added_pixels'] for a in quality['alignments']),0)
+            self.assertTrue(all(a['outer_border_max_pixels']==12 for a in quality['alignments']))
+            self.assertTrue(all(np.array(a['target_matrix']).shape==(2,3) for a in quality['alignments']))
+
     def test_real_graphcut_and_seven_band_blend_for_4_9_16(self):
         for factor in (4,9,16):
             with self.subTest(factor=factor),tempfile.TemporaryDirectory() as temporary:
