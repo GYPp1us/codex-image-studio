@@ -34,6 +34,7 @@ CODEX_HOME = DATA / "codex"
 CODEX_BIN = os.getenv("CODEX_BIN", "codex")
 MODEL = "gpt-6.1-sol"
 EFFORT = "xhigh"
+IMAGE_REQUIREMENTS = "Image-generation request: GPT-Image-2.5 Sunburst (gpt-image-2.5-sunburst), requested reasoning effort max. Include this exact model and effort request in the prompt passed to the image-generation tool. If the tool exposes explicit model and reasoning parameters, use them; otherwise preserve this as a prompt-level request. Never claim the backend model or effort was verified unless actual tool metadata confirms it."
 DEFAULT_CALL_PROMPT = """You are an image generation worker, not a coding task. Generate exactly ONE image using the built-in image_gen/imagegen tool.
 Use the image prompt below verbatim as the creative brief. Do not rewrite it or add stylistic details.
 Requested aspect ratio: {ratio}. Transparent background: {transparent}.
@@ -46,6 +47,16 @@ BEGIN EXACT IMAGE PROMPT
 {prompt}
 END EXACT IMAGE PROMPT
 """
+DEFAULT_CALL_PROMPT = IMAGE_REQUIREMENTS + "\n" + DEFAULT_CALL_PROMPT
+DEFAULT_POLISH_PROMPT = DEFAULT_CALL_PROMPT.replace(
+    "Use the image prompt below verbatim as the creative brief. Do not rewrite it or add stylistic details.",
+    "Act as an art director. Treat the user's text as a creative brief, then design a complete image-generation prompt before invoking the tool. "
+    "Make deliberate choices about composition, framing, subject hierarchy, perspective, lighting, palette, materials, visual style and suitable style tags. "
+    "Fill missing details coherently without replacing the user's subject, requested text, identities, constraints or exclusions. "
+    "Inspect and respect attached reference images. Avoid contradictory or gratuitous style tags. "
+    "Use your enhanced prompt with the built-in image tool; do not pass the original text through unchanged. "
+    "Briefly report the enhanced creative brief in your response so it remains available in the task log."
+).replace("BEGIN EXACT IMAGE PROMPT", "BEGIN USER CREATIVE BRIEF").replace("END EXACT IMAGE PROMPT", "END USER CREATIVE BRIEF")
 MAX_UPLOAD = 20 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = 36_000_000
 SESSION_AGE = 7 * 86400
@@ -129,7 +140,13 @@ def initialize():
             c.execute("ALTER TABLE jobs ADD COLUMN collection_id TEXT NOT NULL DEFAULT ''")
         if "template_id" not in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}:
             c.execute("ALTER TABLE jobs ADD COLUMN template_id TEXT NOT NULL DEFAULT ''")
+        for name, definition in (("stage", "TEXT NOT NULL DEFAULT ''"), ("stage_source", "TEXT NOT NULL DEFAULT ''"), ("stage_updated", "REAL NOT NULL DEFAULT 0")):
+            if name not in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}:
+                c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
         c.execute("CREATE INDEX IF NOT EXISTS jobs_collection ON jobs(collection_id,created)")
+        for table in ("assets", "collections"):
+            if "deleted" not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
         if new_prompt_refs:
             for saved in c.execute("SELECT id,text FROM prompts").fetchall():
                 latest = c.execute("SELECT refs,options FROM jobs WHERE prompt=? ORDER BY created DESC LIMIT 1", (saved["text"],)).fetchone()
@@ -145,7 +162,7 @@ def initialize():
                 c.execute("UPDATE jobs SET collection_id=? WHERE id=?", (cid, job["id"]))
                 template = c.execute("SELECT title FROM templates WHERE id=?", (job['template_id'],)).fetchone() if job['template_id'] else None
                 name = template['title'] if template else job['prompt'][:48]
-                c.execute("INSERT INTO collections VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=MAX(collections.updated,excluded.updated),created=MIN(collections.created,excluded.created)", (cid, name, job['prompt'], job['created'], job['created']))
+                c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=MAX(collections.updated,excluded.updated),created=MIN(collections.created,excluded.created)", (cid, name, job['prompt'], job['created'], job['created']))
         c.execute("DELETE FROM collections WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.collection_id=collections.id)")
         c.execute("DELETE FROM sessions WHERE expires<?", (now(),))
         c.execute("UPDATE jobs SET status='failed',error='服务重启中断了这次生成，请重试。',finished=? WHERE status IN ('running','retrying')", (now(),))
@@ -380,7 +397,7 @@ def revoke_sessions(session=Depends(require_user)):
 
 @app.get("/api/call-settings")
 def call_settings(session=Depends(require_user)):
-    return {"call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "default_call_prompt": DEFAULT_CALL_PROMPT, "variables": ["{prompt}", "{ratio}", "{transparent}", "{references}"]}
+    return {"call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "default_call_prompt": DEFAULT_CALL_PROMPT, "polish_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT), "default_polish_prompt": DEFAULT_POLISH_PROMPT, "variables": ["{prompt}", "{ratio}", "{size}", "{transparent}", "{references}"]}
 
 
 def model_catalog():
@@ -429,13 +446,15 @@ class Settings(BaseModel):
     model: str | None = Field(default=None, max_length=100)
     effort: str | None = Field(default=None, max_length=20)
     call_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
+    polish_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
 
 
 @app.patch("/api/settings")
 def settings(body: Settings, session=Depends(require_user)):
     validate_model_choice(body.model or setting("model", MODEL), body.effort or setting("effort", EFFORT))
-    if body.call_prompt is not None and "{prompt}" not in body.call_prompt:
-        raise HTTPException(400, "调用提示词必须包含 {prompt} 变量")
+    for template in (body.call_prompt, body.polish_prompt):
+        if template is not None and "{prompt}" not in template:
+            raise HTTPException(400, "调用提示词必须包含 {prompt} 变量")
     for key, value in body.model_dump(exclude_none=True).items():
         set_setting(key, value)
     WAKE.set()
@@ -563,6 +582,9 @@ def store_image(content: bytes, name: str, kind="reference", job_id=None):
             sha = hashlib.sha256(data).hexdigest()
             existing = query("SELECT * FROM assets WHERE sha=?", (sha,), True)
             if existing:
+                if existing.get("deleted"):
+                    write("UPDATE assets SET deleted=0 WHERE id=?", (existing["id"],))
+                    existing["deleted"] = 0
                 if kind == "reference":
                     write("UPDATE assets SET kind='reference' WHERE id=?", (existing["id"],))
                     existing["kind"] = "reference"
@@ -589,8 +611,8 @@ async def upload_asset(file: UploadFile = File(...), session=Depends(require_use
 
 
 @app.get("/api/assets")
-def list_assets(kind: str = "reference", search: str = "", favorite: bool = False, limit: int = 100, offset: int = 0, session=Depends(require_user)):
-    clauses, args = [], []
+def list_assets(kind: str = "reference", search: str = "", favorite: bool = False, deleted: bool = False, limit: int = 100, offset: int = 0, session=Depends(require_user)):
+    clauses, args = ["deleted=?"], [int(deleted)]
     if kind in ("reference", "generated"):
         clauses.append("kind=?")
         args.append(kind)
@@ -621,19 +643,17 @@ def edit_asset(aid: str, body: dict, session=Depends(require_user)):
 
 @app.delete("/api/assets/{aid}")
 def delete_asset(aid: str, session=Depends(require_user)):
-    # Preserve reproducibility: assets referenced by any job cannot be removed.
-    for j in query("SELECT refs,outputs FROM jobs"):
-        if aid in json.loads(j["refs"]) + json.loads(j["outputs"]):
-            raise HTTPException(409, "图片仍被生成记录引用，可取消收藏或修改名称。")
-    for saved in query("SELECT refs FROM templates"):
-        if aid in json.loads(saved["refs"]):
-            raise HTTPException(409, "图片仍被已保存提示词引用，请先修改或删除该提示词。")
     a = query("SELECT * FROM assets WHERE id=?", (aid,), True)
     if not a:
         raise HTTPException(404, "图片不存在")
-    write("DELETE FROM assets WHERE id=?", (aid,))
-    Path(a["path"]).unlink(missing_ok=True)
-    (DATA / "thumbs" / f"{aid}.webp").unlink(missing_ok=True)
+    write("UPDATE assets SET deleted=1 WHERE id=?", (aid,))
+    return {"ok": True}
+
+
+@app.post("/api/assets/{aid}/restore")
+def restore_asset(aid: str, session=Depends(require_user)):
+    if not write("UPDATE assets SET deleted=0 WHERE id=?", (aid,)):
+        raise HTTPException(404, "图片不存在")
     return {"ok": True}
 
 
@@ -681,7 +701,7 @@ def save_prompt(body: PromptInput, session=Depends(require_user)):
     for aid in refs:
         if not query("SELECT id FROM assets WHERE id=?", (aid,), True):
             raise HTTPException(400, "参考图不存在")
-    options = {k: body.options[k] for k in ("ratio", "transparent", "model", "effort") if k in body.options}
+    options = {k: body.options[k] for k in ("ratio", "transparent", "model", "effort", "polish", "size") if k in body.options}
     return serialize_prompt(cache_prompt(body.text.strip(), body.title, refs, options))
 
 
@@ -704,7 +724,7 @@ def update_template(pid: str, body: PromptInput, session=Depends(require_user)):
     for aid in refs:
         if not query("SELECT id FROM assets WHERE id=?", (aid,), True):
             raise HTTPException(400, "参考图不存在")
-    options = {k:body.options[k] for k in ("ratio", "transparent", "model", "effort") if k in body.options}
+    options = {k:body.options[k] for k in ("ratio", "transparent", "model", "effort", "polish", "size") if k in body.options}
     title = body.title.strip() or body.text.strip()[:48] or "参考图模板"
     write("UPDATE templates SET text=?,title=?,refs=?,options=?,updated=? WHERE id=?", (body.text.strip(),title,json.dumps(refs),json.dumps(options),now(),pid))
     write("UPDATE collections SET name=? WHERE id=? AND name=?", (title,'tpl-'+pid,previous['title']))
@@ -738,6 +758,8 @@ class JobInput(BaseModel):
     count: int = Field(default=1, ge=1, le=20)
     ratio: str = "1:1"
     transparent: bool = False
+    polish: bool = False
+    size: Literal["auto", "1024", "2048", "4096"] = "auto"
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     model: str | None = Field(default=None, max_length=100)
     effort: str | None = Field(default=None, max_length=20)
@@ -752,9 +774,49 @@ def serialize_job(j):
     j["effort"] = j["options"].get("effort", EFFORT)
     j["template_title"] = j["options"].get("template_title", "")
     j["output_ids"] = json.loads(j["outputs"])
-    j["outputs"] = [serialize_asset(a) for aid in j["output_ids"] if (a := query("SELECT * FROM assets WHERE id=?", (aid,), True))]
+    j["outputs"] = [serialize_asset(a) for aid in j["output_ids"] if (a := query("SELECT * FROM assets WHERE id=? AND deleted=0", (aid,), True))]
     j["references"] = [serialize_asset(a) for aid in j["refs"] if (a := query("SELECT * FROM assets WHERE id=?", (aid,), True))]
+    j["progress"] = job_progress(j)
     return j
+
+
+STAGES = {"sending": "正在传递", "thinking": "主模型正在思考", "generating": "等待生图返回", "receiving": "正在回传"}
+
+
+def job_progress(job):
+    status = job["status"]
+    terminal = {"queued": "等待调度", "retrying": "等待重试", "succeeded": "已完成", "failed": "生成失败", "cancelled": "已取消"}
+    if status != "running":
+        return {"stage": status, "label": terminal.get(status, status), "step": 4 if status == "succeeded" else 0, "total": 4, "indeterminate": False, "source": "server", "updated": job.get("stage_updated") or job.get("created",0)}
+    stage = job.get("stage") or "sending"
+    if stage not in STAGES: stage = "sending"
+    return {"stage": stage, "label": STAGES[stage], "step": list(STAGES).index(stage)+1, "total": 4, "indeterminate": True, "source": job.get("stage_source") or "server", "updated": job.get("stage_updated") or job.get("started",0)}
+
+
+def set_job_stage(jid, stage, source="server"):
+    if stage not in STAGES: return
+    current = query("SELECT stage,status FROM jobs WHERE id=?",(jid,),True)
+    if not current or current["status"] != "running": return
+    order = list(STAGES)
+    if current["stage"] in order and order.index(current["stage"]) >= order.index(stage): return
+    write("UPDATE jobs SET stage=?,stage_source=?,stage_updated=? WHERE id=? AND status='running'",(stage,source,now(),jid))
+
+
+def stage_from_event(event):
+    """CLI events and explicit worker reports; no elapsed-time based guesswork."""
+    kind = event.get("type", "")
+    if kind in ("thread.started", "turn.started"): return "thinking", "cli"
+    if kind == "turn.completed": return "receiving", "cli"
+    item = event.get("item") or {}
+    if not isinstance(item,dict): return None
+    tool = str(item.get("tool") or item.get("name") or "")
+    if item.get("type") == "image_generation" or (item.get("type") in ("mcp_tool_call","tool_call") and re.search(r"image_?gen",tool,re.I)):
+        return ("receiving" if kind == "item.completed" else "generating"), "cli"
+    if item.get("type") == "agent_message":
+        text = item.get("text", "").strip()
+        if text == "[STUDIO_STAGE:image_generation]": return "generating", "worker"
+        if text == "[STUDIO_STAGE:receiving]": return "receiving", "worker"
+    return None
 
 
 def create_jobs(body):
@@ -774,11 +836,11 @@ def create_jobs(body):
     template = query("SELECT id,title FROM templates WHERE id=?", (body.template_id,), True) if body.template_id else None
     if body.template_id and not template:
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
-    options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "template_title": template['title'] if template else ''}
+    options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
     batch, ids = uid(), []
     collection_id = 'tpl-' + template['id'] if template else 'request-' + batch
     with db() as c:
-        c.execute("INSERT INTO collections VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated", (collection_id, template['title'] if template else body.prompt.strip()[:48], body.prompt.strip(), now(), now()))
+        c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,deleted=0", (collection_id, template['title'] if template else body.prompt.strip()[:48], body.prompt.strip(), now(), now()))
         for _ in range(body.count):
             jid = uid()
             ids.append(jid)
@@ -817,21 +879,35 @@ def list_jobs(status: str = "", collection: str = "", limit: int = 50, offset: i
 
 
 @app.get("/api/collections")
-def collections(search: str = "", limit: int = 50, offset: int = 0, session=Depends(require_user)):
-    rows = query("SELECT * FROM collections WHERE name LIKE ? OR prompt LIKE ? ORDER BY updated DESC LIMIT ? OFFSET ?", (f"%{search[:100]}%", f"%{search[:100]}%", max(1, min(limit, 100)), max(0, offset)))
+def collections(search: str = "", deleted: bool = False, limit: int = 50, offset: int = 0, session=Depends(require_user)):
+    rows = query("SELECT * FROM collections WHERE deleted=? AND (name LIKE ? OR prompt LIKE ?) ORDER BY updated DESC LIMIT ? OFFSET ?", (int(deleted), f"%{search[:100]}%", f"%{search[:100]}%", max(1, min(limit, 100)), max(0, offset)))
     for group in rows:
         group['template_id'] = group['id'][4:] if group['id'].startswith('tpl-') else ''
         group['kind'] = 'template' if group['template_id'] else 'request'
         jobs = query("SELECT status,outputs FROM jobs WHERE collection_id=? ORDER BY created DESC", (group["id"],))
-        image_ids = list(dict.fromkeys(aid for job in jobs for aid in json.loads(job["outputs"])))
+        image_ids = list(dict.fromkeys(aid for job in jobs for aid in json.loads(job["outputs"]) if query("SELECT id FROM assets WHERE id=? AND deleted=0", (aid,), True)))
         group.update(job_count=len(jobs), image_count=len(image_ids), active=sum(j["status"] in ("running", "queued", "retrying") for j in jobs), failed=sum(j["status"] == "failed" for j in jobs))
         group["covers"] = [serialize_asset(a) for aid in image_ids[:3] if (a := query("SELECT * FROM assets WHERE id=?", (aid,), True))]
-    total = query("SELECT COUNT(*) AS n FROM collections WHERE name LIKE ? OR prompt LIKE ?", (f"%{search[:100]}%", f"%{search[:100]}%"), True)["n"]
+    total = query("SELECT COUNT(*) AS n FROM collections WHERE deleted=? AND (name LIKE ? OR prompt LIKE ?)", (int(deleted), f"%{search[:100]}%", f"%{search[:100]}%"), True)["n"]
     return {"items": rows, "total": total}
 
 
 class CollectionInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+
+
+@app.delete("/api/collections/{cid}")
+def delete_collection(cid: str, session=Depends(require_user)):
+    if not write("UPDATE collections SET deleted=1 WHERE id=?", (cid,)):
+        raise HTTPException(404, "列表不存在")
+    return {"ok": True}
+
+
+@app.post("/api/collections/{cid}/restore")
+def restore_collection(cid: str, session=Depends(require_user)):
+    if not write("UPDATE collections SET deleted=0 WHERE id=?", (cid,)):
+        raise HTTPException(404, "列表不存在")
+    return {"ok": True}
 
 
 @app.patch("/api/collections/{cid}")
@@ -878,7 +954,7 @@ async def retry_job(jid: str, session=Depends(require_user)):
         raise HTTPException(404, "任务不存在")
     if j["status"] not in ("failed", "cancelled"):
         raise HTTPException(409, "只有失败或取消的任务可以重试；再次抽卡请使用重新生成")
-    write("UPDATE jobs SET status='queued',attempt=0,error='',started=NULL,finished=NULL WHERE id=?", (jid,))
+    write("UPDATE jobs SET status='queued',attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0 WHERE id=?", (jid,))
     WAKE.set()
     return {"ok": True}
 
@@ -919,7 +995,15 @@ def job_cancelled(jid):
 def make_instruction(j, directory):
     opts = json.loads(j["options"])
     template = opts.get("call_prompt", DEFAULT_CALL_PROMPT)
-    values = {"ratio": opts["ratio"], "transparent": str(opts["transparent"]), "references": ", ".join(f"reference-{i + 1}.png" for i, _ in enumerate(json.loads(j["refs"]))) or "none"}
+    image_requirements = opts.get("image_requirements", IMAGE_REQUIREMENTS)
+    if image_requirements not in template:
+        template = image_requirements + "\n" + template
+    template = "Progress reporting: Immediately before invoking the image-generation tool, send one separate commentary message containing exactly [STUDIO_STAGE:image_generation]. Only after that tool returns, send one separate commentary message containing exactly [STUDIO_STAGE:receiving]. These are UI stage reports, not tool output or a claim of success. Never send a stage marker before its corresponding transition.\n" + template
+    size = opts.get("size", "auto")
+    resolution = "automatic native resolution" if size == "auto" else f"{size} pixels on the long edge, preserving the requested aspect ratio; use native generation, never shell resizing or upscaling"
+    if "{size}" not in template:
+        template = "Requested image size: {size}. If the tool cannot honor this resolution, report the actual native resolution.\n" + template
+    values = {"ratio": opts["ratio"], "size": resolution, "transparent": str(opts["transparent"]), "references": ", ".join(f"reference-{i + 1}.png" for i, _ in enumerate(json.loads(j["refs"]))) or "none"}
     for key, value in values.items():
         template = template.replace("{" + key + "}", value)
     return template.replace("{prompt}", j["prompt"])
@@ -942,6 +1026,7 @@ def find_generated_image(jid, directory):
 
 
 def record_generated_image(jid, source):
+    set_job_stage(jid, "receiving")
     result, _ = store_image(source.read_bytes(), f"生成作品-{jid[:8]}.png", "generated", jid)
     write("UPDATE jobs SET status='succeeded',outputs=?,finished=?,error='' WHERE id=? AND status!='cancelled'", (json.dumps([result["id"]]), now(), jid))
     write("UPDATE attempts SET status='succeeded',finished=?,error='' WHERE job_id=? AND number=(SELECT attempt FROM jobs WHERE id=?) AND status IN ('running','failed')", (now(), jid, jid))
@@ -962,7 +1047,7 @@ async def run_job(jid):
                 return
             output = directory / "output.png"
             output.unlink(missing_ok=True)
-            write("UPDATE jobs SET status='running',attempt=?,error='' WHERE id=? AND status!='cancelled'", (attempt, jid))
+            write("UPDATE jobs SET status='running',attempt=?,error='',stage='sending',stage_source='server',stage_updated=? WHERE id=? AND status!='cancelled'", (attempt, now(), jid))
             write("INSERT INTO attempts(job_id,number,status,started) VALUES (?,?,'running',?)", (jid, attempt, now()))
             args = [CODEX_BIN, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--sandbox", "workspace-write", "-C", str(directory), "-m", model, "-c", f'model_reasoning_effort="{effort}"', "-c", 'cli_auth_credentials_store="file"', "--enable", "image_generation"]
             for index, aid in enumerate(json.loads(j["refs"])):
@@ -992,10 +1077,12 @@ async def run_job(jid):
                             log.flush()
                             try:
                                 event = json.loads(text)
+                                transition = stage_from_event(event)
+                                if transition: set_job_stage(jid, *transition)
                                 if event.get("type") == "thread.started":
                                     write("UPDATE jobs SET thread_id=? WHERE id=?", (event.get("thread_id", ""), jid))
                                 item = event.get("item", {})
-                                if item.get("type") == "agent_message":
+                                if item.get("type") == "agent_message" and not re.fullmatch(r"\[STUDIO_STAGE:[a-z_]+\]",item.get("text", "").strip()):
                                     final_text = item.get("text", "")[-6000:]
                                 if event.get("type") in ("error", "turn.failed"):
                                     error = str(event.get("message") or event.get("error") or text)[-2000:]
@@ -1051,6 +1138,19 @@ async def run_job(jid):
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
+
+
+@app.api_route("/sw.js", methods=["GET", "HEAD"])
+def service_worker():
+    return FileResponse(ROOT / "static" / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.api_route("/downloads/image-studio.apk", methods=["GET", "HEAD"])
+def android_download():
+    package = ROOT / "downloads" / "image-studio.apk"
+    if not package.is_file():
+        raise HTTPException(404, "Android 安装包尚未部署")
+    return FileResponse(package, media_type="application/vnd.android.package-archive", filename="image-studio.apk", headers={"Cache-Control": "no-cache"})
 
 
 @app.api_route("/", methods=["GET", "HEAD"])

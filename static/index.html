@@ -2,14 +2,22 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <meta name="theme-color" content="#faf9f6">
   <meta name="description" content="私人图片工作台：用干净上下文生成，管理提示词、参考图与作品。">
   <title>Image Studio</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Image Studio">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/compact.css">
+  <link rel="stylesheet" href="/static/mobile.css">
+  <script src="/static/dom.js" defer></script>
   <script src="/static/app.js" defer></script>
+  <script src="/static/install.js" defer></script>
 </head>
 <body>
   <div id="app"><div class="boot"><span class="spinner"></span>正在打开工作台</div></div>

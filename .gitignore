@@ -15,3 +15,14 @@ _finish_ui.py
 _activate_upgrade.py
 studio-*.png
 deploy/image.arcol.site.conf
+_mobile_upgrade.py
+_mobile_options.py
+_inspect_events.py
+_progress_ui.py
+android/build/
+android/signing/
+downloads/
+.build-cache/
+*.jks
+*.keystore
+node_modules/

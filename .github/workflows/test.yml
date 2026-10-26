@@ -23,6 +23,8 @@ jobs:
       - name: 后端集成测试（不调用真实模型）
         run: python -m unittest discover -s tests -v
       - name: 前端语法
-        run: node --check static/app.js
+        run: for file in static/*.js; do node --check "$file"; done
+      - name: 缩略图稳定性回归
+        run: npm ci --ignore-scripts && npm test
       - name: Python 编译
         run: python -m py_compile app.py deploy/*.py tests/test_app.py

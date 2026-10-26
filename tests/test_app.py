@@ -102,7 +102,9 @@ elif 'exec' in sys.argv:
         self.assertNotEqual(jobs[0]["thread_id"],jobs[1]["thread_id"])
         self.assertEqual(jobs[0]["refs"],[refs[0]["id"]])
         self.assertEqual(len(jobs[0]["outputs"]),1)
-        self.assertEqual(self.client.delete("/api/assets/"+refs[0]["id"],headers=self.headers).status_code,409)
+        self.assertEqual(self.client.delete("/api/assets/"+refs[0]["id"],headers=self.headers).status_code,200)
+        self.assertEqual(self.client.get('/media/'+refs[0]['id']).status_code,200)
+        self.assertEqual(self.post('/api/assets/'+refs[0]['id']+'/restore').status_code,200)
         prompts=self.client.get("/api/prompts").json()
         self.assertEqual(sum(p["text"]=="A test image contract" for p in prompts),0)
         self.assertEqual(self.post("/api/jobs",{"prompt":"x","refs":["missing"]}).status_code,400)
@@ -205,7 +207,9 @@ elif 'exec' in sys.argv:
         self.assertEqual(preset["references"][0]["id"], asset["id"])
         listed = next(p for p in self.client.get("/api/prompts").json() if p["id"]==preset["id"])
         self.assertEqual(listed["options"]["ratio"],"16:9")
-        self.assertEqual(self.client.delete("/api/assets/"+asset["id"],headers=self.headers).status_code,409)
+        self.assertEqual(self.client.delete("/api/assets/"+asset["id"],headers=self.headers).status_code,200)
+        self.assertEqual(self.client.get('/media/'+asset['id']).status_code,200)
+        self.assertEqual(self.post('/api/assets/'+asset['id']+'/restore').status_code,200)
 
     def test_12_collections_use_template_identity_and_keep_custom_names(self):
         self.client.patch("/api/settings",json={"paused":True},headers=self.headers)
@@ -302,6 +306,102 @@ elif 'exec' in sys.argv:
         self.assertEqual(len(changed.json()['refs']),1)
         for aid in template['refs']:
             self.assertEqual(self.client.get('/media/'+aid).status_code,200)
+
+
+    def test_18_polish_size_and_template_snapshots(self):
+        self.client.patch('/api/settings',json={'paused':True},headers=self.headers)
+        ids=[]
+        try:
+            original="Keep the user's brief verbatim: {prompt}. Ratio {ratio}."
+            enhanced='Act as an art director and design composition, light and style. Brief: {prompt}. Size: {size}.'
+            r=self.client.patch('/api/settings',json={'paused':True,'call_prompt':original,'polish_prompt':enhanced},headers=self.headers)
+            self.assertEqual(r.status_code,200,r.text)
+            saved=self.post('/api/templates',{'text':'A moonlit scene','options':{'polish':True,'size':'2048'}}).json()
+            self.assertEqual(saved['options'],{'polish':True,'size':'2048'})
+            for polish in (False,True):
+                result=self.post('/api/jobs',{'prompt':'Keep literal {size} and {ratio}','polish':polish,'size':'2048'})
+                self.assertEqual(result.status_code,200,result.text)
+                jid=result.json()['ids'][0];ids.append(jid)
+                job=self.client.get('/api/jobs/'+jid).json()
+                self.assertEqual(job['options']['call_prompt'],enhanced if polish else original)
+                self.assertEqual(job['options']['polish'],polish)
+                raw=self.appmod.query('SELECT * FROM jobs WHERE id=?',(jid,),True)
+                instruction=self.appmod.make_instruction(raw,self.appmod.DATA/'jobs'/jid)
+                self.assertIn('2048 pixels on the long edge',instruction)
+                self.assertIn('Keep literal {size} and {ratio}',instruction)
+            self.client.patch('/api/settings',json={'paused':True,'polish_prompt':'A changed art director instruction: {prompt}'},headers=self.headers)
+            self.assertEqual(self.client.get('/api/jobs/'+ids[1]).json()['options']['call_prompt'],enhanced)
+            self.assertEqual(self.post('/api/jobs',{'prompt':'x','size':'99999'}).status_code,422)
+            self.assertIn('GPT-Image-2.5 Sunburst',instruction)
+            self.assertIn('requested reasoning effort max',instruction)
+            self.assertIn('gpt-image-2.5-sunburst',job['options']['image_requirements'])
+            self.assertEqual(self.client.patch('/api/settings',json={'polish_prompt':'No creative variable included here'},headers=self.headers).status_code,400)
+        finally:
+            for jid in ids:self.post('/api/jobs/'+jid+'/cancel')
+            self.client.patch('/api/settings',json={'paused':False,'call_prompt':self.appmod.DEFAULT_CALL_PROMPT,'polish_prompt':self.appmod.DEFAULT_POLISH_PROMPT},headers=self.headers)
+
+    def test_19_deleted_images_and_collections_are_recoverable(self):
+        job=next(j for j in self.client.get('/api/jobs').json()['items'] if j['outputs'])
+        asset=job['outputs'][0];cid=job['collection_id']
+        job_count=self.client.get('/api/jobs?collection='+cid).json()['total']
+        self.assertEqual(self.client.delete('/api/assets/'+asset['id'],headers=self.headers).status_code,200)
+        self.assertNotIn(asset['id'],[a['id'] for a in self.client.get('/api/assets?kind=all').json()['items']])
+        self.assertIn(asset['id'],[a['id'] for a in self.client.get('/api/assets?kind=all&deleted=true').json()['items']])
+        self.assertEqual(self.client.get(asset['url']).status_code,200)
+        self.assertEqual(self.post('/api/assets/'+asset['id']+'/restore').status_code,200)
+        self.assertIn(asset['id'],[a['id'] for a in self.client.get('/api/jobs/'+job['id']).json()['outputs']])
+        self.assertEqual(self.client.delete('/api/collections/'+cid,headers=self.headers).status_code,200)
+        self.assertNotIn(cid,[g['id'] for g in self.client.get('/api/collections').json()['items']])
+        self.assertIn(cid,[g['id'] for g in self.client.get('/api/collections?deleted=true').json()['items']])
+        self.assertEqual(self.client.get('/api/jobs?collection='+cid).json()['total'],job_count)
+        self.assertEqual(self.post('/api/collections/'+cid+'/restore').status_code,200)
+        self.assertIn(cid,[g['id'] for g in self.client.get('/api/collections').json()['items']])
+
+    def test_20_installable_app_files_and_private_cache_boundaries(self):
+        anonymous=TestClient(self.appmod.app,base_url='https://image.example.com')
+        manifest=anonymous.get('/static/manifest.webmanifest')
+        self.assertEqual(manifest.status_code,200)
+        self.assertEqual(manifest.json()['display'],'standalone')
+        self.assertEqual(manifest.json()['orientation'],'portrait-primary')
+        for icon in manifest.json()['icons']:
+            self.assertEqual(anonymous.get(icon['src']).status_code,200)
+        worker=anonymous.get('/sw.js')
+        self.assertEqual(worker.headers['service-worker-allowed'],'/')
+        self.assertEqual(worker.headers['cache-control'],'no-cache')
+        self.assertNotIn('/api/',worker.text)
+        self.assertNotIn('/media/',worker.text)
+        self.assertEqual(anonymous.get('/api/assets?deleted=true').status_code,401)
+        self.assertEqual(anonymous.post('/api/assets/unknown/restore').status_code,401)
+        anonymous.close()
+
+
+    def test_21_progress_uses_cli_events_and_explicit_worker_reports(self):
+        stage=self.appmod.stage_from_event
+        self.assertEqual(stage({'type':'thread.started'}),('thinking','cli'))
+        self.assertEqual(stage({'type':'item.completed','item':{'type':'agent_message','text':'[STUDIO_STAGE:image_generation]'}}),('generating','worker'))
+        self.assertEqual(stage({'type':'item.completed','item':{'type':'agent_message','text':'[STUDIO_STAGE:receiving]'}}),('receiving','worker'))
+        self.assertEqual(stage({'type':'turn.completed'}),('receiving','cli'))
+        self.assertIsNone(stage({'type':'item.completed','item':{'type':'agent_message','text':'I might generate something later'}}))
+        self.assertIsNone(stage({'type':'item.started','item':{'type':'mcp_tool_call','tool':'unrelated_tool'}}))
+        self.assertEqual(stage({'type':'item.started','item':{'type':'image_generation'}}),('generating','cli'))
+        self.assertEqual(stage({'type':'item.completed','item':{'type':'image_generation'}}),('receiving','cli'))
+        p=self.appmod.job_progress({'status':'running','stage':'generating','stage_source':'worker','stage_updated':100})
+        self.assertEqual((p['label'],p['step'],p['indeterminate']),('等待生图返回',3,True))
+        self.assertNotIn('percent',p)
+        self.assertEqual(self.appmod.job_progress({'status':'succeeded'})['indeterminate'],False)
+        self.client.patch('/api/settings',json={'paused':True},headers=self.headers)
+        jid=self.post('/api/jobs',{'prompt':'Progress regression'}).json()['ids'][0]
+        try:
+            self.appmod.write("UPDATE jobs SET status='running',stage='sending' WHERE id=?",(jid,))
+            self.appmod.set_job_stage(jid,'generating','worker')
+            self.appmod.set_job_stage(jid,'thinking','cli')
+            self.assertEqual(self.client.get('/api/jobs/'+jid).json()['progress']['stage'],'generating')
+            self.post('/api/jobs/'+jid+'/cancel')
+            self.appmod.set_job_stage(jid,'receiving')
+            self.assertEqual(self.client.get('/api/jobs/'+jid).json()['progress']['stage'],'cancelled')
+        finally:
+            self.post('/api/jobs/'+jid+'/cancel')
+            self.client.patch('/api/settings',json={'paused':False},headers=self.headers)
 
 
 if __name__=="__main__":

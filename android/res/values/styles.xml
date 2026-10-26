@@ -1,0 +1,13 @@
+<resources>
+  <style name="StudioTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+    <item name="android:fontFamily">sans</item>
+    <item name="android:windowLightStatusBar">true</item>
+    <item name="android:windowLightNavigationBar">true</item>
+    <item name="android:statusBarColor">#FAF9F6</item>
+    <item name="android:navigationBarColor">#FAF9F6</item>
+    <item name="android:windowBackground">#FAF9F6</item>
+    <item name="android:colorAccent">#5D7350</item>
+    <item name="android:windowActionModeOverlay">true</item>
+  </style>
+  <color name="icon_background">#20221F</color>
+</resources>
