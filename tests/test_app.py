@@ -19,12 +19,13 @@ class StudioTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         os.environ["STUDIO_DATA"] = cls.temp.name
         os.environ["STUDIO_SETUP_TOKEN"] = "test-setup-secret"
+        os.environ["STUDIO_TEST_EVENTS"] = str(Path(cls.temp.name)/'cli-events.jsonl')
         os.environ.pop("STUDIO_SETUP_TOKEN_FILE", None)
         import app
         cls.appmod = importlib.reload(app)
         fake = Path(cls.temp.name) / "fake-codex"
         fake.write_text(f"#!{sys.executable}\n" + '''
-import sys, time, json, os, re
+import sys, time, json, os, re, signal, atexit
 from pathlib import Path
 from PIL import Image
 if '--version' in sys.argv:
@@ -34,18 +35,27 @@ elif 'login' in sys.argv:
 elif 'exec' in sys.argv:
     directory = Path(sys.argv[sys.argv.index('-C')+1])
     prompt = sys.stdin.read()
+    metadata=json.loads((directory/'request.json').read_text())
+    def event(action):
+        if path:=os.environ.get('STUDIO_TEST_EVENTS'):
+            record={'event':action,'time':time.time(),'pid':os.getpid(),'job':metadata.get('job_id',directory.name),'kind':metadata.get('kind','image'),'call':directory.name}
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+            os.write(fd,json.dumps(record).encode()+bytes([10]));os.close(fd)
+    atexit.register(event,'end')
+    signal.signal(signal.SIGTERM,lambda *_:sys.exit(143))
+    event('start')
     print(json.dumps({'type':'thread.started','thread_id':'test-'+directory.name}), flush=True)
     if 'STUDIO_STITCH_REVIEW' in prompt:
         print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps({'pass':True,'issues':[]})}}),flush=True)
         sys.exit(0)
-    if 'STUDIO_TILE_REFINEMENT' in prompt:
+    if metadata.get('kind')=='redraw':
         slow_marker=directory.parent.parent/'.test-slow-once'
         slow='TEST_SLOW' in prompt and not slow_marker.exists()
         if slow:slow_marker.touch()
-        time.sleep(30 if slow else 0.2)
+        time.sleep(30 if slow or 'TEST_PARALLEL_SLOW' in prompt else 2 if 'TEST_CONCURRENCY' in prompt else 0.2)
         reference=Path(sys.argv[sys.argv.index('-i')+1])
-        size=re.search(r'([0-9]+)x([0-9]+) pixels',prompt)
-        with Image.open(reference) as image:image.resize((int(size[1]),int(size[2])),Image.Resampling.BICUBIC).save(directory/'output.png')
+        size=metadata['expected_size']
+        with Image.open(reference) as image:image.resize(tuple(size),Image.Resampling.BICUBIC).save(directory/'output.png')
         print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'Synthetic test-only refinement fixture'}}),flush=True)
         sys.exit(0)
     if 'TEST_PERMANENT_FAILURE' in prompt:
@@ -55,7 +65,7 @@ elif 'exec' in sys.argv:
         (directory/'retried').touch()
         print(json.dumps({'type':'error','message':'temporary upstream connection reset'}), flush=True)
         sys.exit(1)
-    time.sleep(30 if 'TEST_SLOW' in prompt else 0.5)
+    time.sleep(30 if 'TEST_SLOW' in prompt else 3 if 'TEST_CONCURRENCY' in prompt else 0.5)
     Image.new('RGB',(96,96),(len(prompt)%255,20,30)).save(directory/'output.png')
     print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'Test image contract completed'}}),flush=True)
 ''', encoding="utf-8")
@@ -84,6 +94,20 @@ elif 'exec' in sys.argv:
                 return job
             time.sleep(.1)
         self.fail("Job did not reach expected state: "+str(job))
+
+    def cli_events(self,jobs):
+        path=Path(self.temp.name)/'cli-events.jsonl'
+        records=[json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        return [r for r in records if r['job'] in jobs]
+
+    def peak_calls(self,records,kind=None):
+        active=set();peak=0
+        for record in records:
+            if kind and record['kind']!=kind:continue
+            if record['event']=='start':active.add(record['pid']);peak=max(peak,len(active))
+            else:active.discard(record['pid'])
+        self.assertFalse(active,'CLI processes did not all exit')
+        return peak
 
     def test_01_auth_boundaries(self):
         anonymous = TestClient(self.appmod.app, base_url="https://image.example.com")
@@ -468,6 +492,78 @@ elif 'exec' in sys.argv:
         resumed=self.wait_job(jid,timeout=75)
         self.assertEqual(resumed['status'],'succeeded',resumed['error'])
         self.assertEqual(base.stat().st_mtime_ns,stamp)
+
+    def test_24_four_redraw_children_share_four_slots_and_use_verbatim_calls(self):
+        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        legacy='STUDIO_TILE_REFINEMENT\n完整流程由工作台执行：SIFT、Graph Cut；后端已经预装依赖。{prompt}'
+        self.client.patch('/api/settings',json={'paused':True,'concurrency':4,'max_attempts':1,'stitch_prompt':legacy},headers=self.headers)
+        jid=None
+        try:
+            jid=self.post('/api/jobs',{'prompt':'TEST_CONCURRENCY four children','source_asset_id':asset['id'],'stitch':4,'polish':True}).json()['ids'][0]
+            self.client.patch('/api/settings',json={'paused':False,'concurrency':4,'max_attempts':1},headers=self.headers)
+            job=self.wait_job(jid,timeout=75)
+            self.assertEqual(job['status'],'succeeded',job['error'])
+            events=self.cli_events({jid})
+            self.assertEqual(self.peak_calls(events,'redraw'),4)
+            self.assertLessEqual(self.peak_calls(events),4)
+            requests=[json.loads(p.read_text()) for p in (self.appmod.DATA/'jobs'/jid/'stitch'/'calls').glob('*/request.json')]
+            redraw=[r for r in requests if r['kind']=='redraw']
+            self.assertEqual(len(redraw),4)
+            for request in redraw:
+                text=request['worker_instruction']
+                self.assertIn('Do not rewrite it or add stylistic details',text)
+                self.assertNotIn('Act as an art director',text)
+                for forbidden in ('SIFT','Graph Cut','NumPy','拉普拉斯','完整流程','细化后的'):
+                    self.assertNotIn(forbidden,text)
+        finally:
+            if jid and self.client.get('/api/jobs/'+jid).json()['status']=='running':self.post('/api/jobs/'+jid+'/cancel')
+            self.client.patch('/api/settings',json={'paused':False,'concurrency':2,'max_attempts':3,'stitch_prompt':self.appmod.DEFAULT_STITCH_PROMPT},headers=self.headers)
+
+    def test_25_normal_generation_and_redraw_children_obey_one_global_limit(self):
+        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        self.client.patch('/api/settings',json={'paused':True,'concurrency':2,'max_attempts':1},headers=self.headers)
+        ids=[]
+        try:
+            ids+=self.post('/api/jobs',{'prompt':'TEST_CONCURRENCY mixed tiles','source_asset_id':asset['id'],'stitch':4}).json()['ids']
+            ids+=self.post('/api/jobs',{'prompt':'TEST_CONCURRENCY ordinary image'}).json()['ids']
+            self.client.patch('/api/settings',json={'paused':False,'concurrency':2,'max_attempts':1},headers=self.headers)
+            for jid in ids:
+                job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
+            events=self.cli_events(set(ids));self.assertEqual(self.peak_calls(events),2)
+            self.assertTrue(any(r['kind']=='redraw' for r in events))
+            self.assertTrue(any(r['kind']=='image' for r in events))
+        finally:
+            for jid in ids:
+                if self.client.get('/api/jobs/'+jid).json()['status']=='running':self.post('/api/jobs/'+jid+'/cancel')
+            self.client.patch('/api/settings',json={'paused':False,'concurrency':2,'max_attempts':3},headers=self.headers)
+
+    def test_26_cancel_stops_all_four_children_and_releases_their_permits(self):
+        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        self.client.patch('/api/settings',json={'paused':False,'concurrency':4,'max_attempts':1},headers=self.headers)
+        jid=None
+        try:
+            jid=self.post('/api/jobs',{'prompt':'TEST_PARALLEL_SLOW cancellation','source_asset_id':asset['id'],'stitch':4}).json()['ids'][0]
+            deadline=time.time()+20
+            while time.time()<deadline:
+                started=[r for r in self.cli_events({jid}) if r['event']=='start' and r['kind']=='redraw']
+                if len(started)==4:break
+                time.sleep(.1)
+            self.assertEqual(len(started),4)
+            current=self.client.get('/api/jobs/'+jid).json()
+            self.assertEqual(current['progress']['active'],4)
+            self.assertEqual(self.post('/api/jobs/'+jid+'/cancel').status_code,200)
+            self.assertEqual(self.client.get('/api/jobs/'+jid).json()['status'],'cancelled')
+            self.assertEqual(self.appmod.job_processes(jid),[])
+            for record in started:
+                with self.assertRaises(ProcessLookupError):os.kill(record['pid'],0)
+            self.assertEqual(self.peak_calls(self.cli_events({jid}),'redraw'),4)
+            snapshot=self.client.get('/api/state').json()['calls']
+            self.assertEqual((snapshot['active'],snapshot['waiting']),(0,0))
+            probe=self.post('/api/jobs',{'prompt':'Capacity is reusable after cancelling all children'}).json()['ids'][0]
+            self.assertEqual(self.wait_job(probe)['status'],'succeeded')
+        finally:
+            if jid and self.client.get('/api/jobs/'+jid).json()['status']=='running':self.post('/api/jobs/'+jid+'/cancel')
+            self.client.patch('/api/settings',json={'paused':False,'concurrency':2,'max_attempts':3},headers=self.headers)
 
 
 if __name__=="__main__":

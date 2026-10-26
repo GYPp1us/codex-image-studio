@@ -23,6 +23,7 @@ _stitch_ui.py
 _stitch_finish.py
 _upscale_probe.py
 _stitch_diagnostics.py
+_shared_concurrency.py
 android/build/
 android/signing/
 downloads/

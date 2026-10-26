@@ -28,7 +28,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
-from stitch_workflow import DEFAULT_STITCH_PROMPT
+from stitch_workflow import DEFAULT_STITCH_PROMPT, normalize_redraw_prompt
+from cli_scheduler import CallPool
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -63,6 +64,9 @@ MAX_UPLOAD = 20 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = 64_000_000
 SESSION_AGE = 7 * 86400
 PROCESSES: dict[str, asyncio.subprocess.Process] = {}
+STOPPING: dict[int, asyncio.Task] = {}
+JOB_TASKS: dict[str, asyncio.Task] = {}
+CALL_POOL: CallPool | None = None
 LOGIN: dict = {"running": False, "output": "", "url": "", "code": "", "mode": "browser"}
 BACKGROUND: set[asyncio.Task] = set()
 WAKE = asyncio.Event()
@@ -169,6 +173,10 @@ def initialize():
                 c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=MAX(collections.updated,excluded.updated),created=MIN(collections.created,excluded.created)", (cid, name, job['prompt'], job['created'], job['created']))
         c.execute("DELETE FROM collections WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.collection_id=collections.id)")
         c.execute("DELETE FROM sessions WHERE expires<?", (now(),))
+        saved_redraw=c.execute("SELECT value FROM settings WHERE key='stitch_prompt'").fetchone()
+        if saved_redraw:
+            previous=json.loads(saved_redraw[0]);normalized=normalize_redraw_prompt(previous)
+            if normalized!=previous:c.execute("UPDATE settings SET value=? WHERE key='stitch_prompt'",(json.dumps(normalized),))
         c.execute("UPDATE jobs SET status='failed',error='服务重启中断了这次生成，请重试。',finished=? WHERE status IN ('running','retrying')", (now(),))
         c.execute("UPDATE attempts SET status='interrupted',finished=? WHERE status='running'", (now(),))
     config = CODEX_HOME / "config.toml"
@@ -230,7 +238,7 @@ async def command(*args, timeout=15, max_chars=16000):
         return 124, "命令超时，请稍后重试"
 
 
-async def stop_process(p):
+async def _stop_process(p):
     if p.returncode is not None:
         return
     try:
@@ -248,6 +256,48 @@ async def stop_process(p):
         await p.wait()
 
 
+async def stop_process(p):
+    # Cancellation, shutdown and worker cleanup can target the same process together.
+    # Send one termination sequence and retain its task until the process has exited.
+    task=STOPPING.get(p.pid)
+    if task is None:
+        task=asyncio.create_task(_stop_process(p));STOPPING[p.pid]=task
+        def finished(done):
+            if STOPPING.get(p.pid) is done:STOPPING.pop(p.pid,None)
+        task.add_done_callback(finished)
+    await asyncio.shield(task)
+
+
+async def retire_process(key):
+    process=PROCESSES.get(key)
+    if process is None:return
+    cleanup=asyncio.create_task(stop_process(process));interrupted=False
+    try:
+        while not cleanup.done():
+            try:await asyncio.shield(cleanup)
+            except asyncio.CancelledError:interrupted=True
+        await cleanup
+    finally:
+        if PROCESSES.get(key) is process:PROCESSES.pop(key,None)
+    if interrupted:raise asyncio.CancelledError()
+
+
+def job_processes(jid):
+    return [p for key,p in list(PROCESSES.items()) if key==jid or key.startswith(jid+':')]
+
+
+@asynccontextmanager
+async def cli_slot(jid, label):
+    if CALL_POOL is None:raise RuntimeError('CLI 调度器尚未启动')
+    async with CALL_POOL.slot(jid,label) as token:
+        key=f'{jid}:cli:{token}'
+        try:
+            if job_cancelled(jid):raise asyncio.CancelledError()
+            yield key
+        finally:
+            await retire_process(key)
+
+
 def spawn(coro):
     task = asyncio.create_task(coro)
     BACKGROUND.add(task)
@@ -257,14 +307,19 @@ def spawn(coro):
 
 @asynccontextmanager
 async def lifespan(app):
+    global CALL_POOL
     initialize()
+    CALL_POOL=CallPool(lambda:setting('concurrency',2),lambda:setting('paused',False))
+    JOB_TASKS.clear()
     task = spawn(scheduler())
     yield
     task.cancel()
+    CALL_POOL.close()
     for bg in list(BACKGROUND):
         bg.cancel()
     await asyncio.gather(*(stop_process(p) for p in list(PROCESSES.values())), return_exceptions=True)
     await asyncio.gather(*list(BACKGROUND), return_exceptions=True)
+    JOB_TASKS.clear();CALL_POOL=None
 
 
 app = FastAPI(title="Image Studio", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -366,7 +421,7 @@ def change_password(body: dict, request: Request, session=Depends(require_user))
 
 @app.get("/api/state")
 def state(session=Depends(require_user)):
-    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "counts": query("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"]}
+    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "calls":CALL_POOL.snapshot() if CALL_POOL else {"active":0,"waiting":0}, "counts": query("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"]}
 
 
 @app.get("/api/account")
@@ -461,8 +516,10 @@ def settings(body: Settings, session=Depends(require_user)):
         if template is not None and "{prompt}" not in template:
             raise HTTPException(400, "调用提示词必须包含 {prompt} 变量")
     for key, value in body.model_dump(exclude_none=True).items():
+        if key=='stitch_prompt':value=normalize_redraw_prompt(value)
         set_setting(key, value)
     WAKE.set()
+    if CALL_POOL:CALL_POOL.notify()
     return {"ok": True}
 
 
@@ -811,6 +868,8 @@ def job_progress(job):
     if status != "running":
         return {"stage": status, "label": terminal.get(status, status), "step": 4 if status == "succeeded" else 0, "total": 4, "indeterminate": False, "source": "server", "updated": job.get("stage_updated") or job.get("created",0)}
     stage = job.get("stage") or "sending"
+    if stage=='call_wait':
+        return {"stage":stage,"label":"调度已暂停" if setting('paused',False) else "等待并发名额","step":0,"total":4,"indeterminate":False,"source":"server","updated":job.get('stage_updated',0)}
     if stage not in STAGES: stage = "sending"
     return {"stage": stage, "label": STAGES[stage], "step": list(STAGES).index(stage)+1, "total": 4, "indeterminate": True, "source": job.get("stage_source") or "server", "updated": job.get("stage_updated") or job.get("started",0)}
 
@@ -869,7 +928,7 @@ def create_jobs(body):
     if body.template_id and not template:
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
-    options.update(stitch=body.stitch,source_asset_id=body.source_asset_id,stitch_prompt=setting('stitch_prompt',DEFAULT_STITCH_PROMPT) if body.stitch else '')
+    options.update(stitch=body.stitch,source_asset_id=body.source_asset_id,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch else '')
     batch, ids = uid(), []
     collection_id = 'tpl-' + template['id'] if template else 'request-' + batch
     with db() as c:
@@ -1024,16 +1083,21 @@ async def cancel_job(jid: str, session=Depends(require_user)):
     changed = write("UPDATE jobs SET status='cancelled',finished=?,error='已手动取消' WHERE id=? AND status IN ('queued','running','retrying')", (now(), jid))
     if not changed:
         raise HTTPException(409, "任务已经结束")
-    if p := PROCESSES.get(jid):
-        await stop_process(p)
+    if CALL_POOL:CALL_POOL.cancel_owner(jid)
+    task=JOB_TASKS.get(jid)
+    if task and not task.done():task.cancel()
+    await asyncio.gather(*(stop_process(p) for p in job_processes(jid)),return_exceptions=True)
+    if task:await asyncio.gather(task,return_exceptions=True)
     return {"ok": True}
 
 
 async def scheduler():
-    running: dict[str, asyncio.Task] = {}
+    running=JOB_TASKS
     try:
         while True:
-            running = {jid: task for jid, task in running.items() if not task.done()}
+            for jid,task in list(running.items()):
+                if task.done():running.pop(jid,None)
+            if CALL_POOL:CALL_POOL.refresh()
             if not setting("paused", False):
                 slots = max(0, setting("concurrency", 2) - len(running))
                 for j in query("SELECT * FROM jobs WHERE status='queued' ORDER BY created LIMIT ?", (slots,)):
@@ -1122,38 +1186,41 @@ async def run_job(jid):
                     args += ["-i", str(ref)]
             args += ["-"]
             instruction = make_instruction(j, directory)
-            (directory / "request.json").write_text(json.dumps({"model": model, "effort": effort, "prompt": j["prompt"], "refs": json.loads(j["refs"]), "options": options, "worker_instruction": instruction}, ensure_ascii=False, indent=2), encoding="utf-8")
+            (directory / "request.json").write_text(json.dumps({"job_id":jid,"kind":"image","model": model, "effort": effort, "prompt": j["prompt"], "refs": json.loads(j["refs"]), "options": options, "worker_instruction": instruction}, ensure_ascii=False, indent=2), encoding="utf-8")
             error = ""
             final_text = ""
             try:
-                p = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=codex_env(), start_new_session=os.name != "nt", limit=16 * 1024 * 1024)
-                PROCESSES[jid] = p
-                p.stdin.write(instruction.encode())
-                await p.stdin.drain()
-                p.stdin.close()
-                async def consume():
-                    nonlocal final_text, error
-                    with (directory / "events.jsonl").open("a", encoding="utf-8") as log:
-                        log.write(json.dumps({"studio_attempt": attempt, "time": now()}) + "\n")
-                        while line := await p.stdout.readline():
-                            text = line.decode(errors="replace")
-                            log.write(text)
-                            log.flush()
-                            try:
-                                event = json.loads(text)
-                                transition = stage_from_event(event)
-                                if transition: set_job_stage(jid, *transition)
-                                if event.get("type") == "thread.started":
-                                    write("UPDATE jobs SET thread_id=? WHERE id=?", (event.get("thread_id", ""), jid))
-                                item = event.get("item", {})
-                                if item.get("type") == "agent_message" and not re.fullmatch(r"\[STUDIO_STAGE:[a-z_]+\]",item.get("text", "").strip()):
-                                    final_text = item.get("text", "")[-6000:]
-                                if event.get("type") in ("error", "turn.failed"):
-                                    error = str(event.get("message") or event.get("error") or text)[-2000:]
-                            except (ValueError, AttributeError):
-                                pass
-                        await p.wait()
-                await asyncio.wait_for(consume(), timeout=900)
+                write("UPDATE jobs SET stage='call_wait',stage_updated=? WHERE id=? AND status='running'", (now(),jid))
+                async with cli_slot(jid,"普通生图") as process_key:
+                    set_job_stage(jid,"sending")
+                    p = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=codex_env(), start_new_session=os.name != "nt", limit=16 * 1024 * 1024)
+                    PROCESSES[process_key] = p
+                    p.stdin.write(instruction.encode())
+                    await p.stdin.drain()
+                    p.stdin.close()
+                    async def consume():
+                        nonlocal final_text, error
+                        with (directory / "events.jsonl").open("a", encoding="utf-8") as log:
+                            log.write(json.dumps({"studio_attempt": attempt, "time": now()}) + "\n")
+                            while line := await p.stdout.readline():
+                                text = line.decode(errors="replace")
+                                log.write(text)
+                                log.flush()
+                                try:
+                                    event = json.loads(text)
+                                    transition = stage_from_event(event)
+                                    if transition: set_job_stage(jid, *transition)
+                                    if event.get("type") == "thread.started":
+                                        write("UPDATE jobs SET thread_id=? WHERE id=?", (event.get("thread_id", ""), jid))
+                                    item = event.get("item", {})
+                                    if item.get("type") == "agent_message" and not re.fullmatch(r"\[STUDIO_STAGE:[a-z_]+\]",item.get("text", "").strip()):
+                                        final_text = item.get("text", "")[-6000:]
+                                    if event.get("type") in ("error", "turn.failed"):
+                                        error = str(event.get("message") or event.get("error") or text)[-2000:]
+                                except (ValueError, AttributeError):
+                                    pass
+                            await p.wait()
+                    await asyncio.wait_for(consume(), timeout=900)
                 if job_cancelled(jid):
                     return
                 if p.returncode != 0:
