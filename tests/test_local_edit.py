@@ -18,6 +18,7 @@ class LocalEditTests(unittest.TestCase):
                 self.assertEqual(difference.getbbox(),(0,40,90,125))
                 self.assertEqual(result.getpixel((120,100)),original.getpixel((120,100)))
                 self.assertEqual(result.getpixel((40,80)),(220,40,60,255))
+                self.assertEqual(result.getpixel((0,80)),(220,40,60,255),'A selection touching the image edge must fully replace that edge')
 
     def test_context_and_selection_map_use_the_same_native_coordinates(self):
         with tempfile.TemporaryDirectory() as tmp:

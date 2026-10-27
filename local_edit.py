@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 
 def context_box(size, region):
@@ -41,10 +41,16 @@ def compose(source, generated, region, destination):
         x,y,w,h=(region[k] for k in ('x','y','width','height'))
         patch=patch.crop((x-box[0],y-box[1],x-box[0]+w,y-box[1]+h))
         # Feather inward only. No operation touches any pixel outside the rectangle.
-        mask=Image.new('L',(w,h),255);draw=ImageDraw.Draw(mask)
+        horizontal=Image.new('L',(w,1),255);vertical=Image.new('L',(1,h),255)
+        dx=ImageDraw.Draw(horizontal);dy=ImageDraw.Draw(vertical)
         feather=min(8,max(1,min(w,h)//8))
         for inset in range(feather):
-            draw.rectangle((inset,inset,w-inset-1,h-inset-1),outline=round(255*(inset+1)/(feather+1)))
+            value=round(255*(inset+1)/(feather+1))
+            if x>0:dx.point((inset,0),fill=value)
+            if x+w<original.width:dx.point((w-inset-1,0),fill=value)
+            if y>0:dy.point((0,inset),fill=value)
+            if y+h<original.height:dy.point((0,h-inset-1),fill=value)
+        mask=ImageChops.darker(horizontal.resize((w,h)),vertical.resize((w,h)))
         selected=Image.composite(patch,result.crop((x,y,x+w,y+h)),mask)
         result.paste(selected,(x,y));result.save(destination,'PNG')
     return Path(destination)

@@ -169,6 +169,21 @@ def register_tile(folder,index):
     return metrics
 
 
+def refresh_registered_tile(folder,index,region):
+    """A bounded content edit keeps all pixels outside its ROI and the accepted affine."""
+    folder=Path(folder);plan=json.loads((folder/'plan.json').read_text());tile=plan['tiles'][index]
+    path=folder/'diagnostics'/f'alignment-{index}.json';metrics=json.loads(path.read_text())
+    image=read_bgr(folder/'redraw'/f'{index}.png')
+    if metrics.get('registration_version')!=REGISTRATION_VERSION or [image.shape[1],image.shape[0]]!=metrics['generated_dimensions']:
+        raise StitchError('局部编辑需要当前版本且尺寸不变的已配准补绘块')
+    registered=cv2.warpAffine(image,np.array(metrics['target_matrix']),tuple(tile['size']),flags=cv2.INTER_LANCZOS4,borderMode=cv2.BORDER_REFLECT_101)
+    write_png(folder/'registered'/f'{index}.png',registered)
+    (folder/'corrected'/f'{index}.png').unlink(missing_ok=True)
+    for name in ('candidate.png','inspection.png','overview.png','diagnostics/quality.json','diagnostics/visual-review.json'):(folder/name).unlink(missing_ok=True)
+    metrics.setdefault('bounded_content_edits',[]).append(region)
+    save_json(path,metrics)
+
+
 def color_match(image, reference, mask):
     """Adjust only low spatial frequencies in Lab; AI supplies the high frequencies."""
     lab=cv2.cvtColor(image.astype(np.float32)/255,cv2.COLOR_BGR2LAB)

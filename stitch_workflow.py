@@ -12,7 +12,7 @@ from collections import Counter
 from pathlib import Path
 
 from PIL import Image
-from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json
+from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json, refresh_registered_tile
 
 ENGINE_LOCK = asyncio.Semaphore(1)
 _LEGACY_VERBATIM_PROMPT = """将 reference-1.png 中的局部图重绘为 {target_size} 的高细节图像。reference-2.png 是完整原图，仅供保持风格、光照和景深一致。
@@ -157,6 +157,41 @@ def tile_instruction(options,plan,tile,prompt):
     return template.replace("{prompt}",prompt)
 
 
+async def apply_local_repairs(studio,jid,folder,plan,options,generate):
+    """Consume explicit operator requests using the same rectangular editor and CLI pool."""
+    path=folder/'diagnostics'/'local-repairs.json'
+    if not path.exists():return
+    repairs=json.loads(path.read_text())
+    if not isinstance(repairs,list) or len(repairs)>plan['factor']:raise WorkflowError('局部修复请求格式不正确')
+    from local_edit import prepare as prepare_edit,compose as compose_edit,context_box
+    for repair in repairs:
+        if repair.get('completed'):continue
+        index=repair.get('tile');region=repair.get('region');prompt=repair.get('prompt','')
+        if type(index) is not int or not 0<=index<plan['factor'] or not isinstance(region,dict) or not isinstance(prompt,str) or not prompt.strip():raise WorkflowError('局部修复范围或要求无效')
+        identifier=repair.setdefault('id',studio.uid())
+        if not re.fullmatch('[a-f0-9]{32}',identifier):raise WorkflowError('局部修复请求 ID 无效')
+        save_json(path,repairs)
+        work=folder/'local-repairs'/identifier;work.mkdir(parents=True,exist_ok=True)
+        source=work/'source.png';output=folder/'redraw'/f'{index}.png'
+        if not source.exists():shutil.copyfile(output,source)
+        with Image.open(source) as image:context_box(image.size,region)
+        diagnostic=folder/'diagnostics'/f'alignment-{index}.json'
+        if not diagnostic.exists() or json.loads(diagnostic.read_text()).get('registration_version',0)<REGISTRATION_VERSION:
+            await engine(studio,jid,folder,'register','--tile',index)
+        result=work/'result.png'
+        if not result.exists():
+            brief,refs,_=await asyncio.to_thread(prepare_edit,source,work,region,prompt)
+            call_options={**options,'call_prompt':options.get('redraw_call_prompt',studio.DEFAULT_CALL_PROMPT),'ratio':'auto','size':'auto','polish':False}
+            instruction=studio.make_instruction({'prompt':brief,'refs':json.dumps(['context','tile','selection']),'options':json.dumps(call_options)},folder)
+            done=plan['factor']-sum(not item.get('completed') for item in repairs)
+            generated=await generate(f'local-edit-{index}-{identifier}',instruction,refs,'redraw',done,plan['factor'])
+            temporary=result.with_suffix('.tmp');await asyncio.to_thread(compose_edit,source,generated,region,temporary);temporary.replace(result)
+        ensure_active(studio,jid)
+        temporary=output.with_suffix('.local.tmp');shutil.copyfile(result,temporary);temporary.replace(output)
+        async with ENGINE_LOCK:await asyncio.to_thread(refresh_registered_tile,folder,index,region)
+        repair['completed']=True;save_json(path,repairs)
+
+
 async def run(studio,jid):
     job=studio.query("SELECT * FROM jobs WHERE id=?",(jid,),True);options=json.loads(job["options"]);factor=options["stitch"]
     folder=studio.DATA/"jobs"/jid/"stitch";folder.mkdir(parents=True,exist_ok=True,mode=0o700);(folder/"calls").mkdir(exist_ok=True)
@@ -198,6 +233,7 @@ async def run(studio,jid):
         with Image.open(base) as image:layout(*image.size,factor)
         if not (folder/"plan.json").exists():await engine(studio,jid,folder,"prepare","--factor",factor)
         plan=json.loads((folder/"plan.json").read_text())
+        await apply_local_repairs(studio,jid,folder,plan,options,generate)
         states={tile['index']:{'index':tile['index']+1,'state':'done' if (folder/'redraw'/f"{tile['index']}.png").exists() else 'queued','label':'等待并发名额'} for tile in plan['tiles']}
         def publish_children():
             completed=sum(v['state']=='done' for v in states.values());active=sum(v['state']=='running' for v in states.values());pending=sum(v['state']=='queued' for v in states.values())

@@ -669,5 +669,27 @@ elif 'exec' in sys.argv:
         with Image.open(folder/'candidate.png') as image:self.assertNotEqual(image.getpixel((image.width//2,image.height//2)),(255,0,255))
 
 
+    def test_33_rectangular_tile_repair_keeps_other_pixels_and_the_accepted_affine(self):
+        import numpy as np
+        source=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        jid=self.post('/api/jobs',{'prompt':'Bounded tile content repair fixture','source_asset_id':source['id'],'stitch':4}).json()['ids'][0]
+        job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
+        folder=self.appmod.DATA/'jobs'/jid/'stitch';before=np.array(Image.open(folder/'redraw/0.png'))
+        matrix=json.loads((folder/'diagnostics/alignment-0.json').read_text())['target_matrix']
+        retained={p.name:p.read_bytes() for p in (folder/'redraw').glob('*.png') if p.name!='0.png'}
+        region={'x':0,'y':20,'width':48,'height':48}
+        (folder/'diagnostics/local-repairs.json').write_text(json.dumps([{'tile':0,'region':region,'prompt':'Replace the selected mark with blue'}]))
+        self.appmod.write("UPDATE jobs SET status='failed',outputs='[]',error='Local content repair fixture' WHERE id=?",(jid,))
+        self.assertEqual(self.post('/api/jobs/'+jid+'/retry').status_code,200)
+        resumed=self.wait_job(jid,timeout=75);self.assertEqual(resumed['status'],'succeeded',resumed['error'])
+        after=np.array(Image.open(folder/'redraw/0.png'));outside=np.ones(before.shape[:2],bool);outside[20:68,0:48]=False
+        np.testing.assert_array_equal(before[outside],after[outside]);self.assertFalse(np.array_equal(before[~outside],after[~outside]))
+        self.assertTrue(all((folder/'redraw'/name).read_bytes()==data for name,data in retained.items()))
+        self.assertEqual(json.loads((folder/'diagnostics/alignment-0.json').read_text())['target_matrix'],matrix)
+        events=self.cli_events({jid});self.assertEqual(sum(e['event']=='start' and e['kind']=='redraw' for e in events),4)
+        self.assertEqual(sum(e['event']=='start' and e['kind']=='image' for e in events),1)
+        self.assertTrue(json.loads((folder/'diagnostics/local-repairs.json').read_text())[0]['completed'])
+
+
 if __name__=="__main__":
     unittest.main()
