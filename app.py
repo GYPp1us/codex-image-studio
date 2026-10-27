@@ -61,6 +61,7 @@ DEFAULT_POLISH_PROMPT = DEFAULT_CALL_PROMPT.replace(
     "Briefly report the enhanced creative brief in your response so it remains available in the task log."
 ).replace("BEGIN EXACT IMAGE PROMPT", "BEGIN USER CREATIVE BRIEF").replace("END EXACT IMAGE PROMPT", "END USER CREATIVE BRIEF")
 MAX_UPLOAD = 20 * 1024 * 1024
+UNTEMPLATED_COLLECTION = 'untemplated'
 Image.MAX_IMAGE_PIXELS = 64_000_000
 SESSION_AGE = 7 * 86400
 PROCESSES: dict[str, asyncio.subprocess.Process] = {}
@@ -80,6 +81,14 @@ def now():
 
 def uid():
     return uuid.uuid4().hex
+
+
+def archive_deleted_untemplated(conn):
+    row=conn.execute('SELECT deleted FROM collections WHERE id=?',(UNTEMPLATED_COLLECTION,)).fetchone()
+    if row and row['deleted']:
+        archived='archived-untemplated-'+uid()
+        conn.execute('UPDATE collections SET id=? WHERE id=?',(archived,UNTEMPLATED_COLLECTION))
+        conn.execute('UPDATE jobs SET collection_id=? WHERE collection_id=?',(archived,UNTEMPLATED_COLLECTION))
 
 
 def prompt_hash(text):
@@ -163,13 +172,15 @@ def initialize():
         if not c.execute("SELECT 1 FROM settings WHERE key='templates_migrated'").fetchone():
             c.execute("INSERT OR IGNORE INTO templates(id,text,title,favorite,created,updated,refs,options) SELECT id,text,title,favorite,created,updated,refs,options FROM prompts")
             c.execute("INSERT INTO settings VALUES ('templates_migrated','true')")
-        # Previous requests without explicit template membership stay independent by batch.
-        for job in c.execute("SELECT id,batch_id,prompt,template_id,collection_id,created FROM jobs").fetchall():
-            cid = 'tpl-' + job['template_id'] if job['template_id'] else 'request-' + job['batch_id']
+        # Consolidate live untagged jobs; retain deleted groups in the trash.
+        for job in c.execute("SELECT j.id,j.batch_id,j.prompt,j.template_id,j.collection_id,j.created,COALESCE(g.deleted,0) AS collection_deleted FROM jobs j LEFT JOIN collections g ON g.id=j.collection_id").fetchall():
+            if not job['template_id'] and job['collection_deleted']:continue
+            cid = 'tpl-' + job['template_id'] if job['template_id'] else UNTEMPLATED_COLLECTION
             if job['collection_id'] != cid:
+                if not job['template_id']:archive_deleted_untemplated(c)
                 c.execute("UPDATE jobs SET collection_id=? WHERE id=?", (cid, job["id"]))
                 template = c.execute("SELECT title FROM templates WHERE id=?", (job['template_id'],)).fetchone() if job['template_id'] else None
-                name = template['title'] if template else job['prompt'][:48]
+                name = template['title'] if template else '无模板' if not job['template_id'] else job['prompt'][:48]
                 c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=MAX(collections.updated,excluded.updated),created=MIN(collections.created,excluded.created)", (cid, name, job['prompt'], job['created'], job['created']))
         c.execute("DELETE FROM collections WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.collection_id=collections.id)")
         c.execute("DELETE FROM sessions WHERE expires<?", (now(),))
@@ -950,9 +961,10 @@ def create_jobs(body):
     if body.region:
         options.update(region=body.region.model_dump(),polish=False,ratio='auto',size='auto',call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT))
     batch, ids = uid(), []
-    collection_id = 'tpl-' + template['id'] if template else 'request-' + batch
+    collection_id = 'tpl-' + template['id'] if template else UNTEMPLATED_COLLECTION
     with db() as c:
-        c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,deleted=0", (collection_id, template['title'] if template else body.prompt.strip()[:48], body.prompt.strip(), now(), now()))
+        if not template:archive_deleted_untemplated(c)
+        c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,deleted=0", (collection_id, template['title'] if template else '无模板', body.prompt.strip(), now(), now()))
         for _ in range(body.count):
             jid = uid()
             ids.append(jid)
@@ -1044,7 +1056,9 @@ def list_jobs(status: str = "", collection: str = "", limit: int = 50, offset: i
 
 @app.get("/api/collections")
 def collections(search: str = "", deleted: bool = False, limit: int = 50, offset: int = 0, session=Depends(require_user)):
-    rows = query("SELECT * FROM collections WHERE deleted=? AND (name LIKE ? OR prompt LIKE ?) ORDER BY updated DESC LIMIT ? OFFSET ?", (int(deleted), f"%{search[:100]}%", f"%{search[:100]}%", max(1, min(limit, 100)), max(0, offset)))
+    pattern=f'%{search[:100]}%'
+    predicate='deleted=? AND (name LIKE ? OR prompt LIKE ? OR EXISTS(SELECT 1 FROM jobs WHERE jobs.collection_id=collections.id AND jobs.prompt LIKE ?))'
+    rows = query('SELECT * FROM collections WHERE '+predicate+' ORDER BY updated DESC LIMIT ? OFFSET ?', (int(deleted),pattern,pattern,pattern,max(1,min(limit,100)),max(0,offset)))
     for group in rows:
         group['template_id'] = group['id'][4:] if group['id'].startswith('tpl-') else ''
         group['kind'] = 'template' if group['template_id'] else 'request'
@@ -1052,7 +1066,7 @@ def collections(search: str = "", deleted: bool = False, limit: int = 50, offset
         image_ids = list(dict.fromkeys(aid for job in jobs for aid in json.loads(job["outputs"]) if query("SELECT id FROM assets WHERE id=? AND deleted=0", (aid,), True)))
         group.update(job_count=len(jobs), image_count=len(image_ids), active=sum(j["status"] in ("running", "queued", "retrying") for j in jobs), failed=sum(j["status"] == "failed" for j in jobs))
         group["covers"] = [serialize_asset(a) for aid in image_ids[:3] if (a := query("SELECT * FROM assets WHERE id=?", (aid,), True))]
-    total = query("SELECT COUNT(*) AS n FROM collections WHERE deleted=? AND (name LIKE ? OR prompt LIKE ?)", (int(deleted), f"%{search[:100]}%", f"%{search[:100]}%"), True)["n"]
+    total = query('SELECT COUNT(*) AS n FROM collections WHERE '+predicate,(int(deleted),pattern,pattern,pattern),True)['n']
     return {"items": rows, "total": total}
 
 
@@ -1069,8 +1083,16 @@ def delete_collection(cid: str, session=Depends(require_user)):
 
 @app.post("/api/collections/{cid}/restore")
 def restore_collection(cid: str, session=Depends(require_user)):
-    if not write("UPDATE collections SET deleted=0 WHERE id=?", (cid,)):
-        raise HTTPException(404, "列表不存在")
+    with db() as c:
+        group=c.execute('SELECT * FROM collections WHERE id=?',(cid,)).fetchone()
+        if not group:raise HTTPException(404,'列表不存在')
+        tagged=c.execute("SELECT 1 FROM jobs WHERE collection_id=? AND COALESCE(template_id,'')!='' LIMIT 1",(cid,)).fetchone()
+        if not tagged and cid!=UNTEMPLATED_COLLECTION:
+            archive_deleted_untemplated(c)
+            c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET deleted=0,updated=excluded.updated",(UNTEMPLATED_COLLECTION,'无模板',group['prompt'],group['created'],now()))
+            c.execute('UPDATE jobs SET collection_id=? WHERE collection_id=?',(UNTEMPLATED_COLLECTION,cid))
+            c.execute('DELETE FROM collections WHERE id=?',(cid,))
+        else:c.execute('UPDATE collections SET deleted=0 WHERE id=?',(cid,))
     return {"ok": True}
 
 

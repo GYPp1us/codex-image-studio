@@ -291,15 +291,15 @@ elif 'exec' in sys.argv:
             if jid:self.post("/api/jobs/"+jid+"/cancel")
             self.client.patch("/api/settings",json={"paused":False,"call_prompt":self.appmod.DEFAULT_CALL_PROMPT},headers=self.headers)
 
-    def test_14_migration_preserves_independent_batches(self):
+    def test_14_migration_consolidates_live_untagged_batches(self):
         self.client.patch("/api/settings",json={"paused":True},headers=self.headers)
         jid=self.post("/api/jobs",{"prompt":"Legacy grouping migration"}).json()["ids"][0]
         job=self.client.get("/api/jobs/"+jid).json()
         digest='request-'+job['batch_id']
-        self.appmod.write("UPDATE jobs SET collection_id='' WHERE id=?",(jid,))
-        self.appmod.write("DELETE FROM collections WHERE id=?",(digest,))
+        self.appmod.write('INSERT INTO collections(id,name,prompt,created,updated) VALUES(?,?,?,?,?)',(digest,'Legacy request','Legacy grouping migration',time.time(),time.time()))
+        self.appmod.write("UPDATE jobs SET collection_id=? WHERE id=?",(digest,jid))
         self.appmod.initialize()
-        self.assertEqual(self.client.get("/api/jobs/"+jid).json()["collection_id"],digest)
+        self.assertEqual(self.client.get("/api/jobs/"+jid).json()["collection_id"],'untemplated')
         self.post("/api/jobs/"+jid+"/cancel")
         self.client.patch("/api/settings",json={"paused":False},headers=self.headers)
 
@@ -318,6 +318,7 @@ elif 'exec' in sys.argv:
         self.client.patch("/api/settings",json={"paused":True},headers=self.headers)
         ids=[]
         try:
+            before=self.client.get('/api/jobs?collection=untemplated').json()['total']
             first=self.post("/api/templates",{"text":"A shared base","title":"Base A"}).json()
             second=self.post("/api/templates",{"text":"A shared base","title":"Base B"}).json()
             self.assertNotEqual(first['id'],second['id'])
@@ -326,8 +327,10 @@ elif 'exec' in sys.argv:
             detached=self.post("/api/jobs",{"prompt":"Identical final text","template_id":None,"count":2}).json()
             independent=self.post("/api/jobs",{"prompt":"Identical final text"}).json()
             ids=one['ids']+two['ids']+detached['ids']+independent['ids']
-            self.assertEqual(len({one['collection_id'],two['collection_id'],detached['collection_id'],independent['collection_id']}),4)
-            self.assertEqual(self.client.get('/api/jobs?collection='+detached['collection_id']).json()['total'],2)
+            self.assertEqual(len({one['collection_id'],two['collection_id'],detached['collection_id'],independent['collection_id']}),3)
+            self.assertEqual(detached['collection_id'],independent['collection_id'])
+            self.assertEqual(detached['collection_id'],'untemplated')
+            self.assertEqual(self.client.get('/api/jobs?collection=untemplated').json()['total'],before+3)
             changed=self.client.put('/api/templates/'+first['id'],json={"text":"Shorter base","title":"Edited base","refs":[]},headers=self.headers)
             self.assertEqual(changed.status_code,200,changed.text)
             self.assertEqual(changed.json()['id'],first['id'])
@@ -663,6 +666,8 @@ elif 'exec' in sys.argv:
         review_request=json.loads((folder/'calls/inspection/request.json').read_text())['worker_instruction']
         self.assertIn('Legacy affine mask migration',review_request)
         self.assertIn('残留水印和符号',review_request)
+        self.assertIn('整图超分',review_request)
+        self.assertIn('相对坐标',review_request)
         quality=json.loads((folder/'diagnostics/quality.json').read_text())
         self.assertTrue(all(a['registration_version']==REGISTRATION_VERSION for a in quality['alignments']))
         self.assertEqual(quality['uncovered_pixels'],0)
@@ -689,6 +694,29 @@ elif 'exec' in sys.argv:
         events=self.cli_events({jid});self.assertEqual(sum(e['event']=='start' and e['kind']=='redraw' for e in events),4)
         self.assertEqual(sum(e['event']=='start' and e['kind']=='image' for e in events),1)
         self.assertTrue(json.loads((folder/'diagnostics/local-repairs.json').read_text())[0]['completed'])
+
+
+    def test_34_untemplated_bucket_merges_history_without_resurrecting_deleted_groups(self):
+        self.client.patch('/api/settings',json={'paused':True},headers=self.headers);ids=[]
+        try:
+            one=self.post('/api/jobs',{'prompt':'Untagged first request'}).json();ids+=one['ids']
+            two=self.post('/api/jobs',{'prompt':'Untagged second request'}).json();ids+=two['ids']
+            self.assertEqual(one['collection_id'],two['collection_id']);self.assertEqual(one['collection_id'],'untemplated')
+            matches=self.client.get('/api/collections',params={'search':'Untagged first request'}).json()['items']
+            self.assertEqual([g['id'] for g in matches],['untemplated'])
+            self.assertEqual(self.client.delete('/api/collections/untemplated',headers=self.headers).status_code,200)
+            three=self.post('/api/jobs',{'prompt':'Untagged request after deleting bucket'}).json();ids+=three['ids']
+            archived=self.client.get('/api/jobs/'+one['ids'][0]).json()['collection_id']
+            self.assertTrue(archived.startswith('archived-untemplated-'))
+            self.appmod.initialize()
+            self.assertEqual(self.client.get('/api/jobs/'+one['ids'][0]).json()['collection_id'],archived)
+            self.assertEqual(self.client.get('/api/jobs/'+three['ids'][0]).json()['collection_id'],'untemplated')
+            self.assertEqual(self.post('/api/collections/'+archived+'/restore').status_code,200)
+            self.assertEqual(self.client.get('/api/jobs/'+one['ids'][0]).json()['collection_id'],'untemplated')
+            self.assertEqual(self.client.get('/api/jobs/'+two['ids'][0]).json()['collection_id'],'untemplated')
+        finally:
+            for jid in ids:self.post('/api/jobs/'+jid+'/cancel')
+            self.client.patch('/api/settings',json={'paused':False},headers=self.headers)
 
 
 if __name__=="__main__":

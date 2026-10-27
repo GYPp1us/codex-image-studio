@@ -6,11 +6,11 @@ class CacheStorage {
   constructor(){this.data=new Map();}
   async keys(){return [...this.data.keys()];}
   async delete(key){return this.data.delete(key);}
-  async open(name){if(!this.data.has(name))this.data.set(name,new Map());const items=this.data.get(name),key=r=>typeof r==='string'?r:r.url;return {keys:async()=>[...items.keys()].map(url=>new Request(url)),match:async r=>items.get(key(r))?.clone(),put:async(r,response)=>items.set(key(r),response.clone()),delete:async r=>items.delete(key(r))};}
+  async open(name){if(!this.data.has(name))this.data.set(name,new Map());const items=this.data.get(name),key=r=>typeof r==='string'?r:r.url;return {keys:async()=>[...items.keys()].map(url=>new Request(url)),match:async r=>items.get(key(r))?.clone(),put:async(r,response)=>items.set(key(r),new Response(await response.arrayBuffer(),{status:response.status,headers:response.headers})),delete:async r=>items.delete(key(r))};}
 }
 function worker(state,cache=new CacheStorage()){
   const listeners={};
-  const context=vm.createContext({Response,Request,Headers,URL,Map,Promise,Date:class extends Date{static now(){return state.time||1000;}},caches:cache,self:{location:{origin:'https://image.test'},addEventListener:(type,fn)=>listeners[type]=fn,clients:{claim:async()=>{}},skipWaiting:async()=>{}},fetch:async request=>{
+  const context=vm.createContext({Response,Request,Headers,URL,Map,Promise,TransformStream,Date:class extends Date{static now(){return state.time||1000;}},caches:cache,self:{location:{origin:'https://image.test'},addEventListener:(type,fn)=>listeners[type]=fn,clients:{claim:async()=>{},matchAll:async()=>[{postMessage:message=>(state.progress||=[]).push(message)}]},skipWaiting:async()=>{}},fetch:async request=>{
     const url=typeof request==='string'?request:request.url;
     if(url==='/api/auth/state'){state.authCalls=(state.authCalls||0)+1;return Response.json({authenticated:state.auth!==false,cache_scope:state.scope||'account-a'});}
     if(url.includes('/api/auth/logout')){state.auth=false;return Response.json({ok:true});}
@@ -61,4 +61,11 @@ test('large upscale results below the total budget can be cached',async()=>{
 test('storage being disabled does not break image loading or logout',async()=>{
   const state={},w=worker(state,{open:async()=>{throw new Error('Storage disabled');},keys:async()=>{throw new Error('Storage disabled');}});
   assert.equal((await w.fetch(path)).status,200);assert.equal((await w.fetch('/api/auth/logout','POST')).status,200);
+});
+test('original image downloads report real byte progress while entering the durable cache',async()=>{
+  const state={},w=worker(state);await w.fetch(path);
+  assert.equal(state.progress[0].loaded,0);
+  const last=state.progress.at(-1);assert.equal(last.loaded,3);assert.equal(last.total,3);assert.equal(last.done,true);
+  assert.equal(last.url,'https://image.test'+path);const count=state.progress.length;
+  await w.fetch(path);assert.equal(state.progress.length,count,'A cached image must not pretend to download again');
 });

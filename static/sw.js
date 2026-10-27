@@ -50,18 +50,30 @@ async function store(name,key,response,version){
   };
   maintenance=maintenance.catch(()=>{}).then(write);await maintenance;
 }
+async function fetchImage(request){
+  const response=await fetch(request),url=request.url;
+  if(!response.ok||!response.body||!response.headers.get('content-type')?.startsWith('image/')||new URL(url).searchParams.has('thumbnail')||typeof TransformStream==='undefined')return response;
+  const total=Number(response.headers.get('content-length')||0);let loaded=0,last=0;
+  const publish=done=>{
+    if(!done&&loaded!==0&&loaded<total&&Date.now()-last<120)return;last=Date.now();
+    self.clients.matchAll({type:'window',includeUncontrolled:true}).then(clients=>clients.forEach(client=>client.postMessage({type:'IMAGE_PROGRESS',url,loaded,total,done}))).catch(()=>{});
+  };
+  publish(false);
+  const body=response.body.pipeThrough(new TransformStream({transform(chunk,controller){loaded+=chunk.byteLength;publish(false);controller.enqueue(chunk);},flush(){publish(true);}}));
+  return new Response(body,{status:response.status,statusText:response.statusText,headers:response.headers});
+}
 async function image(request){
   let name;
-  try{name=await authorize();}catch{return fetch(request);}
-  if(!name)return fetch(request);
+  try{name=await authorize();}catch{return fetchImage(request);}
+  if(!name)return fetchImage(request);
   const version=epoch,key=request.url;let cached;
-  try{cached=await (await caches.open(name)).match(key);}catch{return fetch(request);}
+  try{cached=await (await caches.open(name)).match(key);}catch{return fetchImage(request);}
   if(version!==epoch)return new Response('',{status:401});
   if(cached)return cached;
   const id=name+':'+key;
   if(!inflight.has(id)){
     const pending=(async()=>{
-      const response=await fetch(request);
+      const response=await fetchImage(request);
       if((response.status===401||response.status===403)&&version===epoch)await clearImages();
       else {try{await store(name,key,response,version);}catch{/* Storage pressure must not break image loading. */}}
       return response;
