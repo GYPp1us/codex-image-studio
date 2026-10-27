@@ -660,6 +660,9 @@ elif 'exec' in sys.argv:
         events=self.cli_events({jid})
         self.assertEqual(sum(e['event']=='start' and e['kind']=='redraw' for e in events),4)
         self.assertEqual(sum(e['event']=='start' and e['kind']=='inspection' for e in events),2)
+        review_request=json.loads((folder/'calls/inspection/request.json').read_text())['worker_instruction']
+        self.assertIn('Legacy affine mask migration',review_request)
+        self.assertIn('残留水印和符号',review_request)
         quality=json.loads((folder/'diagnostics/quality.json').read_text())
         self.assertTrue(all(a['registration_version']==REGISTRATION_VERSION for a in quality['alignments']))
         self.assertEqual(quality['uncovered_pixels'],0)
