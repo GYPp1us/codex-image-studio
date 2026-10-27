@@ -72,8 +72,41 @@ class StitchEngineTests(unittest.TestCase):
             quality=json.loads((folder/'diagnostics/quality.json').read_text())
             self.assertEqual(quality['uncovered_pixels'],0)
             self.assertGreater(sum(a['outer_border_added_pixels'] for a in quality['alignments']),0)
-            self.assertTrue(all(a['outer_border_max_pixels']==12 for a in quality['alignments']))
+            self.assertTrue(all(a['outer_border_max_pixels']==12*plan['grid'] for a in quality['alignments']))
             self.assertTrue(all(np.array(a['target_matrix']).shape==(2,3) for a in quality['alignments']))
+
+    def test_outer_margin_scales_from_original_coordinates_and_never_fills_interior(self):
+        for grid in (2,3,4):
+            limit=12*grid;valid=np.full((240,240),255,np.uint8);valid[:,:limit-4]=0;valid[90:110,90:110]=0
+            tile={'corner':[0,0],'size':[240,240]};plan={'grid':grid,'output_size':[240*grid,240*grid]}
+            mask,metrics=engine.registration_mask(valid,tile,plan)
+            self.assertTrue(np.all(mask[:,0]>0));self.assertEqual(mask[100,100],0)
+            self.assertEqual(metrics['outer_border_max_pixels'],limit)
+            valid[:,:limit+8]=0;mask,_=engine.registration_mask(valid,tile,plan)
+            self.assertEqual(mask[160,0],0,'Deficits beyond the bound must remain invalid')
+
+    def test_sixteen_tiles_accept_bounded_translation_and_reject_missing_core(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder=Path(temporary);engine.write_png(folder/'base.png',texture());plan=engine.prepare(folder,16);tile=plan['tiles'][12]
+            crop=engine.read_bgr(folder/'crops/12.png');native=cv2.resize(crop,tuple(tile['size']),interpolation=cv2.INTER_CUBIC)
+            for shift,accepted in ((-40,True),(-88,False)):
+                redraw=cv2.warpAffine(native,np.float32([[1,0,shift],[0,1,0]]),tuple(tile['size']),borderMode=cv2.BORDER_REFLECT_101)
+                engine.write_png(folder/'redraw/12.png',redraw)
+                if accepted:
+                    metrics=engine.register_tile(folder,12);self.assertEqual(metrics['outer_border_max_pixels'],48)
+                    self.assertGreater(metrics['outer_border_added_pixels'],0)
+                    mask=cv2.imread(str(folder/'masks/valid-12.png'),0);self.assertTrue(np.all(mask[:,0]>0))
+                else:
+                    with self.assertRaisesRegex(engine.StitchError,'核心区域仍缺失'):engine.register_tile(folder,12)
+
+    def test_reregistering_invalidates_stale_composition_and_visual_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder=Path(temporary);engine.write_png(folder/'base.png',texture(320,256));plan=engine.prepare(folder,4)
+            crop=engine.read_bgr(folder/'crops/0.png');engine.write_png(folder/'redraw/0.png',cv2.resize(crop,tuple(plan['tiles'][0]['size'])))
+            stale=('candidate.png','inspection.png','overview.png','diagnostics/quality.json','diagnostics/visual-review.json')
+            for name in stale:(folder/name).write_text('stale checkpoint')
+            engine.register_tile(folder,0)
+            self.assertTrue(all(not (folder/name).exists() for name in stale))
 
     def test_real_graphcut_and_seven_band_blend_for_4_9_16(self):
         for factor in (4,9,16):

@@ -15,8 +15,8 @@ MAX_PIXELS = 64_000_000
 BLOCK = 1536
 HALO = 256
 BANDS = 7
-REGISTRATION_VERSION = 2
-OUTER_BORDER = 12
+REGISTRATION_VERSION = 3
+OUTER_BORDER = 12  # Original-image pixels; convert to output coordinates with the grid.
 PHASES = ("base", "cutting", "redraw", "registration", "color", "seams", "blend", "inspection", "receiving")
 LABELS = ("准备原图", "带重叠切图", "逐块 AI 补绘", "SIFT + RANSAC 配准", "匹配大范围色调", "Graph Cut 寻找接缝", "7 层拉普拉斯融合", "局部质量检查", "回传超分结果")
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
@@ -119,6 +119,23 @@ def affine_register(original, redraw):
     return affine,{"method":"SIFT+RANSAC/global_affine","matches":len(good),"inliers":count,"inlier_ratio":ratio,"rms_original_pixels":rms,"feature_spread":spread,"matrix":affine.tolist()}
 
 
+def registration_mask(valid,tile,plan):
+    border=cv2.dilate(valid,np.ones((5,5),np.uint8))
+    limit=OUTER_BORDER*plan['grid']
+    extended=cv2.dilate(valid,np.ones((limit*2+1,limit*2+1),np.uint8))
+    outer=np.zeros_like(valid);x,y=tile['corner'];tw,th=tile['size'];ow,oh=plan['output_size']
+    if x==0:outer[:,:limit]=255
+    if y==0:outer[:limit,:]=255
+    if x+tw==ow:outer[:,-limit:]=255
+    if y+th==oh:outer[-limit:,:]=255
+    expanded=cv2.bitwise_or(border,cv2.bitwise_and(extended,outer))
+    added=(expanded>0)&(border==0);rows,columns=np.nonzero(added)
+    metrics={'outer_border_added_pixels':int(added.sum()),'outer_border_max_pixels':limit,
+             'outer_border_original_pixels':OUTER_BORDER,'resampling_border_pixels':2}
+    if len(rows):metrics['outer_border_center']=[int(np.median(columns))+x,int(np.median(rows))+y]
+    return expanded,metrics
+
+
 def register_tile(folder,index):
     folder=Path(folder);plan=json.loads((folder/"plan.json").read_text());tile=plan["tiles"][index]
     original=read_bgr(folder/"crops"/f"{index}.png");redraw=read_bgr(folder/"redraw"/f"{index}.png")
@@ -131,27 +148,24 @@ def register_tile(folder,index):
     size=tuple(tile["size"])
     registered=cv2.warpAffine(redraw,transform,size,flags=cv2.INTER_LANCZOS4,borderMode=cv2.BORDER_REFLECT_101)
     valid=cv2.warpAffine(np.full((rh,rw),255,np.uint8),transform,size,flags=cv2.INTER_NEAREST,borderMode=cv2.BORDER_CONSTANT,borderValue=0)
-    # A small resampling border uses only redrawn pixels, never low-resolution original detail.
-    border=cv2.dilate(valid,np.ones((5,5),np.uint8))
-    extended=cv2.dilate(valid,np.ones((OUTER_BORDER*2+1,OUTER_BORDER*2+1),np.uint8))
-    # Affine resampling may expose a few pixels at the outer canvas edge. The RGB
-    # warp already reflects redrawn pixels there; permit this only in a bounded strip.
-    outer=np.zeros_like(valid);x,y=tile['corner'];tw,th=tile['size'];ow,oh=plan['output_size']
-    if x==0:outer[:,:OUTER_BORDER]=255
-    if y==0:outer[:OUTER_BORDER,:]=255
-    if x+tw==ow:outer[:,-OUTER_BORDER:]=255
-    if y+th==oh:outer[-OUTER_BORDER:,:]=255
-    expanded=cv2.bitwise_or(border,cv2.bitwise_and(extended,outer))
-    metrics['outer_border_added_pixels']=int(np.count_nonzero((expanded>0)&(border==0)))
-    border=expanded
+    # Reflected AI pixels are allowed only in a bounded outer-canvas strip.
+    # Interior gaps keep their original mask and must never be filled by this allowance.
+    border,border_metrics=registration_mask(valid,tile,plan);metrics.update(border_metrics)
+    x,y=tile['corner'];cx0,cy0,cx1,cy1=[v*scale for v in tile['core']]
+    missing=int(np.count_nonzero(border[cy0-y:cy1-y,cx0-x:cx1-x]==0))
+    if missing:
+        save_json(folder/'diagnostics'/f'alignment-rejected-{index}.json',{'missing_core_pixels':missing,**metrics})
+        raise StitchError(f'第 {index+1} 块配准后核心区域仍缺失 {missing} 像素，超过外沿容差，需重新补绘该块')
     metrics['registration_version']=REGISTRATION_VERSION
-    metrics['outer_border_max_pixels']=OUTER_BORDER
-    metrics["resampling_border_pixels"]=2
     metrics["target_matrix"]=transform.tolist()
     write_png(folder/"registered"/f"{index}.png",registered)
     write_png(folder/"masks"/f"valid-{index}.png",border)
-    save_json(folder/"diagnostics"/f"alignment-{index}.json",metrics)
     (folder/'corrected'/f'{index}.png').unlink(missing_ok=True)
+    (folder/'diagnostics'/f'alignment-rejected-{index}.json').unlink(missing_ok=True)
+    for name in ('candidate.png','inspection.png','overview.png','diagnostics/quality.json','diagnostics/visual-review.json'):
+        (folder/name).unlink(missing_ok=True)
+    # Commit the accepted checkpoint only after derived data has been invalidated.
+    save_json(folder/"diagnostics"/f"alignment-{index}.json",metrics)
     return metrics
 
 
@@ -247,12 +261,19 @@ def compose(folder):
 
 def make_inspection(folder, image, plan):
     width,height=image.size;panel=512
-    sheet=Image.new("RGB",(panel*3,(panel+28)*2),"#faf9f6");draw=ImageDraw.Draw(sheet)
     points=[("Subject",width//2,height//2),("Foreground",width//3,height*4//5),("Background",width*4//5,height//5)]
     grid=plan["grid"]
     points.extend((f"Seam {i+1}",round(width*(i+1)/grid),round(height/grid)) for i in range(min(3,grid-1)))
     while len(points)<6: points.append(("Edge",width-256,height-256))
-    for i,(title,x,y) in enumerate(points[:6]):
+    repairs=[]
+    for tile in plan['tiles']:
+        diagnostic=Path(folder)/'diagnostics'/f"alignment-{tile['index']}.json"
+        data=json.loads(diagnostic.read_text())
+        if data.get('outer_border_added_pixels') and data.get('outer_border_center'):
+            repairs.append((data['outer_border_added_pixels'],tile['index'],data['outer_border_center']))
+    for _,index,center in sorted(repairs,reverse=True)[:3]:points.append((f'Outer edge {index+1}',*center))
+    sheet=Image.new("RGB",(panel*3,(panel+28)*math.ceil(len(points)/3)),"#faf9f6");draw=ImageDraw.Draw(sheet)
+    for i,(title,x,y) in enumerate(points):
         left=max(0,min(width-panel,x-panel//2));top=max(0,min(height-panel,y-panel//2))
         crop=image.crop((left,top,min(width,left+panel),min(height,top+panel))).convert("RGB")
         sheet.paste(crop,((i%3)*panel,(i//3)*(panel+28)+28));draw.text(((i%3)*panel+8,(i//3)*(panel+28)+6),title,fill="#30372b")

@@ -12,7 +12,7 @@ from collections import Counter
 from pathlib import Path
 
 from PIL import Image
-from stitch_engine import LABELS, MAX_PIXELS, PHASES, layout, save_json
+from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json
 
 ENGINE_LOCK = asyncio.Semaphore(1)
 DEFAULT_STITCH_PROMPT = """将 reference-1.png 中的局部图重绘为 {target_size} 的高细节图像。reference-2.png 是完整原图，仅供保持风格、光照和景深一致。
@@ -219,7 +219,8 @@ async def run(studio,jid):
         progress(studio,jid,"redraw",factor,factor)
         for tile in plan['tiles']:
             i=tile['index'];progress(studio,jid,"registration",i,factor,detail=f"第 {i+1}/{factor} 块")
-            if (folder/"diagnostics"/f"alignment-{i}.json").exists():continue
+            diagnostic=folder/'diagnostics'/f'alignment-{i}.json'
+            if diagnostic.exists() and json.loads(diagnostic.read_text()).get('registration_version',0)>=REGISTRATION_VERSION:continue
             for attempt in range(maximum):
                 try:
                     await engine(studio,jid,folder,"register","--tile",i);break
@@ -229,12 +230,12 @@ async def run(studio,jid):
                     result=await generate(f"tile-{i}-registration-repair-{attempt+1}",instruction,[folder/"crops"/f"{i}.png",base],"registration",i,factor)
                     shutil.copyfile(result,folder/"redraw"/f"{i}.png")
         if not all((folder/name).is_file() for name in ('candidate.png','inspection.png','overview.png','diagnostics/quality.json')):await engine(studio,jid,folder,"compose")
-        ensure_active(studio,jid);progress(studio,jid,"inspection",0,1,waiting=True,substage="主模型检查主体、前景、背景与接缝")
+        ensure_active(studio,jid);progress(studio,jid,"inspection",0,1,waiting=True,substage="主模型检查主体、前景、背景、接缝与画布外沿")
         review_file=folder/"diagnostics"/"visual-review.json"
         review=json.loads(review_file.read_text()) if review_file.exists() else None
         if not review or not review.get('pass'):
             prompt="""STUDIO_STITCH_REVIEW
-执行局部视觉验收，不调用生图或任何工具。reference-1 是完整原图，reference-2 是拼接结果缩略全图，reference-3 是在结果原生像素上裁切的主体、前景、背景、接缝局部。检查主体和元素是否被移动、断线、硬接缝、重影、空白以及光照景深不一致。不要只依据清晰度判断。只能输出一个 JSON 对象：{"pass": true或false, "issues": [具体问题]}。发现明显问题必须 pass=false。"""
+执行局部视觉验收，不调用生图或任何工具。reference-1 是完整原图，reference-2 是拼接结果缩略全图，reference-3 是在结果原生像素上裁切的主体、前景、背景、接缝及标注 Outer edge 的画布外沿局部。检查主体和元素是否被移动、断线、硬接缝、重影、空白、外沿异常镜像或拉伸以及光照景深不一致。不要只依据清晰度判断。只能输出一个 JSON 对象：{"pass": true或false, "issues": [具体问题]}。发现明显问题必须 pass=false。"""
             text=await cli_call(studio,jid,folder,"inspection",prompt,[base,folder/"overview.png",folder/"inspection.png"],model,effort,"inspection",0,1,image=False)
             match=re.search(r"\{[\s\S]*\}",text)
             try:review=json.loads(match.group()) if match else None

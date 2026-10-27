@@ -642,5 +642,29 @@ elif 'exec' in sys.argv:
             self.client.patch('/api/settings',json={'paused':False},headers=self.headers)
 
 
+    def test_32_retry_upgrades_legacy_masks_without_regenerating_cached_tiles(self):
+        from stitch_engine import REGISTRATION_VERSION
+        source=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        jid=self.post('/api/jobs',{'prompt':'Legacy affine mask migration','source_asset_id':source['id'],'stitch':4}).json()['ids'][0]
+        job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
+        folder=self.appmod.DATA/'jobs'/jid/'stitch';plan=json.loads((folder/'plan.json').read_text())
+        checkpoints={p:p.stat().st_mtime_ns for p in (folder/'redraw').glob('*.png')}
+        for tile in plan['tiles']:
+            path=folder/'diagnostics'/f"alignment-{tile['index']}.json";data=json.loads(path.read_text());data['registration_version']=2;path.write_text(json.dumps(data))
+            Image.new('L',tuple(tile['size']),0).save(folder/'masks'/f"valid-{tile['index']}.png")
+        Image.new('RGB',tuple(plan['output_size']),'magenta').save(folder/'candidate.png')
+        self.appmod.write("UPDATE jobs SET status='failed',outputs='[]',error='Legacy mask fixture' WHERE id=?",(jid,))
+        self.assertEqual(self.post('/api/jobs/'+jid+'/retry').status_code,200)
+        resumed=self.wait_job(jid,timeout=75);self.assertEqual(resumed['status'],'succeeded',resumed['error'])
+        self.assertTrue(all(p.stat().st_mtime_ns==stamp for p,stamp in checkpoints.items()))
+        events=self.cli_events({jid})
+        self.assertEqual(sum(e['event']=='start' and e['kind']=='redraw' for e in events),4)
+        self.assertEqual(sum(e['event']=='start' and e['kind']=='inspection' for e in events),2)
+        quality=json.loads((folder/'diagnostics/quality.json').read_text())
+        self.assertTrue(all(a['registration_version']==REGISTRATION_VERSION for a in quality['alignments']))
+        self.assertEqual(quality['uncovered_pixels'],0)
+        with Image.open(folder/'candidate.png') as image:self.assertNotEqual(image.getpixel((image.width//2,image.height//2)),(255,0,255))
+
+
 if __name__=="__main__":
     unittest.main()
