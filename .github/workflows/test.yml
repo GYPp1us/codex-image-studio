@@ -27,4 +27,4 @@ jobs:
       - name: 缩略图稳定性回归
         run: npm ci --ignore-scripts && npm test
       - name: Python 编译
-        run: python -m py_compile app.py cli_scheduler.py local_edit.py stitch_engine.py stitch_workflow.py deploy/*.py tests/*.py
+        run: python -m py_compile *.py deploy/*.py scripts/*.py tests/*.py

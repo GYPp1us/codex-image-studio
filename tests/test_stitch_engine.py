@@ -32,7 +32,7 @@ class StitchEngineTests(unittest.TestCase):
                 i=tile['index']
                 if tile['column']+1<grid:self.assertEqual(tile['box'][2]-plan['tiles'][i+1]['box'][0],64)
                 if tile['row']+1<grid:self.assertEqual(tile['box'][3]-plan['tiles'][i+grid]['box'][1],36)
-        with self.assertRaises(engine.StitchError):engine.layout(4096,4096,16)
+        self.assertEqual(engine.layout(4096,4096,16)['output_size'],[16384,16384])
         with self.assertRaises(engine.StitchError):engine.layout(100,100,16)
 
     def test_sift_ransac_recovers_single_global_affine(self):

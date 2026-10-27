@@ -45,6 +45,12 @@ def progress(studio, jid, phase, done=0, units=1, **extra):
     value={"stage":phase,"label":LABELS[index],"done":done,"units":units,"step":index+1,"total":len(PHASES),
            "fraction":(index+min(1,done/max(1,units)))/len(PHASES),"updated":time.time(),"source":"server"}
     value.update(extra)
+    context=getattr(studio,'upscale_progress',None)
+    if context:
+        value['level_fraction']=value['fraction']
+        value['fraction']=(context['index']-1+value['fraction'])/context['count']
+        value.update(level=context['index'],levels=context['count'])
+        value['label']=f"第 {context['index']}/{context['count']} 级 · "+value['label']
     previous=studio.query('SELECT progress_detail FROM jobs WHERE id=?',(jid,),True)
     if previous:
         with contextlib.suppress(ValueError,TypeError):value['fraction']=max(value['fraction'],json.loads(previous['progress_detail'] or '{}').get('fraction',0))
@@ -65,7 +71,7 @@ def find_image(studio,thread_id,directory):
     return candidate if candidate.is_file() and not candidate.is_symlink() else None
 
 
-async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None):
+async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False):
     ensure_active(studio,jid)
     directory=folder/"calls"/name;directory.mkdir(parents=True,exist_ok=True,mode=0o700)
     (directory/"output.png").unlink(missing_ok=True)
@@ -87,15 +93,17 @@ async def cli_call(studio,jid,folder,name,instruction,references,model,effort,ph
             ensure_active(studio,jid)
             process=await asyncio.create_subprocess_exec(*args,stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.STDOUT,env=studio.codex_env(),start_new_session=sys.platform!="win32",limit=16*1024*1024)
             studio.PROCESSES[process_key]=process;notify('正在传递')
+            if recorder:=getattr(studio,'record_cli_call',None):recorder(image)
             process.stdin.write(instruction.encode());await process.stdin.drain();process.stdin.close()
             async def consume():
                 nonlocal thread_id
-                with (directory/"events.jsonl").open("a",encoding="utf-8") as local_log,(folder.parent/"events.jsonl").open("a",encoding="utf-8") as parent_log:
+                with (directory/"events.jsonl").open("a",encoding="utf-8") as local_log,(studio.DATA/'jobs'/jid/'events.jsonl').open("a",encoding="utf-8") as parent_log:
                     parent_log.write(json.dumps({"studio_stitch_call":name,"time":time.time()})+"\n")
                     while line:=await process.stdout.readline():
                         text=line.decode(errors="replace");local_log.write(text);local_log.flush();parent_log.write(text);parent_log.flush()
                         try:
                             event=json.loads(text);transition=studio.stage_from_event(event)
+                            if capture_polish:studio.record_polished_prompt(jid,event)
                             if transition:notify(studio.STAGES[transition[0]],True,transition[1])
                             if event.get("type")=="thread.started":
                                 thread_id=event.get("thread_id","");studio.write("UPDATE jobs SET thread_id=? WHERE id=?",(thread_id,jid))
@@ -111,6 +119,7 @@ async def cli_call(studio,jid,folder,name,instruction,references,model,effort,ph
         generated=find_image(studio,thread_id,directory)
         if not generated:raise WorkflowError("当前补绘会话没有返回真实图片，已保留之前完成的块")
         with Image.open(generated) as check:check.verify()
+        save_json(directory/'result.json',{'thread_id':thread_id,'file':str(generated)})
         return generated
     except asyncio.TimeoutError as error:raise WorkflowError("当前补绘或检查超过 15 分钟") from error
     finally:
@@ -122,7 +131,9 @@ async def engine(studio,jid,folder,command,*args):
     async with ENGINE_LOCK:
         ensure_active(studio,jid)
         progress_file.unlink(missing_ok=True)
-        process=await asyncio.create_subprocess_exec(sys.executable,str(studio.ROOT/"stitch_engine.py"),command,str(folder),*map(str,args),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.STDOUT,env=studio.codex_env(),start_new_session=sys.platform!="win32")
+        temporary=folder/'tmp';temporary.mkdir(exist_ok=True)
+        env={**studio.codex_env(),'TMPDIR':str(temporary),'TEMP':str(temporary),'TMP':str(temporary)}
+        process=await asyncio.create_subprocess_exec(sys.executable,str(studio.ROOT/"stitch_engine.py"),command,str(folder),*map(str,args),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.STDOUT,env=env,start_new_session=sys.platform!="win32")
         process_key=f'{jid}:engine';studio.PROCESSES[process_key]=process
         capture=asyncio.create_task(process.communicate());started=time.monotonic()
         try:
@@ -143,7 +154,7 @@ async def engine(studio,jid,folder,command,*args):
                 message=output.decode(errors="replace")[-3000:]
                 try:message=json.loads(message.strip().splitlines()[-1]).get("error",message)
                 except (ValueError,IndexError):pass
-                with (folder.parent/'events.jsonl').open('a',encoding='utf-8') as log:log.write(json.dumps({'studio_engine_error':command,'message':message},ensure_ascii=False)+'\n')
+                with (studio.DATA/'jobs'/jid/'events.jsonl').open('a',encoding='utf-8') as log:log.write(json.dumps({'studio_engine_error':command,'message':message},ensure_ascii=False)+'\n')
                 raise WorkflowError(message)
         finally:
             await studio.retire_process(process_key)
@@ -152,7 +163,7 @@ async def engine(studio,jid,folder,command,*args):
 
 def tile_instruction(options,plan,tile,prompt):
     template=normalize_redraw_prompt(options.get("stitch_prompt",DEFAULT_STITCH_PROMPT))
-    values={"tile_index":str(tile['index']+1),"tile_count":str(plan['factor']),"bounds":str(tile['box']),"target_size":f"{tile['size'][0]}x{tile['size'][1]} pixels"}
+    values={"tile_index":str(tile['index']+1),"tile_count":str(len(plan['tiles'])),"bounds":str(tile['box']),"target_size":f"{tile['size'][0]}x{tile['size'][1]} pixels"}
     for key,value in values.items():template=template.replace('{'+key+'}',value)
     return template.replace("{prompt}",prompt)
 
@@ -167,7 +178,7 @@ async def apply_local_repairs(studio,jid,folder,plan,options,generate):
     for repair in repairs:
         if repair.get('completed'):continue
         index=repair.get('tile');region=repair.get('region');prompt=repair.get('prompt','')
-        if type(index) is not int or not 0<=index<plan['factor'] or not isinstance(region,dict) or not isinstance(prompt,str) or not prompt.strip():raise WorkflowError('局部修复范围或要求无效')
+        if type(index) is not int or index not in {t['index'] for t in plan['tiles']} or not isinstance(region,dict) or not isinstance(prompt,str) or not prompt.strip():raise WorkflowError('局部修复范围或要求无效')
         identifier=repair.setdefault('id',studio.uid())
         if not re.fullmatch('[a-f0-9]{32}',identifier):raise WorkflowError('局部修复请求 ID 无效')
         save_json(path,repairs)

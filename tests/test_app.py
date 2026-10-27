@@ -70,6 +70,9 @@ elif 'exec' in sys.argv:
         print(json.dumps({'type':'error','message':'temporary upstream connection reset'}), flush=True)
         sys.exit(1)
     time.sleep(30 if 'TEST_SLOW' in prompt else 3 if 'TEST_CONCURRENCY' in prompt else 0.5)
+    if metadata.get('options',{}).get('polish'):
+        polished='Polished test brief: '+metadata['prompt']
+        print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'<STUDIO_POLISHED_PROMPT>'+polished+'</STUDIO_POLISHED_PROMPT>'}}),flush=True)
     Image.new('RGB',(96,96),(len(prompt)%255,20,30)).save(directory/'output.png')
     print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'Test image contract completed'}}),flush=True)
 ''', encoding="utf-8")
@@ -103,6 +106,17 @@ elif 'exec' in sys.argv:
         path=Path(self.temp.name)/'cli-events.jsonl'
         records=[json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
         return [r for r in records if r['job'] in jobs]
+
+    def stitch_folder(self,jid):
+        root=self.appmod.DATA/'jobs'/jid/'stitch'
+        manifest=json.loads((root/'progressive.json').read_text())
+        return root/manifest['stages'][-1]['folder']
+
+    def parallel_upscale_asset(self):
+        import cv2
+        from test_stitch_engine import texture
+        fixture=io.BytesIO();Image.fromarray(cv2.cvtColor(texture(960,768),cv2.COLOR_BGR2RGB)).save(fixture,'PNG')
+        return self.client.post('/api/assets',files={'file':('parallel-stitch.png',fixture.getvalue(),'image/png')},headers=self.headers).json()['asset']
 
     def peak_calls(self,records,kind=None):
         active=set();peak=0
@@ -502,7 +516,7 @@ elif 'exec' in sys.argv:
         self.assertEqual(base.stat().st_mtime_ns,stamp)
 
     def test_24_four_redraw_children_share_four_slots_and_use_verbatim_calls(self):
-        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        asset=self.parallel_upscale_asset()
         legacy='STUDIO_TILE_REFINEMENT\n完整流程由工作台执行：SIFT、Graph Cut；后端已经预装依赖。{prompt}'
         self.client.patch('/api/settings',json={'paused':True,'concurrency':4,'max_attempts':1,'stitch_prompt':legacy},headers=self.headers)
         jid=None
@@ -514,7 +528,7 @@ elif 'exec' in sys.argv:
             events=self.cli_events({jid})
             self.assertEqual(self.peak_calls(events,'redraw'),4)
             self.assertLessEqual(self.peak_calls(events),4)
-            requests=[json.loads(p.read_text()) for p in (self.appmod.DATA/'jobs'/jid/'stitch'/'calls').glob('*/request.json')]
+            requests=[json.loads(p.read_text()) for p in self.stitch_folder(jid).joinpath('calls').glob('*/request.json')]
             redraw=[r for r in requests if r['kind']=='redraw']
             self.assertEqual(len(redraw),4)
             for request in redraw:
@@ -546,7 +560,7 @@ elif 'exec' in sys.argv:
             self.client.patch('/api/settings',json={'paused':False,'concurrency':2,'max_attempts':3},headers=self.headers)
 
     def test_26_cancel_stops_all_four_children_and_releases_their_permits(self):
-        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        asset=self.parallel_upscale_asset()
         self.client.patch('/api/settings',json={'paused':False,'concurrency':4,'max_attempts':1},headers=self.headers)
         jid=None
         try:
@@ -650,7 +664,7 @@ elif 'exec' in sys.argv:
         source=self.client.get('/api/assets?kind=reference').json()['items'][0]
         jid=self.post('/api/jobs',{'prompt':'Legacy affine mask migration','source_asset_id':source['id'],'stitch':4}).json()['ids'][0]
         job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
-        folder=self.appmod.DATA/'jobs'/jid/'stitch';plan=json.loads((folder/'plan.json').read_text())
+        folder=self.stitch_folder(jid);plan=json.loads((folder/'plan.json').read_text())
         checkpoints={p:p.stat().st_mtime_ns for p in (folder/'redraw').glob('*.png')}
         for tile in plan['tiles']:
             path=folder/'diagnostics'/f"alignment-{tile['index']}.json";data=json.loads(path.read_text());data['registration_version']=2;path.write_text(json.dumps(data))
@@ -661,9 +675,10 @@ elif 'exec' in sys.argv:
         resumed=self.wait_job(jid,timeout=75);self.assertEqual(resumed['status'],'succeeded',resumed['error'])
         self.assertTrue(all(p.stat().st_mtime_ns==stamp for p,stamp in checkpoints.items()))
         events=self.cli_events({jid})
-        self.assertEqual(sum(e['event']=='start' and e['kind']=='redraw' for e in events),4)
+        self.assertEqual(sum(e['event']=='start' and e['kind']=='redraw' for e in events),len(plan['tiles']))
         self.assertEqual(sum(e['event']=='start' and e['kind']=='inspection' for e in events),2)
-        review_request=json.loads((folder/'calls/inspection/request.json').read_text())['worker_instruction']
+        inspection=max((folder/'calls').glob('inspection-*/request.json'),key=lambda p:p.stat().st_mtime_ns)
+        review_request=json.loads(inspection.read_text())['worker_instruction']
         self.assertIn('Legacy affine mask migration',review_request)
         self.assertIn('残留水印和符号',review_request)
         self.assertIn('整图超分',review_request)
@@ -679,7 +694,7 @@ elif 'exec' in sys.argv:
         source=self.client.get('/api/assets?kind=reference').json()['items'][0]
         jid=self.post('/api/jobs',{'prompt':'Bounded tile content repair fixture','source_asset_id':source['id'],'stitch':4}).json()['ids'][0]
         job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
-        folder=self.appmod.DATA/'jobs'/jid/'stitch';before=np.array(Image.open(folder/'redraw/0.png'))
+        folder=self.stitch_folder(jid);before=np.array(Image.open(folder/'redraw/0.png'))
         matrix=json.loads((folder/'diagnostics/alignment-0.json').read_text())['target_matrix']
         retained={p.name:p.read_bytes() for p in (folder/'redraw').glob('*.png') if p.name!='0.png'}
         region={'x':0,'y':20,'width':48,'height':48}
@@ -695,6 +710,21 @@ elif 'exec' in sys.argv:
         self.assertEqual(sum(e['event']=='start' and e['kind']=='image' for e in events),1)
         self.assertTrue(json.loads((folder/'diagnostics/local-repairs.json').read_text())[0]['completed'])
 
+
+    def test_35_polished_prompt_is_saved_without_backfilling_old_jobs(self):
+        jid=self.post('/api/jobs',{'prompt':'A garden with literal {braces}','polish':True}).json()['ids'][0]
+        job=self.wait_job(jid);self.assertEqual(job['status'],'succeeded',job['error'])
+        detail=self.client.get('/api/jobs/'+jid).json()
+        self.assertEqual(detail['polished_prompt'],'Polished test brief: A garden with literal {braces}')
+        self.assertEqual(detail['polish_source'],'worker_report')
+        self.assertTrue(detail['has_polished_prompt'])
+        self.assertEqual(detail['attempts'][-1]['polished_prompt'],detail['polished_prompt'])
+        old_id=self.post('/api/jobs',{'prompt':'Ordinary job without polishing'}).json()['ids'][0]
+        self.wait_job(old_id)
+        self.assertIsNone(self.client.get('/api/jobs/'+old_id).json()['polished_prompt'])
+        self.appmod.record_polished_prompt(jid,{'item':{'type':'tool_call','tool':'image_gen.imagegen','arguments':{'prompt':'Exact tool prompt'}}})
+        self.appmod.record_polished_prompt(jid,{'item':{'type':'agent_message','text':'<STUDIO_POLISHED_PROMPT>Later summary</STUDIO_POLISHED_PROMPT>'}})
+        self.assertEqual(self.client.get('/api/jobs/'+jid).json()['polished_prompt'],'Exact tool prompt')
 
     def test_34_untemplated_bucket_merges_history_without_resurrecting_deleted_groups(self):
         self.client.patch('/api/settings',json={'paused':True},headers=self.headers);ids=[]

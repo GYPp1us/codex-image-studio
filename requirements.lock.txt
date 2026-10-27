@@ -25,3 +25,7 @@ watchfiles==1.3.0
 websockets==17.3
 numpy==2.2.6
 opencv-python-headless==4.13.0.92
+pyvips==3.1.0
+pyvips-binary==8.18.7
+cffi==2.0.0
+pycparser==3.0

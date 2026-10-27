@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw, ImageOps
+import image_runtime as imaging
 
 
 def context_box(size, region):
@@ -15,6 +16,19 @@ def context_box(size, region):
 
 def prepare(source, folder, region, prompt):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
+    measured=imaging.info(source)
+    if measured['width']*measured['height']>16_000_000:
+        box=context_box((measured['width'],measured['height']),region)
+        image=imaging.open_image(source).crop(box[0],box[1],box[2]-box[0],box[3]-box[1])
+        preview=image.thumbnail_image(1600,height=1600,size='down')
+        preview.pngsave(str(folder/'local-context.png'),compression=2,strip=True)
+        imaging.thumbnail(source,folder/'local-full.png',1600)
+        mask=Image.new('RGB',(preview.width,preview.height),'black')
+        x,y,w,h=(region[k] for k in ('x','y','width','height'));sx,sy=preview.width/image.width,preview.height/image.height
+        ImageDraw.Draw(mask).rectangle((round((x-box[0])*sx),round((y-box[1])*sy),max(0,round((x-box[0]+w)*sx)-1),max(0,round((y-box[1]+h)*sy)-1)),fill='white')
+        mask.save(folder/'local-selection.png')
+        instruction=f'编辑 reference-1.png，仅修改 reference-3.png 白色矩形对应区域，黑色区域保持原样。reference-2.png 只作整图构图参考。保持画幅和边界，只输出编辑后的裁图，不输出整图、示意图或边框。修改要求：\n{prompt}'
+        return instruction,[folder/'local-context.png',folder/'local-full.png',folder/'local-selection.png'],(preview.width,preview.height)
     with Image.open(source) as original:
         box=context_box(original.size,region)
         crop=original.crop(box);crop.save(folder/'local-context.png')
@@ -33,6 +47,29 @@ reference-3.png 是选区示意图：只修改白色矩形内的内容，黑色�
 
 
 def compose(source, generated, region, destination):
+    measured=imaging.info(source)
+    if measured['width']*measured['height']>16_000_000:
+        base=imaging.rgb(imaging.open_image(source));redraw=imaging.rgb(imaging.open_image(generated))
+        box=context_box((base.width,base.height),region);cw,ch=box[2]-box[0],box[3]-box[1]
+        if base.hasalpha() and not redraw.hasalpha():redraw=redraw.bandjoin(255)
+        elif not base.hasalpha() and redraw.hasalpha():redraw=redraw[:3]
+        ratio=max(cw/redraw.width,ch/redraw.height)
+        patch=redraw.resize(ratio,kernel='lanczos3')
+        if patch.width<cw or patch.height<ch:patch=patch.embed(0,0,max(cw,patch.width),max(ch,patch.height),extend='copy')
+        patch=patch.crop((patch.width-cw)//2,(patch.height-ch)//2,cw,ch)
+        x,y,w,h=(region[k] for k in ('x','y','width','height'))
+        patch=patch.crop(x-box[0],y-box[1],w,h);original=base.crop(x,y,w,h)
+        xy=imaging.pyvips.Image.xyz(w,h);xx,yy=xy[0],xy[1];feather=min(8,max(1,min(w,h)//8))
+        weight=xx.new_from_image(1).cast('float')
+        distances=[]
+        if x>0:distances.append((xx+1)/(feather+1))
+        if x+w<base.width:distances.append((w-xx)/(feather+1))
+        if y>0:distances.append((yy+1)/(feather+1))
+        if y+h<base.height:distances.append((h-yy)/(feather+1))
+        for distance in distances:weight=(distance<weight).ifthenelse(distance,weight)
+        selected=(patch*weight+original*(1-weight)).rint().cast('uchar')
+        base.insert(selected,x,y,expand=False).pngsave(str(destination),compression=2,strip=True)
+        return Path(destination)
     with Image.open(source) as original,Image.open(generated) as redraw:
         box=context_box(original.size,region)
         mode='RGBA' if 'A' in original.getbands() else 'RGB'

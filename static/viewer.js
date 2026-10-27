@@ -17,7 +17,12 @@
       if(!asset.id)dialog.querySelector('.viewer-download').remove();
       const editButton=dialog.querySelector('[data-view=edit]');editButton.disabled=!asset.id&&!asset.source_job_id;editButton.title=editButton.disabled?'生成完成后可对保存的作品重绘':'';
       this.image.addEventListener('load',()=>{dialog.querySelector('.viewer-loading').hidden=true;this.layout();});
-      this.image.src=asset.url;
+      this.image.src=asset.preview||asset.url;
+      this.tileImages=new Map();this.tileLayer=null;
+      if(asset.tile_template){
+        this.tileLayer=document.createElement('div');this.tileLayer.className='viewer-tile-layer';this.plane.insertBefore(this.tileLayer,this.overlay);
+        const status=document.createElement('span');status.className='viewer-detail-status';status.textContent='放大后加载原生细节';dialog.querySelector('.viewer-header>div').append(status);
+      }
       dialog.querySelector('.viewer-close').onclick=()=>this.close();
       dialog.addEventListener('cancel',e=>{e.preventDefault();this.close();});
       dialog.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>this.action(button.dataset.view));
@@ -35,11 +40,12 @@
     close(pop=true){
       if(!this.dialog)return;
       this.resize?.disconnect();this.dialog.close();this.dialog.remove();this.dialog=null;this.points.clear();document.documentElement.classList.remove('viewer-open');
+      this.tileImages?.clear();this.tileLayer=null;clearTimeout(this.tileTimer);
       if(pop&&history.state?.studioViewer)history.back();
     }
     point(e){const r=this.stage.getBoundingClientRect();return {x:e.clientX-r.left-r.width/2,y:e.clientY-r.top-r.height/2};}
     native(point){return project(point,{x:this.x,y:this.y,scale:this.base*this.zoom},this.asset);}
-    layout(){if(!this.dialog)return;this.base=Math.min(this.stage.clientWidth*.96/this.asset.width,this.stage.clientHeight*.96/this.asset.height,1);this.paint();}
+    layout(){if(!this.dialog)return;this.base=Math.min(this.stage.clientWidth*.96/this.asset.width,this.stage.clientHeight*.96/this.asset.height,1);this.maxZoom=Math.max(64,2/Math.max(this.base,1e-12));this.paint();}
     paint(){
       if(!this.base)return;
       const scale=this.base*this.zoom,w=this.asset.width*scale,h=this.asset.height*scale;
@@ -47,9 +53,29 @@
       this.y=clamp(this.y,-Math.max(0,(h-this.stage.clientHeight)/2),Math.max(0,(h-this.stage.clientHeight)/2));
       Object.assign(this.plane.style,{width:w+'px',height:h+'px',transform:`translate(calc(-50% + ${this.x}px),calc(-50% + ${this.y}px))`});
       this.dialog.querySelector('[data-view=native]').textContent=Math.round(scale*100)+'%';this.updateSelection();
+      if(this.tileLayer){clearTimeout(this.tileTimer);this.tileTimer=setTimeout(()=>this.paintTiles(),70);}
+    }
+    paintTiles(){
+      if(!this.dialog||!this.tileLayer)return;
+      const a=this.asset,scale=this.base*this.zoom,maximum=Math.ceil(Math.log2(Math.max(a.width,a.height)));
+      const level=clamp(Math.ceil(maximum+Math.log2(scale)),0,maximum),divisor=2**(maximum-level),span=512*divisor;
+      const left=clamp(a.width/2+(-this.stage.clientWidth/2-this.x)/scale,0,a.width),right=clamp(a.width/2+(this.stage.clientWidth/2-this.x)/scale,0,a.width);
+      const top=clamp(a.height/2+(-this.stage.clientHeight/2-this.y)/scale,0,a.height),bottom=clamp(a.height/2+(this.stage.clientHeight/2-this.y)/scale,0,a.height);
+      const wanted=new Set();
+      for(let y=Math.max(0,Math.floor(top/span));y<Math.min(Math.ceil(a.height/span),Math.floor(bottom/span)+1);y++){
+        for(let x=Math.max(0,Math.floor(left/span));x<Math.min(Math.ceil(a.width/span),Math.floor(right/span)+1);x++){
+          const key=`${level}/${x}/${y}`;wanted.add(key);if(this.tileImages.has(key))continue;
+          const image=document.createElement('img');image.alt='';image.draggable=false;
+          Object.assign(image.style,{left:100*x*span/a.width+'%',top:100*y*span/a.height+'%',width:100*Math.min(span,a.width-x*span)/a.width+'%',height:100*Math.min(span,a.height-y*span)/a.height+'%'});
+          image.onload=()=>{if(this.dialog)this.dialog.querySelector('.viewer-detail-status').textContent='按需显示原生细节';};
+          image.onerror=()=>{image.style.display='none';if(this.dialog)this.dialog.querySelector('.viewer-detail-status').textContent='细节暂不可用，可下载完整原图';};
+          image.src=a.tile_template.replace('{level}',level).replace('{x}',x).replace('{y}',y);this.tileLayer.append(image);this.tileImages.set(key,image);
+        }
+      }
+      for(const [key,image] of this.tileImages)if(!wanted.has(key)){image.remove();this.tileImages.delete(key);}
     }
     setZoom(zoom,point={x:0,y:0}){
-      const anchor=this.native(point);this.zoom=clamp(zoom,1,64);const scale=this.base*this.zoom;
+      const anchor=this.native(point);this.zoom=clamp(zoom,1,this.maxZoom||64);const scale=this.base*this.zoom;
       this.x=point.x-(anchor.x-this.asset.width/2)*scale;this.y=point.y-(anchor.y-this.asset.height/2)*scale;this.paint();
     }
     down(e){
@@ -59,7 +85,7 @@
     }
     move(e){
       if(!this.points.has(e.pointerId)||!this.gesture)return;e.preventDefault();this.points.set(e.pointerId,this.point(e));const g=this.gesture;
-      if(this.points.size>=2){const [a,b]=[...this.points.values()],mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2};if(g.kind!=='pinch')return;this.zoom=clamp(g.zoom*Math.hypot(a.x-b.x,a.y-b.y)/Math.max(1,g.distance),1,64);const scale=this.base*this.zoom;this.x=mid.x-(g.anchor.x-this.asset.width/2)*scale;this.y=mid.y-(g.anchor.y-this.asset.height/2)*scale;this.paint();}
+      if(this.points.size>=2){const [a,b]=[...this.points.values()],mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2};if(g.kind!=='pinch')return;this.zoom=clamp(g.zoom*Math.hypot(a.x-b.x,a.y-b.y)/Math.max(1,g.distance),1,this.maxZoom||64);const scale=this.base*this.zoom;this.x=mid.x-(g.anchor.x-this.asset.width/2)*scale;this.y=mid.y-(g.anchor.y-this.asset.height/2)*scale;this.paint();}
       else if(g.kind==='select'){this.region=rectangle(g.anchor,this.native(this.point(e)),this.asset);this.updateSelection();}
       else if(g.kind==='pan'){const p=this.point(e);this.x=g.x+p.x-g.start.x;this.y=g.y+p.y-g.start.y;this.paint();}
     }

@@ -4,7 +4,7 @@ const {parseHTML}=require('linkedom');
 function fixture(){
   const {document,HTMLElement}=parseHTML('<html><body></body></html>');
   HTMLElement.prototype.showModal=function(){this.open=true;};HTMLElement.prototype.close=function(){this.open=false;};
-  const context=vm.createContext({document,Map,Math,window:{addEventListener(){}},history:{state:{},pushState(){},back(){}},location:{href:'https://image.test/'},ResizeObserver:class{observe(){}disconnect(){}}});
+  const context=vm.createContext({document,Map,Math,setTimeout,clearTimeout,window:{addEventListener(){}},history:{state:{},pushState(){},back(){}},location:{href:'https://image.test/'},ResizeObserver:class{observe(){}disconnect(){}}});
   vm.runInContext(fs.readFileSync(require.resolve('../static/viewer.js'),'utf8'),context);
   const viewer=context.StudioViewer;viewer.open({id:'source',url:'/media/source',width:1000,height:800});
   Object.defineProperties(viewer.stage,{clientWidth:{value:400},clientHeight:{value:600}});
@@ -30,4 +30,17 @@ test('submission requires a meaningful rectangle and forwards the native bounds 
   viewer.region={x:20,y:30,width:10,height:20};viewer.dialog.querySelector('textarea').value='  修改花朵  ';viewer.updateSelection();assert.equal(viewer.dialog.querySelector('.viewer-submit').disabled,true);
   viewer.region.width=80;viewer.updateSelection();await viewer.submit();
   assert.equal(received.prompt,'修改花朵');assert.equal(received.region.width,80);assert.equal(received.region.x,20);assert.equal(received.asset.id,'source');
+});
+
+test('huge images use a bounded preview and visible native tiles, including the partial right edge',()=>{
+  const {viewer}=fixture();
+  viewer.open({id:'large',url:'/media/large',preview:'/media/large?preview=1',width:40001,height:1801,tile_template:'/api/assets/large/tiles/{level}/{x}/{y}'});
+  Object.defineProperties(viewer.stage,{clientWidth:{value:400},clientHeight:{value:600}});viewer.layout();viewer.action('native');
+  assert.equal(viewer.image.getAttribute('src'),'/media/large?preview=1');
+  assert.ok(Math.abs(viewer.base*viewer.zoom-1)<1e-8);
+  viewer.x=-(40001-400)/2;viewer.paint();viewer.paintTiles();
+  assert.ok(viewer.tileImages.size>0&&viewer.tileImages.size<=12);
+  const right=[...viewer.tileImages.entries()].find(([key])=>key.includes('/78/'))?.[1];
+  assert.ok(right);assert.ok(parseFloat(right.style.width)<100*512/40001);
+  viewer.close(false);
 });

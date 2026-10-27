@@ -13,6 +13,7 @@ if test -s "$APP/current/requirements.lock.txt"; then
 fi
 sudo "$APP/venv/bin/pip" install --disable-pip-version-check -r "$DEPS"
 sudo "$APP/venv/bin/python" -c 'import cv2,numpy; assert hasattr(cv2,"SIFT_create") and hasattr(cv2,"detail_GraphCutSeamFinder") and hasattr(cv2,"detail_MultiBandBlender"); print("Stitch engine ready:", cv2.__version__, numpy.__version__)'
+sudo "$APP/venv/bin/python" -c 'import pyvips; print("Streaming image engine ready:", pyvips.version(0))'
 sudo install -m 755 "$APP/current/deploy/image-studio-stitch" /usr/local/bin/image-studio-stitch
 if ! sudo test -s "$DATA/setup-token"; then
   sudo python3 -c "import secrets,pathlib;pathlib.Path('$DATA/setup-token').write_text(secrets.token_urlsafe(24)+'\n')"

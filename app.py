@@ -16,6 +16,7 @@ import sqlite3
 import time
 import uuid
 import sys
+import tempfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Literal
@@ -30,6 +31,9 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from stitch_workflow import DEFAULT_STITCH_PROMPT, normalize_redraw_prompt
 from cli_scheduler import CallPool
+import image_runtime as imaging
+from storage_manager import Storage, StorageFull, tree_bytes
+from prompt_capture import extract as extract_polished_prompt,REPORT_INSTRUCTION
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -60,9 +64,9 @@ DEFAULT_POLISH_PROMPT = DEFAULT_CALL_PROMPT.replace(
     "Use your enhanced prompt with the built-in image tool; do not pass the original text through unchanged. "
     "Briefly report the enhanced creative brief in your response so it remains available in the task log."
 ).replace("BEGIN EXACT IMAGE PROMPT", "BEGIN USER CREATIVE BRIEF").replace("END EXACT IMAGE PROMPT", "END USER CREATIVE BRIEF")
-MAX_UPLOAD = 20 * 1024 * 1024
 UNTEMPLATED_COLLECTION = 'untemplated'
-Image.MAX_IMAGE_PIXELS = 64_000_000
+Image.MAX_IMAGE_PIXELS = None
+STORAGE = Storage(DATA,lambda:setting('storage_limit_bytes',0))
 SESSION_AGE = 7 * 86400
 PROCESSES: dict[str, asyncio.subprocess.Process] = {}
 STOPPING: dict[int, asyncio.Task] = {}
@@ -128,7 +132,7 @@ def set_setting(key, value):
 
 
 def initialize():
-    for name in ("assets", "thumbs", "jobs", "codex"):
+    for name in ("assets", "thumbs", "jobs", "codex", "previews", "tmp"):
         (DATA / name).mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(DATA, 0o700)
     with db() as c:
@@ -160,6 +164,10 @@ def initialize():
                 c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
         if "progress_detail" not in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}:
             c.execute("ALTER TABLE jobs ADD COLUMN progress_detail TEXT NOT NULL DEFAULT '{}'")
+        for table in ('jobs','attempts'):
+            columns={r[1] for r in c.execute(f'PRAGMA table_info({table})')}
+            for name,definition in (('polished_prompt',"TEXT NOT NULL DEFAULT ''"),('polish_source',"TEXT NOT NULL DEFAULT ''")):
+                if name not in columns:c.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
         c.execute("CREATE INDEX IF NOT EXISTS jobs_collection ON jobs(collection_id,created)")
         for table in ("assets", "collections"):
             if "deleted" not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
@@ -342,9 +350,6 @@ async def security(request, call_next):
         origin = request.headers.get("origin")
         if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
             return JSONResponse({"detail": "跨站请求已拒绝"}, status_code=403)
-        length = request.headers.get("content-length", "0")
-        if not length.isdigit() or int(length) > MAX_UPLOAD + 1024 * 1024:
-            return JSONResponse({"detail": "上传内容过大，单张图片上限 20 MB"}, status_code=413)
     response = await call_next(request)
     response.headers.update({"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "same-origin", "Content-Security-Policy": "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
     if request.url.path.startswith(("/api/", "/media/")):
@@ -435,7 +440,7 @@ def change_password(body: dict, request: Request, session=Depends(require_user))
 
 @app.get("/api/state")
 def state(session=Depends(require_user)):
-    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "calls":CALL_POOL.snapshot() if CALL_POOL else {"active":0,"waiting":0}, "counts": query("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"]}
+    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "calls":CALL_POOL.snapshot() if CALL_POOL else {"active":0,"waiting":0}, "counts": query("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"], 'storage':STORAGE.usage()}
 
 
 @app.get("/api/account")
@@ -521,6 +526,7 @@ class Settings(BaseModel):
     call_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
     polish_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
     stitch_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
+    storage_limit_bytes: int | None = Field(default=None,ge=0)
 
 
 @app.patch("/api/settings")
@@ -529,9 +535,10 @@ def settings(body: Settings, session=Depends(require_user)):
     for template in (body.call_prompt, body.polish_prompt, body.stitch_prompt):
         if template is not None and "{prompt}" not in template:
             raise HTTPException(400, "调用提示词必须包含 {prompt} 变量")
-    for key, value in body.model_dump(exclude_none=True).items():
+    for key, value in body.model_dump(exclude_none=True,exclude_unset=True).items():
         if key=='stitch_prompt':value=normalize_redraw_prompt(value)
         set_setting(key, value)
+    STORAGE.invalidate()
     WAKE.set()
     if CALL_POOL:CALL_POOL.notify()
     return {"ok": True}
@@ -639,53 +646,58 @@ async def cancel_login(session=Depends(require_user)):
 def serialize_asset(a):
     if not a:
         return None
-    return {k: v for k, v in a.items() if k not in ("path", "sha")} | {"url": f"/media/{a['id']}", "thumbnail": f"/media/{a['id']}?thumbnail=1"}
+    large=a['width']*a['height']>16_000_000 or max(a['width'],a['height'])>8192
+    return {k: v for k, v in a.items() if k not in ("path", "sha")} | {"url": f"/media/{a['id']}", "thumbnail": f"/media/{a['id']}?thumbnail=1",'preview':f"/media/{a['id']}?preview=1" if large else f"/media/{a['id']}", 'tile_template':f"/api/assets/{a['id']}/tiles/{{level}}/{{x}}/{{y}}" if large else None}
 
 
-def store_image(content: bytes, name: str, kind="reference", job_id=None, pixel_limit=36_000_000):
-    try:
-        with Image.open(io.BytesIO(content)) as original:
-            original.verify()
-        with Image.open(io.BytesIO(content)) as original:
-            if original.width * original.height > pixel_limit:
-                raise ValueError("图片超过允许像素上限")
-            im = ImageOps.exif_transpose(original)
-            if im.width * im.height > pixel_limit:
-                raise ValueError("图片超过允许像素上限")
-            im = im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
-            width, height = im.size
-            cleaned = io.BytesIO()
-            im.save(cleaned, "PNG")
-            data = cleaned.getvalue()
-            sha = hashlib.sha256(data).hexdigest()
-            existing = query("SELECT * FROM assets WHERE sha=?", (sha,), True)
+def store_image_path(source,name,kind='reference',job_id=None):
+    temporary=DATA/'tmp'/f'{uid()}.png'
+    with STORAGE.lock:
+        try:
+            STORAGE.require(0,'保存图片')
+            measured=imaging.normalize(source,temporary)
+            sha=imaging.file_sha(temporary)
+            existing=query('SELECT * FROM assets WHERE sha=?',(sha,),True)
             if existing:
-                if existing.get("deleted"):
-                    write("UPDATE assets SET deleted=0 WHERE id=?", (existing["id"],))
-                    existing["deleted"] = 0
-                if kind == "reference":
-                    write("UPDATE assets SET kind='reference' WHERE id=?", (existing["id"],))
-                    existing["kind"] = "reference"
-                return serialize_asset(existing), True
-            aid = uid()
-            path = DATA / "assets" / f"{aid}.png"
-            path.write_bytes(data)
-            im.thumbnail((480, 480))
-            im.save(DATA / "thumbs" / f"{aid}.webp", "WEBP", quality=82)
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
-        raise HTTPException(400, "无法读取图片，请使用 PNG、JPEG 或 WebP，且不超过 3600 万像素。") from exc
-    write("INSERT INTO assets(id,sha,path,kind,name,width,height,bytes,created,job_id) VALUES (?,?,?,?,?,?,?,?,?,?)", (aid, sha, str(path), kind, name[:160], width, height, len(data), now(), job_id))
-    return serialize_asset(query("SELECT * FROM assets WHERE id=?", (aid,), True)), False
+                write("UPDATE assets SET deleted=0,kind=? WHERE id=?",('reference' if kind=='reference' else existing['kind'],existing['id']))
+                return serialize_asset(query('SELECT * FROM assets WHERE id=?',(existing['id'],),True)),True
+            STORAGE.require(0,'保存图片')
+            aid=uid();path=DATA/'assets'/f'{aid}.png';temporary.replace(path)
+            imaging.thumbnail(path,DATA/'thumbs'/f'{aid}.webp',480)
+            imaging.thumbnail(path,DATA/'thumbs'/f'{aid}-preview.webp',1600)
+            try:STORAGE.require(0,'保存图片预览')
+            except StorageFull:
+                path.unlink(missing_ok=True)
+                for suffix in ('.webp','-preview.webp'):(DATA/'thumbs'/f'{aid}{suffix}').unlink(missing_ok=True)
+                raise
+            write('INSERT INTO assets(id,sha,path,kind,name,width,height,bytes,created,job_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                  (aid,sha,str(path),kind,name[:160],measured['width'],measured['height'],path.stat().st_size,now(),job_id))
+            return serialize_asset(query('SELECT * FROM assets WHERE id=?',(aid,),True)),False
+        except (imaging.pyvips.Error,UnidentifiedImageError,OSError,ValueError) as exc:
+            raise HTTPException(400,'无法读取完整图片，请使用有效的 PNG、JPEG、WebP 或 TIFF。') from exc
+        finally:
+            temporary.unlink(missing_ok=True);STORAGE.invalidate()
+
+
+def store_image(content: bytes,name: str,kind='reference',job_id=None,pixel_limit=None):
+    temporary=DATA/'tmp'/f'{uid()}.upload'
+    try:
+        STORAGE.require(len(content),'接收图片');temporary.write_bytes(content)
+        return store_image_path(temporary,name,kind,job_id)
+    finally:temporary.unlink(missing_ok=True);STORAGE.invalidate()
 
 
 @app.post("/api/assets")
 async def upload_asset(file: UploadFile = File(...), session=Depends(require_user)):
-    content = await file.read(MAX_UPLOAD + 1)
-    await file.close()
-    if len(content) > MAX_UPLOAD:
-        raise HTTPException(413, "单张参考图不能超过 20 MB")
-    asset, cached = await asyncio.to_thread(store_image, content, Path(file.filename or "参考图").name)
-    return {"asset": asset, "cached": cached}
+    temporary=DATA/'tmp'/f'{uid()}.upload'
+    try:
+        with temporary.open('wb') as output:
+            while chunk:=await file.read(1024*1024):
+                await asyncio.to_thread(STORAGE.require,len(chunk),'上传图片');output.write(chunk)
+        asset,cached=await asyncio.to_thread(store_image_path,temporary,Path(file.filename or '参考图').name)
+        return {'asset':asset,'cached':cached}
+    finally:
+        await file.close();temporary.unlink(missing_ok=True);STORAGE.invalidate()
 
 
 @app.get("/api/assets")
@@ -736,12 +748,13 @@ def restore_asset(aid: str, session=Depends(require_user)):
 
 
 @app.get("/media/{aid}")
-def media(aid: str, thumbnail: bool = False, download: bool = False, session=Depends(require_user)):
+def media(aid: str, thumbnail: bool = False, preview: bool = False, download: bool = False, session=Depends(require_user)):
     a = query("SELECT * FROM assets WHERE id=?", (aid,), True)
     if not a:
         raise HTTPException(404, "图片不存在")
-    path = DATA / "thumbs" / f"{a['id']}.webp" if thumbnail else Path(a["path"])
-    return FileResponse(path, media_type="image/webp" if thumbnail else "image/png", filename=(Path(a["name"]).stem + ".png") if download else None)
+    path=DATA/'thumbs'/f"{a['id']}{'-preview' if preview else ''}.webp" if thumbnail or preview else Path(a['path'])
+    if (thumbnail or preview) and not path.exists():imaging.thumbnail(a['path'],path,1600 if preview else 480)
+    return FileResponse(path,media_type='image/webp' if thumbnail or preview else 'image/png',filename=(Path(a['name']).stem+'.png') if download else None)
 
 
 class PromptInput(BaseModel):
@@ -845,7 +858,7 @@ class JobInput(BaseModel):
     transparent: bool = False
     polish: bool = False
     size: Literal["auto", "1024", "2048", "4096"] = "auto"
-    stitch: Literal[0,4,9,16] = 0
+    stitch: Literal[0,4,16,64] = 0
     source_asset_id: str | None = Field(default=None, max_length=64)
     region: Rectangle | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=5)
@@ -865,6 +878,7 @@ def serialize_job(j):
     j["outputs"] = [serialize_asset(a) for aid in j["output_ids"] if (a := query("SELECT * FROM assets WHERE id=? AND deleted=0", (aid,), True))]
     j["references"] = [serialize_asset(a) for aid in j["refs"] if (a := query("SELECT * FROM assets WHERE id=?", (aid,), True))]
     j["progress"] = job_progress(j)
+    j['has_polished_prompt']=bool(j.pop('polished_prompt',''))
     return j
 
 
@@ -922,7 +936,7 @@ def stage_from_event(event):
     return None
 
 
-def create_jobs(body):
+def _create_jobs(body):
     if not body.prompt.strip():
         raise HTTPException(400, "提示词不能为空")
     model = body.model or setting("model", MODEL)
@@ -943,14 +957,15 @@ def create_jobs(body):
             try:context_box((source['width'],source['height']),body.region.model_dump())
             except ValueError as error:raise HTTPException(400,str(error)) from error
         else:
-            from stitch_engine import layout, StitchError
-            try:layout(source['width'],source['height'],body.stitch)
-            except StitchError as error:raise HTTPException(400,str(error)) from error
+            from stitch_planner import progressive_plan, PlanError
+            try:progressive_plan(source['width'],source['height'],body.stitch)
+            except PlanError as error:raise HTTPException(400,str(error)) from error
         if body.source_asset_id not in refs:refs.append(body.source_asset_id)
         if len(refs)>8:raise HTTPException(400,'每次最多使用 8 张参考图')
     for aid in refs:
         if not query("SELECT id FROM assets WHERE id=?", (aid,), True):
             raise HTTPException(400, "参考图不存在，请重新选择")
+    STORAGE.require(0,'提交新任务')
     if query("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued','running','retrying')", one=True)["n"] + body.count > 100:
         raise HTTPException(429, "队列最多容纳 100 个任务，请等待部分任务完成")
     template = query("SELECT id,title FROM templates WHERE id=?", (body.template_id,), True) if body.template_id else None
@@ -973,6 +988,10 @@ def create_jobs(body):
     return {"ids": ids, "batch_id": batch, "collection_id": collection_id}
 
 
+def create_jobs(body):
+    with STORAGE.lock:return _create_jobs(body)
+
+
 @app.post("/api/jobs")
 async def add_jobs(body: JobInput, session=Depends(require_user)):
     code, status = await command(CODEX_BIN, "login", "status", timeout=10)
@@ -982,7 +1001,7 @@ async def add_jobs(body: JobInput, session=Depends(require_user)):
 
 
 class UpscaleInput(BaseModel):
-    factor: Literal[4,9,16] = 4
+    factor: Literal[4,16,64] = 4
     model: str | None = Field(default=None,max_length=100)
     effort: str | None = Field(default=None,max_length=20)
 
@@ -1014,10 +1033,25 @@ async def upscale_asset(aid: str, body: UpscaleInput, session=Depends(require_us
 
 
 @app.get('/api/jobs/{jid}/stitch/{artifact}')
-def stitch_artifact(jid: str, artifact: str, session=Depends(require_user)):
+def stitch_artifact(jid: str, artifact: str, preview: bool=False, session=Depends(require_user)):
     files={'preview':'preview.png','overview':'overview.png','inspection':'inspection.png','candidate':'candidate.png','base':'base.png','report':'diagnostics/quality.json'}
     if not re.fullmatch('[a-f0-9]{32}',jid) or artifact not in files:raise HTTPException(404)
     path=DATA/'jobs'/jid/'stitch'/files[artifact]
+    from upscale_api import load_manifest,stage_folder
+    from stitch_planner import public_plan
+    manifest=load_manifest(sys.modules[__name__],jid)
+    if manifest and artifact!='base':
+        active=next((s for s in reversed(manifest['stages']) if s.get('folder')),None)
+        if active:
+            folder=stage_folder(sys.modules[__name__],jid,active['index'])
+            path=folder/(files[artifact] if artifact!='candidate' else 'overview.png')
+            if artifact=='report':
+                quality=json.loads(path.read_text()) if path.exists() else {}
+                return quality|{'progressive':public_plan(manifest)}
+    if artifact=='base' and preview:
+        bounded=path.with_name('base-preview.webp')
+        if not bounded.exists() and path.exists():imaging.thumbnail(path,bounded,1600)
+        path=bounded
     if not path.is_file():raise HTTPException(404,'工作文件尚未生成')
     return FileResponse(path,headers={'Cache-Control':'no-store'})
 
@@ -1029,7 +1063,7 @@ async def save_source_asset(jid: str, session=Depends(require_user)):
     if not json.loads(job['options']).get('stitch'):raise HTTPException(400,'该任务没有独立超分原图')
     base=DATA/'jobs'/jid/'stitch'/'base.png'
     if not base.is_file():raise HTTPException(409,'超分原图尚未生成')
-    asset,_=await asyncio.to_thread(lambda:store_image(base.read_bytes(),f'超分原图-{jid[:8]}.png','generated',jid,64_000_000))
+    asset,_=await asyncio.to_thread(store_image_path,base,f'超分原图-{jid[:8]}.png','generated',jid)
     return asset
 
 
@@ -1128,7 +1162,8 @@ def get_job(jid: str, session=Depends(require_user)):
         scale=int(options.get('stitch',0)**.5) if options.get('stitch') else 1
         dimensions['target']={k:source[k]*scale for k in ('width','height')}
     if value['outputs']:dimensions['result']={k:value['outputs'][0][k] for k in ('width','height')}
-    return value | {"attempts": query("SELECT * FROM attempts WHERE job_id=? ORDER BY number", (jid,)), "call_instruction": instruction,'source_image':source,'image_dimensions':dimensions}
+    return value | {"attempts": query("SELECT * FROM attempts WHERE job_id=? ORDER BY number", (jid,)), "call_instruction": instruction,'source_image':source,'image_dimensions':dimensions,
+                    'polished_prompt':j.get('polished_prompt') or None,'polish_source':j.get('polish_source') or None}
 
 
 @app.get("/api/jobs/{jid}/log")
@@ -1199,6 +1234,7 @@ def job_cancelled(jid):
 def make_instruction(j, directory):
     opts = json.loads(j["options"])
     template = opts.get("call_prompt", DEFAULT_CALL_PROMPT)
+    if opts.get('polish'):template=REPORT_INSTRUCTION+'\n'+template
     image_requirements = opts.get("image_requirements", IMAGE_REQUIREMENTS)
     if image_requirements not in template:
         template = image_requirements + "\n" + template
@@ -1237,17 +1273,25 @@ def record_generated_image(jid, source):
         original=query('SELECT path FROM assets WHERE id=?',(options['source_asset_id'],),True)
         source=compose(original['path'],source,options['region'],DATA/'jobs'/jid/'edited.png')
     if job_cancelled(jid):return
-    result, _ = store_image(source.read_bytes(), f"{'局部重绘' if options.get('region') else '生成作品'}-{jid[:8]}.png", "generated", jid,64_000_000 if options.get('region') else 36_000_000)
+    result, _ = store_image_path(source,f"{'局部重绘' if options.get('region') else '生成作品'}-{jid[:8]}.png",'generated',jid)
     write("UPDATE jobs SET status='succeeded',outputs=?,finished=?,error='' WHERE id=? AND status!='cancelled'", (json.dumps([result["id"]]), now(), jid))
     write("UPDATE attempts SET status='succeeded',finished=?,error='' WHERE job_id=? AND number=(SELECT attempt FROM jobs WHERE id=?) AND status IN ('running','failed')", (now(), jid, jid))
     return result
+
+
+def record_polished_prompt(jid,event):
+    captured=extract_polished_prompt(event)
+    if not captured:return
+    text,source=captured
+    write("UPDATE jobs SET polished_prompt=?,polish_source=? WHERE id=? AND (polish_source!='tool_arguments' OR ?='tool_arguments')",(text,source,jid,source))
+    write("UPDATE attempts SET polished_prompt=?,polish_source=? WHERE job_id=? AND status='running' AND (polish_source!='tool_arguments' OR ?='tool_arguments')",(text,source,jid,source))
 
 
 async def run_job(jid):
     j = query("SELECT * FROM jobs WHERE id=?", (jid,), True)
     options = json.loads(j["options"])
     if options.get('stitch'):
-        from stitch_workflow import run
+        from upscale_workflow import run
         await run(sys.modules[__name__],jid)
         return
     model, effort = options.get("model", MODEL), options.get("effort", EFFORT)
@@ -1266,6 +1310,7 @@ async def run_job(jid):
                 return
             output = directory / "output.png"
             output.unlink(missing_ok=True)
+            if options.get('polish'):write("UPDATE jobs SET polished_prompt='',polish_source='' WHERE id=?",(jid,))
             write("UPDATE jobs SET status='running',attempt=?,error='',stage='sending',stage_source='server',stage_updated=? WHERE id=? AND status!='cancelled'", (attempt, now(), jid))
             write("INSERT INTO attempts(job_id,number,status,started) VALUES (?,?,'running',?)", (jid, attempt, now()))
             args = [CODEX_BIN, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--sandbox", "workspace-write", "-C", str(directory), "-m", model, "-c", f'model_reasoning_effort="{effort}"', "-c", 'cli_auth_credentials_store="file"', "--enable", "image_generation"]
@@ -1299,6 +1344,7 @@ async def run_job(jid):
                                 log.flush()
                                 try:
                                     event = json.loads(text)
+                                    if options.get('polish') and not local:record_polished_prompt(jid,event)
                                     transition = stage_from_event(event)
                                     if transition: set_job_stage(jid, *transition)
                                     if event.get("type") == "thread.started":
@@ -1378,3 +1424,7 @@ def android_download():
 @app.api_route("/", methods=["GET", "HEAD"])
 def index():
     return FileResponse(ROOT / "static" / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+from upscale_api import register as register_upscale_routes
+register_upscale_routes(app,sys.modules[__name__])

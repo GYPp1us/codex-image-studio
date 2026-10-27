@@ -4,22 +4,24 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import mmap
 import os
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
+import image_runtime as imaging
 
-MAX_PIXELS = 64_000_000
+MAX_PIXELS = 0
 BLOCK = 1536
 HALO = 256
 BANDS = 7
-REGISTRATION_VERSION = 3
+REGISTRATION_VERSION = 4
 OUTER_BORDER = 12  # Original-image pixels; convert to output coordinates with the grid.
 PHASES = ("base", "cutting", "redraw", "registration", "color", "seams", "blend", "inspection", "receiving")
 LABELS = ("准备原图", "带重叠切图", "逐块 AI 补绘", "SIFT + RANSAC 配准", "匹配大范围色调", "Graph Cut 寻找接缝", "7 层拉普拉斯融合", "局部质量检查", "回传超分结果")
-Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+Image.MAX_IMAGE_PIXELS = None
 cv2.setNumThreads(1)
 cv2.ocl.setUseOpenCL(False)
 
@@ -50,8 +52,6 @@ def layout(width, height, factor):
     grid = math.isqrt(factor)
     if min(width,height) < grid*48:
         raise StitchError("原图过小，无法保留指定重叠和稳定特征")
-    if width*height*factor > MAX_PIXELS or max(width,height)*grid >= 32700:
-        raise StitchError("目标超过 6400 万像素或单边限制，请降低倍率或使用较小原图；不会静默缩小结果")
     tiles=[]
     for row in range(grid):
         for col in range(grid):
@@ -65,18 +65,26 @@ def layout(width, height, factor):
 
 def prepare(folder, factor):
     folder=Path(folder)
-    with Image.open(folder/"base.png") as image:
-        plan=layout(*image.size,factor)
-        for name in ("crops","redraw","registered","corrected","masks","diagnostics","calls"):
-            (folder/name).mkdir(exist_ok=True)
-        report(folder,"cutting",0,factor)
-        for tile in plan["tiles"]:
-            crop=image.crop(tile["box"])
-            features=cv2.SIFT_create(nfeatures=3000,contrastThreshold=.018).detect(cv2.cvtColor(np.array(crop.convert('RGB')),cv2.COLOR_RGB2GRAY),None)
-            if len(features)<12:raise StitchError(f"第 {tile['index']+1} 块原图纹理不足，无法可靠执行 SIFT 配准；未开始 AI 补绘")
-            crop.save(folder/"crops"/f'{tile["index"]}.png')
-            report(folder,"cutting",tile["index"]+1,factor)
-        preview=image.copy();preview.thumbnail((640,640));preview.save(folder/"preview.png")
+    image=imaging.open_image(folder/'base.png')
+    if (folder/'plan.json').is_file():plan=json.loads((folder/'plan.json').read_text())
+    else:plan=layout(image.width,image.height,factor)
+    if [image.width,image.height]!=[plan['width'],plan['height']]:raise StitchError('本级原图尺寸与计划不一致')
+    for name in ("crops","redraw","registered","corrected","masks","diagnostics","calls"):
+        (folder/name).mkdir(exist_ok=True)
+    report(folder,"cutting",0,len(plan['tiles']))
+    for tile in plan["tiles"]:
+        box=tile['box'];crop=imaging.to_pil(image.crop(box[0],box[1],box[2]-box[0],box[3]-box[1]))
+        features=cv2.SIFT_create(nfeatures=3000,contrastThreshold=.018).detect(cv2.cvtColor(np.array(crop.convert('RGB')),cv2.COLOR_RGB2GRAY),None)
+        if len(features)<12:raise StitchError(f"第 {tile['index']+1} 块原图纹理不足，无法可靠执行 SIFT 配准；未开始 AI 补绘")
+        crop.save(folder/"crops"/f'{tile["index"]}.png')
+        report(folder,"cutting",tile["index"]+1,len(plan['tiles']))
+    imaging.thumbnail(folder/'base.png',folder/'preview.png',1400)
+    imaging.thumbnail(folder/'base.png',folder/'reference-full.png',1600)
+    with Image.open(folder/'preview.png') as preview:
+        draw=ImageDraw.Draw(preview);sx,sy=preview.width/plan['width'],preview.height/plan['height']
+        for tile in plan['tiles']:
+            x0,y0,x1,y1=tile['core'];draw.rectangle((x0*sx,y0*sy,x1*sx-1,y1*sy-1),outline='#45ad7e',width=2)
+        preview.save(folder/'layout.png')
     save_json(folder/"plan.json",plan)
     return plan
 
@@ -121,7 +129,8 @@ def affine_register(original, redraw):
 
 def registration_mask(valid,tile,plan):
     border=cv2.dilate(valid,np.ones((5,5),np.uint8))
-    limit=OUTER_BORDER*plan['grid']
+    scale=max(plan['output_size'][0]/plan['width'],plan['output_size'][1]/plan['height']) if 'width' in plan else plan['grid']
+    limit=math.ceil(OUTER_BORDER*scale)
     extended=cv2.dilate(valid,np.ones((limit*2+1,limit*2+1),np.uint8))
     outer=np.zeros_like(valid);x,y=tile['corner'];tw,th=tile['size'];ow,oh=plan['output_size']
     if x==0:outer[:,:limit]=255
@@ -137,21 +146,23 @@ def registration_mask(valid,tile,plan):
 
 
 def register_tile(folder,index):
-    folder=Path(folder);plan=json.loads((folder/"plan.json").read_text());tile=plan["tiles"][index]
+    folder=Path(folder);plan=json.loads((folder/"plan.json").read_text());tile=next(t for t in plan['tiles'] if t['index']==index)
     original=read_bgr(folder/"crops"/f"{index}.png");redraw=read_bgr(folder/"redraw"/f"{index}.png")
     native_ratio=min(redraw.shape[1]/tile['size'][0],redraw.shape[0]/tile['size'][1])
-    if native_ratio<.75:raise StitchError(f"第 {index+1} 块补绘原生尺寸不足目标的 75%，拒绝靠大幅插值冒充超分，请降低倍率或使用较小原图")
+    minimum=plan.get('min_native_ratio',.75)
+    if native_ratio<minimum:raise StitchError(f"第 {index+1} 块原生尺寸不足目标的 {minimum:.0%}，需要细分或重新生成")
     affine,metrics=affine_register(original,redraw)
     metrics.update(generated_dimensions=[redraw.shape[1],redraw.shape[0]],target_dimensions=tile['size'],native_resolution_ratio=native_ratio)
-    h,w=original.shape[:2];rh,rw=redraw.shape[:2];scale=plan["grid"]
-    transform=affine.copy();transform[:,:2]=affine[:,:2]@np.diag([w/rw,h/rh]);transform*=scale
+    h,w=original.shape[:2];rh,rw=redraw.shape[:2]
+    scales=np.array([plan['output_size'][0]/plan['width'],plan['output_size'][1]/plan['height']])
+    transform=affine.copy();transform[:,:2]=np.diag(scales)@affine[:,:2]@np.diag([w/rw,h/rh]);transform[:,2]*=scales
     size=tuple(tile["size"])
     registered=cv2.warpAffine(redraw,transform,size,flags=cv2.INTER_LANCZOS4,borderMode=cv2.BORDER_REFLECT_101)
     valid=cv2.warpAffine(np.full((rh,rw),255,np.uint8),transform,size,flags=cv2.INTER_NEAREST,borderMode=cv2.BORDER_CONSTANT,borderValue=0)
     # Reflected AI pixels are allowed only in a bounded outer-canvas strip.
     # Interior gaps keep their original mask and must never be filled by this allowance.
     border,border_metrics=registration_mask(valid,tile,plan);metrics.update(border_metrics)
-    x,y=tile['corner'];cx0,cy0,cx1,cy1=[v*scale for v in tile['core']]
+    x,y=tile['corner'];cx0,cy0,cx1,cy1=[round(v*scales[n%2]) for n,v in enumerate(tile['core'])]
     missing=int(np.count_nonzero(border[cy0-y:cy1-y,cx0-x:cx1-x]==0))
     if missing:
         save_json(folder/'diagnostics'/f'alignment-rejected-{index}.json',{'missing_core_pixels':missing,**metrics})
@@ -171,7 +182,7 @@ def register_tile(folder,index):
 
 def refresh_registered_tile(folder,index,region):
     """A bounded content edit keeps all pixels outside its ROI and the accepted affine."""
-    folder=Path(folder);plan=json.loads((folder/'plan.json').read_text());tile=plan['tiles'][index]
+    folder=Path(folder);plan=json.loads((folder/'plan.json').read_text());tile=next(t for t in plan['tiles'] if t['index']==index)
     path=folder/'diagnostics'/f'alignment-{index}.json';metrics=json.loads(path.read_text())
     image=read_bgr(folder/'redraw'/f'{index}.png')
     if metrics.get('registration_version')!=REGISTRATION_VERSION or [image.shape[1],image.shape[0]]!=metrics['generated_dimensions']:
@@ -260,25 +271,30 @@ def compose(folder):
             output[y0:y1,x0:x1]=np.clip(core[:,:,::-1],0,255).astype(np.uint8)
             completed+=1
             del blender,result,coverage,core
+        output.flush()
+        if hasattr(output._mmap,'madvise'):output._mmap.madvise(mmap.MADV_DONTNEED)
     output.flush();report(folder,"blend",completed,total)
     if uncovered: raise StitchError(f"拼接覆盖检查发现 {uncovered} 个空白像素，拒绝发布结果；请重试补绘")
-    result=Image.fromarray(output)
-    with Image.open(folder/"base.png") as base:
-        if "A" in base.getbands(): result.putalpha(base.getchannel("A").resize((width,height),Image.Resampling.LANCZOS))
-    result.save(folder/"candidate.png")
-    make_inspection(folder,result,plan)
+    output._mmap.close();del output
+    imaging.raw_to_png(folder/'canvas.rgb',folder/'candidate.png',width,height,folder/'base.png')
+    make_inspection(folder,imaging.open_image(folder/'candidate.png'),plan)
     alignments=[json.loads((folder/'diagnostics'/f"alignment-{tile['index']}.json").read_text()) for tile in plan['tiles']]
     save_json(folder/"diagnostics"/"quality.json",{"coverage_pixels":width*height,"uncovered_pixels":uncovered,"dimensions":[width,height],"bands":BANDS,"seam":"GraphCut/COST_COLOR_GRAD","warp":"one affine per tile","optical_flow":False,"alignments":alignments,"visual_review":"pending"})
-    del result,output
     (folder/"canvas.rgb").unlink(missing_ok=True)
     report(folder,"inspection",0,1)
 
 
 def make_inspection(folder, image, plan):
-    width,height=image.size;panel=512
+    width,height=(image.width,image.height);panel=512
     points=[("Subject",width//2,height//2),("Foreground",width//3,height*4//5),("Background",width*4//5,height//5)]
-    grid=plan["grid"]
-    points.extend((f"Seam {i+1}",round(width*(i+1)/grid),round(height/grid)) for i in range(min(3,grid-1)))
+    seams=[]
+    for tile in plan['tiles']:
+        a,b,c,d=tile['core'];sx,sy=width/plan['width'],height/plan['height']
+        if c<plan['width']:seams.append((f"Seam {tile['index']+1}R",round(c*sx),round((b+d)*sy/2)))
+        if d<plan['height']:seams.append((f"Seam {tile['index']+1}B",round((a+c)*sx/2),round(d*sy)))
+    if seams:
+        indices=sorted(set(round(i*(len(seams)-1)/max(1,min(5,len(seams)-1))) for i in range(min(6,len(seams)))))
+        points.extend(seams[i] for i in indices)
     while len(points)<6: points.append(("Edge",width-256,height-256))
     repairs=[]
     for tile in plan['tiles']:
@@ -290,10 +306,10 @@ def make_inspection(folder, image, plan):
     sheet=Image.new("RGB",(panel*3,(panel+28)*math.ceil(len(points)/3)),"#faf9f6");draw=ImageDraw.Draw(sheet)
     for i,(title,x,y) in enumerate(points):
         left=max(0,min(width-panel,x-panel//2));top=max(0,min(height-panel,y-panel//2))
-        crop=image.crop((left,top,min(width,left+panel),min(height,top+panel))).convert("RGB")
+        crop=imaging.to_pil(image.crop(left,top,min(panel,width-left),min(panel,height-top))).convert('RGB')
         sheet.paste(crop,((i%3)*panel,(i//3)*(panel+28)+28));draw.text(((i%3)*panel+8,(i//3)*(panel+28)+6),title,fill="#30372b")
     sheet.save(Path(folder)/"inspection.png")
-    preview=image.copy();preview.thumbnail((1400,1400));preview.save(Path(folder)/"overview.png")
+    imaging.thumbnail(Path(folder)/'candidate.png',Path(folder)/'overview.png',1400)
 
 
 def main():

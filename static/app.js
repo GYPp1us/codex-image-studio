@@ -33,11 +33,11 @@ const icons = {
   terminal:'<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 8 4 4-4 4m7 0h3"/>'
 };
 const icon = (n) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[n] || icons.image}</svg>`;
-const navs = [["create","spark","创作"],["works","layers","作品"],["queue","queue","任务队列"],["library","grid","参考图库"],["prompts","book","模板"]];
+const navs = [["create","spark","创作"],["works","layers","作品"],["upscale","image","超分"],["queue","queue","任务队列"],["library","grid","参考图库"],["prompts","book","模板"]];
 const labels = {queued:"等待中",running:"生成中",retrying:"等待重试",succeeded:"已完成",failed:"失败",cancelled:"已取消"};
 const statusPill = status => `<span class="pill ${status === "succeeded" ? "green" : status === "failed" ? "red" : status === "running" ? "amber" : ""}"><span class="dot"></span>${labels[status] || esc(status)}</span>`;
 const fmtTime = t => new Date(t * 1000).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
-const fmtSize = n => n > 1048576 ? `${(n/1048576).toFixed(1)} MB` : `${Math.round(n/1024)} KB`;
+const fmtSize = n => n >= 1073741824 ? `${(n/1073741824).toFixed(2)} GB` : n > 1048576 ? `${(n/1048576).toFixed(1)} MB` : `${Math.round(n/1024)} KB`;
 function modelItems(){return S.models?.items||[{id:S.config?.model||"gpt-6.1-sol",name:"GPT-6.1 Sol",efforts:["low","medium","high","xhigh","max"]}];}
 function modelOptions(){return modelItems().map(m=>`<option value="${esc(m.id)}" ${m.id===S.config.model?"selected":""}>${esc(m.name)}</option>`).join("");}
 function effortOptions(){const m=modelItems().find(m=>m.id===S.config.model)||modelItems()[0];return m.efforts.map(v=>`<option value="${esc(v)}" ${v===S.config.effort?"selected":""}>${esc(v)}</option>`).join("");}
@@ -63,7 +63,7 @@ const post = (path,body={}) => api(path,{method:"POST",body});
 function rememberAssets(assets) { for(const asset of assets) if(asset) S.assetMap.set(asset.id,asset); }
 function rememberJobs(jobs) { for (const j of jobs) { rememberAssets(j.outputs); rememberAssets(j.references);if(j.source_image?.id)rememberAssets([j.source_image]); } }
 function draft() { localStorage.setItem("studio_draft",JSON.stringify({prompt:S.prompt,refs:S.refs,ratio:S.ratio,count:S.count,transparent:S.transparent,polish:S.polish,size:S.size,stitch:S.stitch,template:S.template||null})); }
-function loadDraft() { try { const d=JSON.parse(localStorage.getItem("studio_draft")); if(d) { S.prompt=String(d.prompt||"");S.refs=Array.isArray(d.refs)?d.refs.slice(0,8):[];S.ratio=d.ratio||"1:1";S.count=Math.max(1,Math.min(20,Number(d.count)||1));S.transparent=Boolean(d.transparent);S.polish=Boolean(d.polish);S.stitch=[0,4,9,16].includes(d.stitch)?d.stitch:0;S.size=["auto","1024","2048","4096"].includes(d.size)?d.size:"auto";S.template=d.template?.id?{id:String(d.template.id),title:String(d.template.title||"模板")}:null; } } catch{} }
+function loadDraft() { try { const d=JSON.parse(localStorage.getItem("studio_draft")); if(d) { S.prompt=String(d.prompt||"");S.refs=Array.isArray(d.refs)?d.refs.slice(0,8):[];S.ratio=d.ratio||"1:1";S.count=Math.max(1,Math.min(20,Number(d.count)||1));S.transparent=Boolean(d.transparent);S.polish=Boolean(d.polish);S.stitch=[0,4,16,64].includes(d.stitch)?d.stitch:0;S.size=["auto","1024","2048","4096"].includes(d.size)?d.size:"auto";S.template=d.template?.id?{id:String(d.template.id),title:String(d.template.title||"模板")}:null; } } catch{} }
 function closeModal(){ $("#modal").close(); S.modalJob=null;renderGenerationSummary(); }
 function modal(title,html) { $("#modal-content").innerHTML=`<div class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn" data-action="close-modal" aria-label="关闭">${icon("close")}</button></div><div class="modal-body">${html}</div>`; if(!$("#modal").open) $("#modal").showModal(); StudioImages.hydrate($("#modal-content")); }
 
@@ -78,13 +78,13 @@ function renderShell(){
 }
 function updateNav(){
   document.querySelectorAll('[data-action="nav"]').forEach(el=>el.classList.toggle("active",el.dataset.page===S.page));
-  const names={create:"创作",works:"作品",queue:"任务队列",library:"参考图库",prompts:"模板",account:"账户设置",settings:"调用设置",trash:"最近删除",setup:"连接引导"};
+  const names={create:"创作",works:"作品",queue:"任务队列",upscale:"渐进超分",library:"参考图库",prompts:"模板",account:"账户设置",settings:"设置",trash:"最近删除",setup:"连接引导"};
   if($("#breadcrumb"))$("#breadcrumb").textContent=names[S.page]||"创作";
   const counts=Object.fromEntries((S.config?.counts||[]).map(c=>[c.status,c.count]));
   const active=(counts.running||0)+(counts.retrying||0),sessions=S.config?.calls?.active??active;
   if($("#nav-count"))$("#nav-count").textContent=active+(counts.queued||0);
   if($("#topbar-model"))$("#topbar-model").textContent=`${S.config.model} · ${S.config.effort}`;
-  const hints={works:"按模板与无模板归类",create:"独立会话 · 画幅与透明背景由生图工具决定",library:"PNG / JPEG / WebP · 单张 20 MB",prompts:"模板保存与载入会携带参考图和生成设置",queue:"临时错误退避重试，鉴权与额度错误停止",settings:"调用提示词只影响新任务，必须包含 {prompt}",account:"工作台账户与 ChatGPT 订阅分别管理",setup:"在 OpenAI 官方页面完成授权"};
+  const hints={works:"按模板与无模板归类",create:"独立会话 · 画幅与透明背景由生图工具决定",library:"PNG / JPEG / WebP / TIFF · 原图保留",prompts:"模板保存与载入会携带参考图和生成设置",queue:"临时错误退避重试，鉴权与额度错误停止",settings:"调用提示词只影响新任务，必须包含 {prompt}",account:"工作台账户与 ChatGPT 订阅分别管理",setup:"在 OpenAI 官方页面完成授权"};
   if($("#statusbar"))$("#statusbar").innerHTML=`<span class="status-connection"><span class="dot"></span>${S.setup?.authenticated?"订阅已连接":"未连接订阅"}</span><span>${S.config.concurrency} 路并发</span><span>${sessions} 会话 · ${counts.queued||0} 等待${S.config.paused?" · 已暂停":""}</span><span class="status-hint" title="${esc(hints[S.page]||"")}">${esc(hints[S.page]||"")}</span>`;
 }
 
@@ -93,15 +93,8 @@ function renderWorks(){
   renderRecent();
 }
 const sizeLabel = size => ({auto:"自动尺寸","1024":"1K 长边","2048":"2K 长边","4096":"4K 长边"})[size||"auto"]||"自动尺寸";
-function stitchOptions(prefix){return `<label class="stitch-control" for="${prefix}-stitch"><span>超规格图像拼接</span><select id="${prefix}-stitch">${[[0,"关闭"],[4,"4× · 2×2"],[9,"9× · 3×3"],[16,"16× · 4×4"]].map(([v,t])=>`<option value="${v}" ${S.stitch===v?"selected":""}>${t}</option>`).join("")}</select></label><p class="stitch-note">倍率按面积计算；逐块 AI 补绘会产生对应次数的生图调用。</p>`;}
-function openUpscale(id){
-  const a=S.assetMap.get(id);if(!a)return;
-  S.upscaleAsset=id;S.upscaleFactor=[4,9,16].find(n=>a.width*a.height*n<=64000000)||4;
-  modal("发送到超分",`<div class="upscale-source"><img src="${a.thumbnail}" alt="${esc(a.name)}"><div>${esc(a.name)}<p class="small muted">${a.width} × ${a.height}</p></div></div><div class="upscale-factors">${[4,9,16].map(n=>`<button data-action="upscale-factor" data-factor="${n}" class="${S.upscaleFactor===n?"selected":""}" ${a.width*a.height*n>64000000?"disabled":""}>${n}×<small>${Math.sqrt(n)} × ${Math.sqrt(n)} 块</small></button>`).join("")}</div><div id="upscale-summary" class="upscale-summary"></div>${modelControls("upscale")}<button class="btn primary upscale-start" data-action="start-upscale" ${a.width*a.height*4>64000000?"disabled":""}>加入超分队列${icon("arrow")}</button>`);
-  renderUpscaleSummary();
-}
-function renderUpscaleSummary(){const a=S.assetMap.get(S.upscaleAsset),n=S.upscaleFactor;if(!a||!$("#upscale-summary"))return;const k=Math.sqrt(n);$("#upscale-summary").textContent=`目标 ${a.width*k} × ${a.height*k} · ${n} 块 AI 补绘 + 一次视觉检查。横向重叠 64px，纵向重叠 36px；通过检查后保存结果。`;}
-function creativeOptions(prefix){return `<div class="creative-options"><label class="switch"><input type="checkbox" id="${prefix}-polish" ${S.polish?"checked":""}>帮我润色</label><label class="size-field" for="${prefix}-size"><span>图像尺寸</span><select id="${prefix}-size">${["auto","1024","2048","4096"].map(v=>`<option value="${v}" ${S.size===v?"selected":""}>${sizeLabel(v)}</option>`).join("")}</select></label></div><span class="size-note">尺寸由生图工具原生生成，实际尺寸见图片详情。</span>`;}
+function stitchOptions(prefix){return `<label class="stitch-control" for="${prefix}-stitch"><span>超规格图像拼接</span><select id="${prefix}-stitch">${[[0,"关闭"],[4,"4× · 1级"],[16,"16× · 2级"],[64,"64× · 3级"]].map(([v,t])=>`<option value="${v}" ${S.stitch===v?"selected":""}>${t}</option>`).join("")}</select></label><p class="stitch-note">倍率按面积计算；每级宽高放大2倍并重新切图，预算见超分工作区。</p>`;}
+function creativeOptions(prefix){return `<div class="creative-options"><label class="switch"><input type="checkbox" id="${prefix}-polish" ${S.polish?"checked":""}>帮我润色</label><button type="button" class="polish-info" data-action="polish-details" aria-label="帮我润色详情">${icon("info")}</button><label class="size-field" for="${prefix}-size"><span>图像尺寸</span><select id="${prefix}-size">${["auto","1024","2048","4096"].map(v=>`<option value="${v}" ${S.size===v?"selected":""}>${sizeLabel(v)}</option>`).join("")}</select></label></div><span class="size-note">尺寸由生图工具原生生成，实际尺寸见图片详情。</span>`;}
 async function renderTrash(){
   const [assets,groups]=await Promise.all([api("/api/assets?kind=all&deleted=true&limit=200"),api("/api/collections?deleted=true&limit=100")]);rememberAssets(assets.items);
   $("#page").innerHTML=`<div class="trash-list">${groups.items.map(g=>`<article class="queue-item"><span class="trash-icon">${icon("layers")}</span><div class="queue-main"><span>${esc(g.name)}</span><p class="small muted">图集 · ${g.image_count} 张图片</p></div><button class="btn secondary" data-action="restore-collection" data-id="${g.id}">恢复</button></article>`).join("")}${assets.items.map(a=>`<article class="queue-item"><img class="queue-thumb" src="${a.thumbnail}" alt="${esc(a.name)}"><div class="queue-main"><span>${esc(a.name)}</span><p class="small muted">${a.width} × ${a.height}</p></div><button class="btn secondary" data-action="restore-asset" data-id="${a.id}">恢复</button></article>`).join("")}${!assets.items.length&&!groups.items.length?'<div class="empty-list minimal-empty">'+icon("trash")+'</div>':""}</div>`;
@@ -199,6 +192,7 @@ async function fetchSetup(){ S.setup=await api("/api/setup/status");updateNav();
 async function renderSettings(){
   const calls=await api("/api/call-settings");S.defaultCallPrompt=calls.default_call_prompt;S.defaultPolishPrompt=calls.default_polish_prompt;S.defaultStitchPrompt=calls.default_stitch_prompt;
   $("#page").innerHTML=`<div class="settings-layout"><section class="settings-card"><div class="settings-field"><label>模型与思考强度</label>${modelControls("setting")}</div><div class="settings-field"><label for="setting-concurrency">并发</label><select id="setting-concurrency">${[1,2,3,4].map(v=>`<option value="${v}" ${v===S.config.concurrency?"selected":""}>${v} 路</option>`).join("")}</select></div><div class="settings-field"><label for="setting-attempts">最多尝试</label><select id="setting-attempts">${[1,2,3,4,5].map(v=>`<option value="${v}" ${v===S.config.max_attempts?"selected":""}>${v} 次</option>`).join("")}</select></div><div class="settings-field"><label>队列</label><button class="btn secondary" data-action="pause">${icon(S.config.paused?"play":"pause")}${S.config.paused?"继续":"暂停"}</button></div></section><form class="settings-card" id="call-settings-form"><div class="section-label"><label for="call-prompt">调用提示词</label><button type="button" class="link-btn" data-action="reset-call-prompt">恢复默认</button></div><div class="template-variables">${calls.variables.map(v=>`<button type="button" class="pill" data-action="insert-variable" data-variable="${esc(v)}">${esc(v)}</button>`).join("")}</div><textarea id="call-prompt" name="call_prompt" class="call-prompt mono" rows="18" maxlength="24000" required>${esc(calls.call_prompt)}</textarea><div class="section-label polish-heading"><label for="polish-prompt">帮我润色 · 调用提示词</label><button type="button" class="link-btn" data-action="reset-polish-prompt">恢复默认</button></div><textarea id="polish-prompt" name="polish_prompt" class="call-prompt mono" rows="18" maxlength="24000" required>${esc(calls.polish_prompt)}</textarea><div class="section-label polish-heading"><label for="stitch-prompt">局部重绘 · 任务提示词</label><button type="button" class="link-btn" data-action="reset-stitch-prompt">恢复默认</button></div><textarea id="stitch-prompt" name="stitch_prompt" class="call-prompt mono" rows="20" maxlength="24000" required>${esc(calls.stitch_prompt)}</textarea><div class="row form-actions"><button class="btn primary" type="submit">保存调用设置</button></div></form></div>`;
+  await StudioUpscale.renderStorage();
 }
 
 async function renderSetup(){
@@ -225,6 +219,7 @@ async function navigate(page){
   S.page=page;$("#user-menu")?.classList.add("hidden");document.querySelectorAll(".user-trigger").forEach(el=>el.setAttribute("aria-expanded","false"));updateNav();window.scrollTo({top:0,behavior:"instant"});
   if(page==="create")renderCreate();
   else if(page==="works")renderWorks();
+  else if(page==="upscale")StudioUpscale.render();
   else if(page==="queue")renderQueue();
   else if(page==="library")await renderLibrary();
   else if(page==="prompts")await renderPrompts();
@@ -243,6 +238,7 @@ async function refresh(more=false){
   for(const g of S.collections)rememberAssets(g.covers);
   if(S.collection&&["create","works"].includes(S.page)){const data=await fetchPaged(`/api/jobs?collection=${encodeURIComponent(S.collection)}`,S.collectionJobLimit||50);S.collectionJobs=data.items;S.collectionJobTotal=data.total;rememberJobs(data.items);}
   updateNav();renderRecent();renderQueueItems();
+  if(S.page==="upscale")await StudioUpscale.refresh();
 }
 async function fetchPaged(path,limit){
   const requests=[];const separator=path.includes("?")?"&":"?";
@@ -254,7 +250,8 @@ async function poll(){
   S.polling=true;
   try{
     await refresh();
-    if(S.modalJob&&$("#modal").open){const fresh=await api(`/api/jobs/${S.modalJob.id}`);S.modalJob=fresh;rememberJobs([fresh]);updateHTML($("#job-progress-slot"),taskProgress(fresh,true));updateHTML($("#job-image-slot"),jobImages(fresh));updateHTML($("#job-dimensions-slot"),jobDimensions(fresh));StudioImages.hydrate($("#modal-content"));}
+    if(S.modalJob&&$("#modal").open){const fresh=await api(`/api/jobs/${S.modalJob.id}`);S.modalJob=fresh;rememberJobs([fresh]);updateHTML($("#job-progress-slot"),taskProgress(fresh,true));updateHTML($("#job-image-slot"),jobImages(fresh));updateHTML($("#job-dimensions-slot"),jobDimensions(fresh));updateHTML($("#job-polished-slot"),StudioPolish.markup(fresh,true));StudioImages.hydrate($("#modal-content"));}
+    await StudioPolish.refresh();
     if(S.page==="setup"){
       await fetchSetup();
       const signature=JSON.stringify([S.setupStep,S.setup,S.jobs.find(j=>j.id===S.setup.probe)?.status]);
@@ -267,7 +264,7 @@ async function poll(){
 async function uploadFiles(files,attach){
   for(const file of Array.from(files)){
     if(attach&&S.refs.length>=8){toast("每次最多使用 8 张参考图，剩余图片未上传");break;}
-    if(file.size>20*1024*1024){toast(`${file.name} 超过 20 MB`);continue;}
+
     const body=new FormData();body.append("file",file);
     try{toast(`正在上传 ${file.name}…`);const r=await api("/api/assets",{method:"POST",body});rememberAssets([r.asset]);if(attach&&!S.refs.includes(r.asset.id))S.refs.push(r.asset.id);draft();renderReferences();toast(r.cached?"已复用图库中的同一张图片":"参考图已保存到图库");}catch(e){toast(e.message);}
   }
@@ -291,7 +288,7 @@ async function promptPicker(){
   modal("模板",`<div class="queue-list">${S.prompts.length?S.prompts.map(p=>`<button class="queue-item preset-picker-item" data-action="use-prompt" data-id="${p.id}"><div class="queue-main"><h3>${esc(p.title)}</h3><p class="queue-prompt muted">${esc(p.text)}</p>${presetReferences(p)}</div>${icon("arrow")}</button>`).join(""):'<div class="empty-list minimal-empty">'+icon("book")+'</div>'}</div>`);
 }
 function imagePreviewButton(a,label="点击放大"){
-  return `<button class="image-open-button" data-action="image-preview" data-id="${a.id||""}" ${a.id?"":'data-source="true"'} aria-label="放大预览图片"><span class="detail-image-frame" data-image-view><img class="modal-image" data-full-image width="${a.width}" height="${a.height}" src="${esc(a.url)}" alt="${esc(a.name||"生成结果")}">${StudioImages.markup()}<span class="viewer-caption">${esc(label)}</span></span></button>`;
+  return `<button class="image-open-button" data-action="image-preview" data-id="${a.id||""}" ${a.id?"":'data-source="true"'} aria-label="放大预览图片"><span class="detail-image-frame" data-image-view><img class="modal-image" data-full-image width="${a.width}" height="${a.height}" src="${esc(a.preview||a.url)}" alt="${esc(a.name||"生成结果")}">${StudioImages.markup()}<span class="viewer-caption">${esc(label)}</span></span></button>`;
 }
 function jobImages(j){
   return `${j.outputs[0]?imagePreviewButton(j.outputs[0]):""}${j.source_image?`<button class="image-before" data-action="image-preview" data-id="${j.source_image.id||""}" ${j.source_image.id?"":'data-source="true"'}><img src="${esc(j.source_image.thumbnail||j.source_image.url)}" alt="原图"><span>${j.options.stitch?"超分前":"重绘前"}<small>${j.source_image.width} × ${j.source_image.height} · 点击放大</small></span></button>`:""}`;
@@ -310,11 +307,12 @@ function openImagePreview(id,source=false,initial={}){
 }
 async function jobDetail(id){
   const j=await api(`/api/jobs/${id}`);rememberJobs([j]);S.modalJob=j;
-  modal("生成记录",`<div id="job-image-slot">${jobImages(j)}</div><div id="job-dimensions-slot">${jobDimensions(j)}</div><div class="row between">${statusPill(j.status)}<span class="tiny muted mono">${j.id.slice(0,12)}</span></div><div id="job-progress-slot">${taskProgress(j,true)}</div>${j.options.stitch?`<div class="stitch-artifacts"><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="inspection" ${j.progress.step<8?"disabled":""}>局部检查图</button><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="report" ${j.progress.step<8?"disabled":""}>配准与检查报告</button><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="candidate" ${j.progress.step<8?"disabled":""}>查看候选图</button></div>`:""}<div class="detail-grid"><span>创建时间：${fmtTime(j.created)}</span><span>模型：${esc(j.model)} / ${esc(j.effort)}</span><span>画幅：${j.options.ratio} · ${sizeLabel(j.options.size)}${j.options.polish?" · 帮我润色":""} · ${j.options.transparent?"透明背景":"普通背景"}</span><span>参考图：${j.refs.length} 张 · 尝试 ${j.attempt} / ${j.max_attempts}</span></div><div class="reference-strip">${j.references.map(a=>`<button class="ref-chip" data-action="asset-detail" data-id="${a.id}"><img src="${a.thumbnail}" alt="${esc(a.name)}"></button>`).join("")}</div><div class="detail-prompt">${esc(j.prompt)}</div>${j.error?`<div class="notice error">${esc(j.error)}</div>`:""}<div class="row wrap"><button class="btn secondary" data-action="reuse-job" data-id="${j.id}">${icon("copy")}载入创作设置</button><button class="btn secondary" data-action="show-log" data-id="${j.id}">${icon("terminal")}诊断日志</button>${j.outputs[0]?`<a class="btn primary" href="${j.outputs[0].url}?download=1" download>${icon("download")}下载图片</a>`:""}${["failed","cancelled"].includes(j.status)?`<button class="btn primary" data-action="retry-job" data-id="${j.id}">重试</button>`:""}</div><details class="call-details"><summary>调用提示词</summary><pre class="log">${esc(j.call_instruction||j.options.call_prompt||"")}</pre></details><div class="detail-grid">${j.attempts.map(a=>`<span>第 ${a.number} 次 · ${labels[a.status]||esc(a.status)} · ${fmtTime(a.started)}</span>`).join("")}</div><div id="job-log"></div>`);
+  modal("生成记录",`${j.options.stitch?`<button class="btn secondary" data-action="upscale-open" data-id="${j.id}">打开超分工作区 →</button>`:""}<div id="job-image-slot">${jobImages(j)}</div><div id="job-dimensions-slot">${jobDimensions(j)}</div><div class="row between">${statusPill(j.status)}<span class="tiny muted mono">${j.id.slice(0,12)}</span></div><div id="job-progress-slot">${taskProgress(j,true)}</div>${j.options.stitch?`<div class="stitch-artifacts"><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="inspection" ${j.progress.step<8?"disabled":""}>局部检查图</button><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="report" ${j.progress.step<8?"disabled":""}>配准与检查报告</button><button data-action="stitch-artifact" data-id="${j.id}" data-artifact="candidate" ${j.progress.step<8?"disabled":""}>查看候选图</button></div>`:""}<div class="detail-grid"><span>创建时间：${fmtTime(j.created)}</span><span>模型：${esc(j.model)} / ${esc(j.effort)}</span><span>画幅：${j.options.ratio} · ${sizeLabel(j.options.size)}${j.options.polish?" · 帮我润色":""} · ${j.options.transparent?"透明背景":"普通背景"}</span><span>参考图：${j.refs.length} 张 · 尝试 ${j.attempt} / ${j.max_attempts}</span></div><div class="reference-strip">${j.references.map(a=>`<button class="ref-chip" data-action="asset-detail" data-id="${a.id}"><img src="${a.thumbnail}" alt="${esc(a.name)}"></button>`).join("")}</div><div class="detail-prompt">${esc(j.prompt)}</div><div id="job-polished-slot">${StudioPolish.markup(j,true)}</div>${j.error?`<div class="notice error">${esc(j.error)}</div>`:""}<div class="row wrap"><button class="btn secondary" data-action="reuse-job" data-id="${j.id}">${icon("copy")}载入创作设置</button><button class="btn secondary" data-action="show-log" data-id="${j.id}">${icon("terminal")}诊断日志</button>${j.outputs[0]?`<a class="btn primary" href="${j.outputs[0].url}?download=1" download>${icon("download")}下载图片</a>`:""}${["failed","cancelled"].includes(j.status)?`<button class="btn primary" data-action="retry-job" data-id="${j.id}">重试</button>`:""}</div><details class="call-details"><summary>调用提示词</summary><pre class="log">${esc(j.call_instruction||j.options.call_prompt||"")}</pre></details><div class="detail-grid">${j.attempts.map(a=>`<span>第 ${a.number} 次 · ${labels[a.status]||esc(a.status)} · ${fmtTime(a.started)}</span>`).join("")}</div><div id="job-log"></div>`);
 }
-function assetDetail(id){
+async function assetDetail(id){
   const a=S.assetMap.get(id);if(!a)return;S.modalJob=null;
-  modal(a.name,`${imagePreviewButton(a)}<div class="row between"><span class="tiny muted">${a.width} × ${a.height} · ${fmtSize(a.bytes)} · ${fmtTime(a.created)}</span><span class="pill">${a.kind==="reference"?"参考图":"生成作品"}</span></div><div class="form-field"><label for="asset-name">图片名称</label><input id="asset-name" value="${esc(a.name)}" maxlength="160"></div><div class="form-field"><label for="asset-tags">标签</label><input id="asset-tags" placeholder="例如：产品，材质，构图" value="${esc(a.tags)}" maxlength="200"></div><div class="row wrap"><button class="btn secondary" data-action="send-upscale" data-id="${a.id}">${icon("layers")}发送到超分</button><button class="btn secondary" data-action="save-asset" data-id="${a.id}">保存名称与标签</button><button class="btn secondary" data-action="asset-to-composer" data-id="${a.id}">${icon("plus")}用作参考图</button><a class="btn primary" href="${a.url}?download=1" download>${icon("download")}下载</a><button class="icon-btn" data-action="delete-asset" data-id="${a.id}" aria-label="删除图片">${icon("trash")}</button></div>`);
+  modal(a.name,`${imagePreviewButton(a)}<div class="row between"><span class="tiny muted">${a.width} × ${a.height} · ${fmtSize(a.bytes)} · ${fmtTime(a.created)}</span><span class="pill">${a.kind==="reference"?"参考图":"生成作品"}</span></div><div id="asset-polished-slot" data-asset="${a.id}"></div><div class="form-field"><label for="asset-name">图片名称</label><input id="asset-name" value="${esc(a.name)}" maxlength="160"></div><div class="form-field"><label for="asset-tags">标签</label><input id="asset-tags" placeholder="例如：产品，材质，构图" value="${esc(a.tags)}" maxlength="200"></div><div class="row wrap"><button class="btn secondary" data-action="send-upscale" data-id="${a.id}">${icon("layers")}发送到超分</button><button class="btn secondary" data-action="save-asset" data-id="${a.id}">保存名称与标签</button><button class="btn secondary" data-action="asset-to-composer" data-id="${a.id}">${icon("plus")}用作参考图</button><a class="btn primary" href="${a.url}?download=1" download>${icon("download")}下载</a><button class="icon-btn" data-action="delete-asset" data-id="${a.id}" aria-label="删除图片">${icon("trash")}</button></div>`);
+  if(a.job_id){try{const job=await api(`/api/jobs/${a.job_id}`);const slot=$("#asset-polished-slot");if(slot?.dataset.asset===a.id)updateHTML(slot,StudioPolish.markup(job,true));}catch{}}
 }
 async function saveSettings(){const body={concurrency:S.config.concurrency,max_attempts:S.config.max_attempts,paused:S.config.paused,model:S.config.model,effort:S.config.effort};const pending=(S.settingsQueue||Promise.resolve()).catch(()=>{}).then(()=>api("/api/settings",{method:"PATCH",body}));S.settingsQueue=pending;await pending;updateNav();renderGenerationSummary();toast("设置已保存");}
 
@@ -324,7 +322,7 @@ function presetOptions(){return {ratio:S.ratio,transparent:S.transparent,polish:
 async function restorePreset(p){
   S.prompt=p.text;S.refs=[...(p.refs||[])];rememberAssets(p.references||[]);
   S.template=Object.prototype.hasOwnProperty.call(p,"template_id")?(p.template_id?{id:p.template_id,title:p.template_title||p.title||"模板"}:null):(p.id?{id:p.id,title:p.title}:null);
-  const o=p.options||{};if(o.ratio)S.ratio=o.ratio;if(o.transparent!==undefined)S.transparent=o.transparent;S.polish=Boolean(o.polish);S.stitch=[0,4,9,16].includes(o.stitch)?o.stitch:0;S.size=["auto","1024","2048","4096"].includes(o.size)?o.size:"auto";
+  const o=p.options||{};if(o.ratio)S.ratio=o.ratio;if(o.transparent!==undefined)S.transparent=o.transparent;S.polish=Boolean(o.polish);S.stitch=[0,4,16,64].includes(o.stitch)?o.stitch:0;S.size=["auto","1024","2048","4096"].includes(o.size)?o.size:"auto";
   const m=modelItems().find(m=>m.id===o.model);if(m&&m.efforts.includes(o.effort)){S.config.model=o.model;S.config.effort=o.effort;await saveSettings();}
   draft();closeModal();await navigate("create");
 }
@@ -360,7 +358,11 @@ document.addEventListener("click",async e=>{
   const el=e.target.closest("[data-action]");if(!e.target.closest(".user-menu")&&!e.target.closest('[data-action="user-menu"]'))$("#user-menu")?.classList.add("hidden");if(!el||el.disabled)return;
   const a=el.dataset.action,id=el.dataset.id;
   try{
+    if(a.startsWith("upscale-")){await StudioUpscale.action(a,el);return;}
+    if(a.startsWith("storage-")){await StudioUpscale.storageAction(a,el);return;}
     if(a==="user-menu"){$("#user-menu").classList.toggle("hidden");document.querySelectorAll(".user-trigger").forEach(t=>t.setAttribute("aria-expanded",!$("#user-menu").classList.contains("hidden")));}
+    else if(a==="polish-details")await StudioPolish.open(id);
+    else if(a==="copy-polished")await StudioPolish.copy(id);
     else if(a==="nav")await navigate(el.dataset.page);
     else if(a==="install-app"){ $("#user-menu")?.classList.add("hidden");await installStudio(); }
     else if(a==="generation-options")openGenerationOptions();
@@ -404,9 +406,7 @@ document.addEventListener("click",async e=>{
     else if(a==="image-preview")openImagePreview(id,el.dataset.source==="true");
     else if(a==="clear-image-cache"){const state=await StudioImages.clear();if($("#image-cache-status"))$("#image-cache-status").textContent="0 KB";toast("本机图片缓存已清除");}
     else if(a==="stitch-artifact"){const kind=el.dataset.artifact;if(kind==="report"){const report=await api(`/api/jobs/${id}/stitch/report`);modal("配准与检查报告",`<pre class="log">${esc(JSON.stringify(report,null,2))}</pre>`);}else if(["inspection","candidate"].includes(kind))modal(kind==="inspection"?"局部检查图":"拼接候选图",`<img class="modal-image" src="/api/jobs/${id}/stitch/${kind}" alt="拼接检查">`);}
-    else if(a==="send-upscale")openUpscale(id);
-    else if(a==="upscale-factor"){S.upscaleFactor=Number(el.dataset.factor);renderUpscaleSummary();document.querySelectorAll("[data-action=upscale-factor]").forEach(b=>b.classList.toggle("selected",b===el));}
-    else if(a==="start-upscale"){el.disabled=true;await post(`/api/assets/${S.upscaleAsset}/upscale`,{factor:S.upscaleFactor,model:$("#upscale-model").value,effort:$("#upscale-effort").value});closeModal();await refresh();await navigate("queue");toast("已加入超分队列");}
+    else if(a==="send-upscale")await StudioUpscale.selectSource(id);
     else if(a==="asset-to-composer"){if(S.refs.length>=8&&!S.refs.includes(id))return toast("最多选择 8 张参考图");if(!S.refs.includes(id))S.refs.push(id);const updated=await api(`/api/assets/${id}`,{method:"PATCH",body:{kind:"reference"}});rememberAssets([updated]);draft();closeModal();await navigate("create");toast("已加入参考图");}
     else if(a==="favorite-asset"){const asset=S.assetMap.get(id);const updated=await api(`/api/assets/${id}`,{method:"PATCH",body:{favorite:!asset.favorite}});rememberAssets([updated]);if(S.page==="library")await loadAssets();else renderRecent();}
     else if(a==="save-asset"){const updated=await api(`/api/assets/${id}`,{method:"PATCH",body:{name:$("#asset-name").value,tags:$("#asset-tags").value}});rememberAssets([updated]);toast("图片信息已保存");if(S.page==="library")await loadAssets();}
@@ -448,6 +448,7 @@ document.addEventListener("input",e=>{
   }
 });
 document.addEventListener("change",async e=>{try{
+  if(e.target.id==="upscale-upload"){await StudioUpscale.upload(e.target.files[0]);e.target.value="";return;}
   if(e.target.id==="file-input"){await uploadFiles(e.target.files,S.page==="create");e.target.value="";}
   if(["composer-stitch","sheet-stitch"].includes(e.target.id)){S.stitch=Number(e.target.value);document.querySelectorAll("#composer-stitch,#sheet-stitch").forEach(i=>i.value=String(S.stitch));draft();renderGenerationSummary();}
   if(["composer-polish","sheet-polish"].includes(e.target.id)){S.polish=e.target.checked;document.querySelectorAll("#composer-polish,#sheet-polish").forEach(i=>i.checked=S.polish);draft();renderGenerationSummary();}

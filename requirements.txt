@@ -5,3 +5,4 @@ Pillow>=12.1.1,<13
 httpx>=0.28.1,<1
 numpy>=2.2,<2.3
 opencv-python-headless==4.13.0.92
+pyvips[binary]==3.1.0
