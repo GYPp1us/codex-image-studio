@@ -8,7 +8,7 @@ jobs:
   test:
     name: 后端集成与前端语法
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.1.0

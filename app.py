@@ -859,6 +859,7 @@ class JobInput(BaseModel):
     polish: bool = False
     size: Literal["auto", "1024", "2048", "4096"] = "auto"
     stitch: Literal[0,4,16,64] = 0
+    upscale_injection: str = Field(default='',max_length=12000)
     source_asset_id: str | None = Field(default=None, max_length=64)
     region: Rectangle | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=5)
@@ -972,7 +973,7 @@ def _create_jobs(body):
     if body.template_id and not template:
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
-    options.update(stitch=body.stitch,source_asset_id=body.source_asset_id,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch else '')
+    options.update(stitch=body.stitch,source_asset_id=body.source_asset_id,upscale_injection=body.upscale_injection,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch else '')
     if body.region:
         options.update(region=body.region.model_dump(),polish=False,ratio='auto',size='auto',call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT))
     batch, ids = uid(), []
@@ -1002,6 +1003,7 @@ async def add_jobs(body: JobInput, session=Depends(require_user)):
 
 class UpscaleInput(BaseModel):
     factor: Literal[4,16,64] = 4
+    upscale_injection: str = Field(default='',max_length=12000)
     model: str | None = Field(default=None,max_length=100)
     effort: str | None = Field(default=None,max_length=20)
 
@@ -1028,7 +1030,7 @@ async def upscale_asset(aid: str, body: UpscaleInput, session=Depends(require_us
     options=json.loads(origin['options']) if origin else {}
     template=origin.get('template_id') if origin else None
     if template and not query('SELECT id FROM templates WHERE id=?',(template,),True):template=None
-    request=JobInput(prompt=origin['prompt'] if origin else f"严格保留参考图的构图和内容，增强原有细节。{asset['name']}",refs=[aid],stitch=body.factor,source_asset_id=aid,model=body.model or options.get('model') or setting('model',MODEL),effort=body.effort or options.get('effort') or setting('effort',EFFORT),template_id=template,transparent=options.get('transparent',False))
+    request=JobInput(prompt=origin['prompt'] if origin else f"严格保留参考图的构图和内容，增强原有细节。{asset['name']}",refs=[aid],stitch=body.factor,upscale_injection=body.upscale_injection,source_asset_id=aid,model=body.model or options.get('model') or setting('model',MODEL),effort=body.effort or options.get('effort') or setting('effort',EFFORT),template_id=template,transparent=options.get('transparent',False))
     return await add_jobs(request,session)
 
 
@@ -1183,14 +1185,16 @@ def get_log(jid: str, session=Depends(require_user)):
 
 @app.post("/api/jobs/{jid}/retry")
 async def retry_job(jid: str, session=Depends(require_user)):
-    j = query("SELECT * FROM jobs WHERE id=?", (jid,), True)
-    if not j:
-        raise HTTPException(404, "任务不存在")
-    if j["status"] not in ("failed", "cancelled"):
-        raise HTTPException(409, "只有失败或取消的任务可以重试；再次抽卡请使用重新生成")
-    write("UPDATE jobs SET status='queued',attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail='{}' WHERE id=?", (jid,))
-    WAKE.set()
-    return {"ok": True}
+    with STORAGE.lock:
+        j = query("SELECT * FROM jobs WHERE id=?", (jid,), True)
+        if not j:
+            raise HTTPException(404, "任务不存在")
+        if j["status"] not in ("failed", "cancelled"):
+            raise HTTPException(409, "只有失败或取消的任务可以重试；再次抽卡请使用重新生成")
+        options=json.loads(j["options"]);options.pop("repair_selection",None)
+        write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail='{}' WHERE id=?", (json.dumps(options),jid))
+        WAKE.set()
+        return {"ok": True}
 
 
 @app.post("/api/jobs/{jid}/cancel")

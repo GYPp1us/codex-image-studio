@@ -14,7 +14,7 @@ from typing import Literal
 
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel,Field,StrictInt
 
 import image_runtime as imaging
 from stitch_engine import save_json
@@ -26,6 +26,17 @@ class ConfirmTrash(BaseModel):
     confirm: Literal['empty-trash']
 
 
+class RepairTiles(BaseModel):
+    level: int = Field(ge=1,le=3)
+    tiles: list[StrictInt] = Field(min_length=1,max_length=100000)
+    upscale_injection: str = Field(default='',max_length=12000)
+    use_current_prompt: bool = True
+
+
+class TaskInjection(BaseModel):
+    upscale_injection: str = Field(max_length=12000)
+
+
 def root_for(studio,jid):
     if not re.fullmatch('[a-f0-9]{32}',jid):raise HTTPException(404,'任务不存在')
     return studio.DATA/'jobs'/jid/'stitch'
@@ -34,7 +45,7 @@ def root_for(studio,jid):
 def load_manifest(studio,jid):
     path=root_for(studio,jid)/'progressive.json'
     if path.exists():
-        with contextlib.suppress(OSError,ValueError):return json.loads(path.read_text())
+        with contextlib.suppress(OSError,ValueError):return json.loads(path.read_text(encoding='utf-8'))
     return None
 
 
@@ -64,12 +75,96 @@ def plan_payload(studio,jid,job=None):
         stage['preview_url']=f'/api/upscale/jobs/{jid}/stages/{index}/preview' if ready else None
         stage['layout_url']=f'/api/upscale/jobs/{jid}/stages/{index}/layout'
         stage['result_preview']=f'/api/upscale/jobs/{jid}/stages/{index}/result' if stage.get('actual_size') else None
+        stage['diagnostic_available']=ready and not manifest.get('cache_cleared',False)
     return public
 
 
 def register(app,studio):
     pyramids={};pyramid_lock=asyncio.Semaphore(1)
     auth=Depends(studio.require_user)
+
+    def stopped(jid):
+        job=studio.query('SELECT * FROM jobs WHERE id=?',(jid,),True)
+        if not job:raise HTTPException(404,'任务不存在')
+        if not json.loads(job['options']).get('stitch'):raise HTTPException(400,'该任务不是超分任务')
+        if job['status'] in ('queued','running','retrying'):raise HTTPException(409,'请等待任务停止后再操作')
+        task=studio.JOB_TASKS.get(jid)
+        if task and not task.done():raise HTTPException(409,'正在回收任务进程，请稍后重试')
+        return job
+
+    def diagnostic(jid,level):
+        from upscale_diagnostics import render
+        with studio.STORAGE.lock:
+            stopped(jid);folder=stage_folder(studio,jid,level)
+            if not (folder/'plan.json').is_file():raise HTTPException(409,'本级尚无切图检查点')
+            studio.STORAGE.require(12*1024*1024,'渲染失败诊断图')
+            result=render(folder);studio.STORAGE.invalidate()
+            return result
+
+    @app.get('/api/upscale/jobs/{jid}/diagnostics')
+    async def failure_diagnostic(jid:str,level:int=1,session=auth):
+        from stitch_workflow import ENGINE_LOCK
+        async with ENGINE_LOCK:result=await asyncio.to_thread(diagnostic,jid,level)
+        return result|{'images':{name:f'/api/upscale/jobs/{jid}/diagnostics/{level}/{result["version"]}/{name}' for name in ('source','raw','affine','top','center-raw','center-affine')}}
+
+    @app.get('/api/upscale/jobs/{jid}/diagnostics/{level}/{version}/{artifact}')
+    def diagnostic_image(jid:str,level:int,version:str,artifact:str,session=auth):
+        from upscale_diagnostics import ARTIFACTS
+        if not re.fullmatch('[a-f0-9]{20}',version) or artifact not in ARTIFACTS:raise HTTPException(404)
+        path=stage_folder(studio,jid,level)/'diagnostics'/'failure-preview'/version/(artifact+'.webp')
+        if not path.is_file():raise HTTPException(404)
+        return FileResponse(path,media_type='image/webp',headers={'Cache-Control':'private, no-store'})
+
+    @app.patch('/api/upscale/jobs/{jid}/injection')
+    def update_injection(jid:str,body:TaskInjection,session=auth):
+        with studio.STORAGE.lock:
+            job=stopped(jid);options=json.loads(job['options']);options['upscale_injection']=body.upscale_injection
+            studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
+        return {'ok':True}
+
+    @app.post('/api/upscale/jobs/{jid}/redraw')
+    def redraw_tiles(jid:str,body:RepairTiles,session=auth):
+        from upscale_diagnostics import invalidate
+        from stitch_workflow import DEFAULT_STITCH_PROMPT,normalize_redraw_prompt
+        from upscale_workflow import sync_stage,refresh_totals
+        with studio.STORAGE.lock:
+            job=stopped(jid)
+            if job['status'] not in ('failed','cancelled'):raise HTTPException(409,'只有失败或已取消的任务可以选块重绘')
+            folder=stage_folder(studio,jid,body.level);manifest=load_manifest(studio,jid)
+            if manifest.get('cache_cleared'):raise HTTPException(409,'缓存已清理，请重新开始任务')
+            plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'));indices=sorted(set(body.tiles))
+            if not set(indices).issubset({t['index'] for t in plan['tiles']}):raise HTTPException(400,'所选块已变化，请重新打开诊断窗口')
+            studio.STORAGE.require(0,'提交选块重绘');repair_id=studio.uid();options=json.loads(job['options'])
+            options['upscale_injection']=body.upscale_injection
+            options['repair_selection']={'level':body.level,'tiles':indices}
+            if body.use_current_prompt:options['stitch_prompt']=normalize_redraw_prompt(studio.setting('stitch_prompt',DEFAULT_STITCH_PROMPT))
+            report_path=folder/'diagnostics'/'repair-feedback.json';feedback=json.loads(report_path.read_text(encoding='utf-8')) if report_path.exists() else {}
+            # The failure report is computed before removing a checkpoint.
+            report=diagnostic(jid,body.level)
+            for tile in report['tiles']:
+                if tile['index'] in indices:feedback[str(tile['index'])]=tile['reason']
+            invalidate(folder,indices,repair_id);save_json(report_path,feedback)
+            save_json(folder/'repairs'/repair_id/'request.json',body.model_dump()|{'created':time.time()})
+            def repair_budget(current,current_plan,count):
+                adaptive=sum(s.get('calls',1) for s in current_plan.get('adaptive_splits',[]))
+                prior=current.get('calls',{})
+                current_plan['manual_calls']=max(current_plan.get('manual_calls',0),prior.get('images',0)-len(current_plan['tiles'])-adaptive)+count
+                current['review_budget']=prior.get('reviews',0)+1
+                sync_stage(current,current_plan,job['max_attempts'])
+            for stage in manifest['stages']:
+                if stage['index']<body.level:continue
+                if stage['index']>body.level and stage.get('folder'):
+                    later=stage_folder(studio,jid,stage['index']);later_plan=json.loads((later/'plan.json').read_text(encoding='utf-8'))
+                    invalidate(later,[t['index'] for t in later_plan['tiles']],repair_id)
+                    repair_budget(stage,later_plan,len(later_plan['tiles']));save_json(later/'plan.json',later_plan)
+                stage['status']='pending'
+                for key in ('actual_size','return_stats'):stage.pop(key,None)
+                if stage['index']==body.level:repair_budget(stage,plan,len(indices));save_json(folder/'plan.json',plan)
+            manifest.update(status='queued');manifest.pop('actual_size',None);manifest.pop('error',None)
+            refresh_totals(manifest);save_json(root_for(studio,jid)/'progressive.json',manifest)
+            studio.write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',finished=NULL,started=NULL,stage='',progress_detail='{}' WHERE id=?",(json.dumps(options),jid))
+            studio.STORAGE.invalidate();studio.WAKE.set()
+        return {'ok':True,'tiles':indices,'expected_images':len(indices),'expected_reviews':1}
 
     @app.exception_handler(StorageFull)
     async def storage_full(request,error):return JSONResponse({'detail':str(error)},status_code=507)

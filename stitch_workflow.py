@@ -142,7 +142,7 @@ async def engine(studio,jid,folder,command,*args):
                 if time.monotonic()-started>900:raise WorkflowError("拼接计算超过 15 分钟，请降低目标尺寸")
                 if progress_file.exists():
                     with contextlib.suppress(ValueError,OSError):
-                        text=progress_file.read_text()
+                        text=progress_file.read_text(encoding='utf-8')
                         if text!=last:
                             value=json.loads(text);last=text;stage=value.pop("stage");done=value.pop("done");units=value.pop("units")
                             for key in ("step","total","fraction","label"):value.pop(key,None)
@@ -163,16 +163,19 @@ async def engine(studio,jid,folder,command,*args):
 
 def tile_instruction(options,plan,tile,prompt):
     template=normalize_redraw_prompt(options.get("stitch_prompt",DEFAULT_STITCH_PROMPT))
-    values={"tile_index":str(tile['index']+1),"tile_count":str(len(plan['tiles'])),"bounds":str(tile['box']),"target_size":f"{tile['size'][0]}x{tile['size'][1]} pixels"}
-    for key,value in values.items():template=template.replace('{'+key+'}',value)
-    return template.replace("{prompt}",prompt)
+    injection=options.get('upscale_injection','').strip()
+    has_injection='{injection}' in template
+    values={"tile_index":str(tile['index']+1),"tile_count":str(len(plan['tiles'])),"bounds":str(tile['box']),"target_size":f"{tile['size'][0]}x{tile['size'][1]} pixels",'prompt':prompt,'injection':injection}
+    result=re.sub(r'\{(tile_index|tile_count|bounds|target_size|prompt|injection)\}',lambda m:values[m[1]],template)
+    if injection and not has_injection:result+='\n本任务统一细节与画风约束：\n'+injection
+    return result
 
 
 async def apply_local_repairs(studio,jid,folder,plan,options,generate):
     """Consume explicit operator requests using the same rectangular editor and CLI pool."""
     path=folder/'diagnostics'/'local-repairs.json'
     if not path.exists():return
-    repairs=json.loads(path.read_text())
+    repairs=json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(repairs,list) or len(repairs)>plan['factor']:raise WorkflowError('局部修复请求格式不正确')
     from local_edit import prepare as prepare_edit,compose as compose_edit,context_box
     for repair in repairs:
@@ -187,7 +190,7 @@ async def apply_local_repairs(studio,jid,folder,plan,options,generate):
         if not source.exists():shutil.copyfile(output,source)
         with Image.open(source) as image:context_box(image.size,region)
         diagnostic=folder/'diagnostics'/f'alignment-{index}.json'
-        if not diagnostic.exists() or json.loads(diagnostic.read_text()).get('registration_version',0)<REGISTRATION_VERSION:
+        if not diagnostic.exists() or json.loads(diagnostic.read_text(encoding='utf-8')).get('registration_version',0)<REGISTRATION_VERSION:
             await engine(studio,jid,folder,'register','--tile',index)
         result=work/'result.png'
         if not result.exists():
@@ -243,7 +246,7 @@ async def run(studio,jid):
                 shutil.copyfile(result,base)
         with Image.open(base) as image:layout(*image.size,factor)
         if not (folder/"plan.json").exists():await engine(studio,jid,folder,"prepare","--factor",factor)
-        plan=json.loads((folder/"plan.json").read_text())
+        plan=json.loads((folder/"plan.json").read_text(encoding='utf-8'))
         await apply_local_repairs(studio,jid,folder,plan,options,generate)
         states={tile['index']:{'index':tile['index']+1,'state':'done' if (folder/'redraw'/f"{tile['index']}.png").exists() else 'queued','label':'等待并发名额'} for tile in plan['tiles']}
         def publish_children():
@@ -275,7 +278,7 @@ async def run(studio,jid):
         for tile in plan['tiles']:
             i=tile['index'];progress(studio,jid,"registration",i,factor,detail=f"第 {i+1}/{factor} 块")
             diagnostic=folder/'diagnostics'/f'alignment-{i}.json'
-            if diagnostic.exists() and json.loads(diagnostic.read_text()).get('registration_version',0)>=REGISTRATION_VERSION:continue
+            if diagnostic.exists() and json.loads(diagnostic.read_text(encoding='utf-8')).get('registration_version',0)>=REGISTRATION_VERSION:continue
             for attempt in range(maximum):
                 try:
                     await engine(studio,jid,folder,"register","--tile",i);break
@@ -287,7 +290,7 @@ async def run(studio,jid):
         if not all((folder/name).is_file() for name in ('candidate.png','inspection.png','overview.png','diagnostics/quality.json')):await engine(studio,jid,folder,"compose")
         ensure_active(studio,jid);progress(studio,jid,"inspection",0,1,waiting=True,substage="主模型检查主体、前景、背景、接缝与画布外沿")
         review_file=folder/"diagnostics"/"visual-review.json"
-        review=json.loads(review_file.read_text()) if review_file.exists() else None
+        review=json.loads(review_file.read_text(encoding='utf-8')) if review_file.exists() else None
         if not review or not review.get('pass'):
             prompt="""STUDIO_STITCH_REVIEW
 执行局部视觉验收，不调用生图或任何工具。reference-1 是完整原图，reference-2 是拼接结果缩略全图，reference-3 是在结果原生像素上裁切的主体、前景、背景、接缝及标注 Outer edge 的画布外沿局部。检查主体和元素是否被移动、断线、硬接缝、重影、空白、外沿异常镜像或拉伸以及光照景深不一致。不要只依据清晰度判断。只能输出一个 JSON 对象：{"pass": true或false, "issues": [具体问题]}。发现明显问题必须 pass=false。"""
@@ -299,7 +302,7 @@ async def run(studio,jid):
             except ValueError:review=None
             if not isinstance(review,dict) or not isinstance(review.get("pass"),bool) or not isinstance(review.get("issues"),list):raise WorkflowError("主模型没有返回可验证的局部检查结论，未发布拼接候选图")
             save_json(review_file,review)
-        quality=json.loads((folder/"diagnostics"/"quality.json").read_text());quality["visual_review"]=review;save_json(folder/"diagnostics"/"quality.json",quality)
+        quality=json.loads((folder/"diagnostics"/"quality.json").read_text(encoding='utf-8'));quality["visual_review"]=review;save_json(folder/"diagnostics"/"quality.json",quality)
         if not review['pass']:raise WorkflowError("局部检查未通过："+"；".join(map(str,review['issues']))[:1600])
         ensure_active(studio,jid);progress(studio,jid,"receiving",0,1)
         result,_=await asyncio.to_thread(studio.store_image,(folder/"candidate.png").read_bytes(),f"超分-{factor}x-{jid[:8]}.png","generated",jid,MAX_PIXELS)

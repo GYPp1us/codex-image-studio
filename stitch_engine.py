@@ -66,7 +66,7 @@ def layout(width, height, factor):
 def prepare(folder, factor):
     folder=Path(folder)
     image=imaging.open_image(folder/'base.png')
-    if (folder/'plan.json').is_file():plan=json.loads((folder/'plan.json').read_text())
+    if (folder/'plan.json').is_file():plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'))
     else:plan=layout(image.width,image.height,factor)
     if [image.width,image.height]!=[plan['width'],plan['height']]:raise StitchError('本级原图尺寸与计划不一致')
     for name in ("crops","redraw","registered","corrected","masks","diagnostics","calls"):
@@ -101,7 +101,7 @@ def write_png(path, image):
     data.tofile(str(path))
 
 
-def affine_register(original, redraw):
+def estimate_affine(original, redraw):
     """One global affine per tile, estimated only from SIFT correspondences."""
     h,w=original.shape[:2]
     reduced=cv2.resize(redraw,(w,h),interpolation=cv2.INTER_AREA)
@@ -122,9 +122,16 @@ def affine_register(original, redraw):
     rms=float(np.sqrt(np.mean(errors**2)))
     scales=np.linalg.svd(affine[:,:2],compute_uv=False)
     spread=cv2.contourArea(cv2.convexHull(source[keep]))/(w*h) if count>=3 else 0
-    if count<8 or ratio<.25 or rms>2.5 or min(scales)<.75 or max(scales)>1.25 or np.linalg.det(affine[:,:2])<=0 or spread<.035:
+    accepted=not (count<8 or ratio<.25 or rms>2.5 or min(scales)<.75 or max(scales)>1.25 or np.linalg.det(affine[:,:2])<=0 or spread<.035)
+    return affine,{"method":"SIFT+RANSAC/global_affine","matches":len(good),"inliers":count,"inlier_ratio":ratio,"rms_original_pixels":rms,"feature_spread":spread,"matrix":affine.tolist(),"accepted":accepted}
+
+
+def affine_register(original, redraw):
+    affine,metrics=estimate_affine(original,redraw)
+    if not metrics['accepted']:
+        count,ratio,rms=metrics['inliers'],metrics['inlier_ratio'],metrics['rms_original_pixels']
         raise StitchError(f"配准质量不足：内点 {count}、比例 {ratio:.2f}、误差 {rms:.2f}px；保留中间结果供重试")
-    return affine,{"method":"SIFT+RANSAC/global_affine","matches":len(good),"inliers":count,"inlier_ratio":ratio,"rms_original_pixels":rms,"feature_spread":spread,"matrix":affine.tolist()}
+    return affine,metrics
 
 
 def registration_mask(valid,tile,plan):
@@ -146,7 +153,7 @@ def registration_mask(valid,tile,plan):
 
 
 def register_tile(folder,index):
-    folder=Path(folder);plan=json.loads((folder/"plan.json").read_text());tile=next(t for t in plan['tiles'] if t['index']==index)
+    folder=Path(folder);plan=json.loads((folder/"plan.json").read_text(encoding='utf-8'));tile=next(t for t in plan['tiles'] if t['index']==index)
     original=read_bgr(folder/"crops"/f"{index}.png");redraw=read_bgr(folder/"redraw"/f"{index}.png")
     native_ratio=min(redraw.shape[1]/tile['size'][0],redraw.shape[0]/tile['size'][1])
     minimum=plan.get('min_native_ratio',.75)
@@ -180,10 +187,18 @@ def register_tile(folder,index):
     return metrics
 
 
+def alignment_current(folder,index):
+    folder=Path(folder);checkpoint=folder/'diagnostics'/f'alignment-{index}.json';returned=folder/'redraw'/f'{index}.png'
+    try:
+        return (json.loads(checkpoint.read_text(encoding='utf-8')).get('registration_version')==REGISTRATION_VERSION
+                and checkpoint.stat().st_mtime_ns>=returned.stat().st_mtime_ns)
+    except (OSError,ValueError):return False
+
+
 def refresh_registered_tile(folder,index,region):
     """A bounded content edit keeps all pixels outside its ROI and the accepted affine."""
-    folder=Path(folder);plan=json.loads((folder/'plan.json').read_text());tile=next(t for t in plan['tiles'] if t['index']==index)
-    path=folder/'diagnostics'/f'alignment-{index}.json';metrics=json.loads(path.read_text())
+    folder=Path(folder);plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'));tile=next(t for t in plan['tiles'] if t['index']==index)
+    path=folder/'diagnostics'/f'alignment-{index}.json';metrics=json.loads(path.read_text(encoding='utf-8'))
     image=read_bgr(folder/'redraw'/f'{index}.png')
     if metrics.get('registration_version')!=REGISTRATION_VERSION or [image.shape[1],image.shape[0]]!=metrics['generated_dimensions']:
         raise StitchError('局部编辑需要当前版本且尺寸不变的已配准补绘块')
@@ -210,11 +225,11 @@ def color_match(image, reference, mask):
 
 
 def compose(folder):
-    folder=Path(folder);plan=json.loads((folder/"plan.json").read_text());count=len(plan["tiles"])
+    folder=Path(folder);plan=json.loads((folder/"plan.json").read_text(encoding='utf-8'));count=len(plan["tiles"])
     for tile in plan["tiles"]:
         i=tile["index"]
         diagnostic=folder/'diagnostics'/f'alignment-{i}.json'
-        if not diagnostic.exists() or json.loads(diagnostic.read_text()).get('registration_version',0)<REGISTRATION_VERSION:
+        if not alignment_current(folder,i):
             report(folder,"registration",i,count);register_tile(folder,i)
     for tile in plan["tiles"]:
         i=tile["index"];report(folder,"color",i,count)
@@ -278,7 +293,7 @@ def compose(folder):
     output._mmap.close();del output
     imaging.raw_to_png(folder/'canvas.rgb',folder/'candidate.png',width,height,folder/'base.png')
     make_inspection(folder,imaging.open_image(folder/'candidate.png'),plan)
-    alignments=[json.loads((folder/'diagnostics'/f"alignment-{tile['index']}.json").read_text()) for tile in plan['tiles']]
+    alignments=[json.loads((folder/'diagnostics'/f"alignment-{tile['index']}.json").read_text(encoding='utf-8')) for tile in plan['tiles']]
     save_json(folder/"diagnostics"/"quality.json",{"coverage_pixels":width*height,"uncovered_pixels":uncovered,"dimensions":[width,height],"bands":BANDS,"seam":"GraphCut/COST_COLOR_GRAD","warp":"one affine per tile","optical_flow":False,"alignments":alignments,"visual_review":"pending"})
     (folder/"canvas.rgb").unlink(missing_ok=True)
     report(folder,"inspection",0,1)
@@ -299,7 +314,7 @@ def make_inspection(folder, image, plan):
     repairs=[]
     for tile in plan['tiles']:
         diagnostic=Path(folder)/'diagnostics'/f"alignment-{tile['index']}.json"
-        data=json.loads(diagnostic.read_text())
+        data=json.loads(diagnostic.read_text(encoding='utf-8'))
         if data.get('outer_border_added_pixels') and data.get('outer_border_center'):
             repairs.append((data['outer_border_added_pixels'],tile['index'],data['outer_border_center']))
     for _,index,center in sorted(repairs,reverse=True)[:3]:points.append((f'Outer edge {index+1}',*center))

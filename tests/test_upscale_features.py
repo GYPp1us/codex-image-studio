@@ -141,13 +141,14 @@ class UpscaleFeatures(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/assets/{asset['id']}/tiles/{maximum}/99999/0").status_code,404)
         source.unlink()
 
-    def run_fixture(self,factor=4,undersize=False,wrong_aspect=False,malformed=False,jid=None):
+    def run_fixture(self,factor=4,undersize=False,wrong_aspect=False,malformed=False,jid=None,instructions=None):
         import upscale_workflow as workflow
         jid=jid or self.studio.create_jobs(self.studio.JobInput(prompt='Texture enhancement fixture',source_asset_id=self.asset['id'],stitch=factor,max_attempts=2))['ids'][0]
         self.studio.write("UPDATE jobs SET status='running' WHERE id=?",(jid,))
         first=True
         async def fake_cli(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None):
             nonlocal first
+            if instructions is not None:instructions.append(instruction)
             recorder=getattr(studio,'record_cli_call',None)
             if recorder:recorder(image)
             if not image:return '{"pass":true,"issues":[]}'
@@ -220,6 +221,80 @@ class UpscaleFeatures(unittest.TestCase):
         self.assertIn(asset['id'],response.json()['removed_ids'])
         self.assertEqual(self.client.get(asset['url']).status_code,404)
         self.assertEqual(self.client.get(self.asset['url']).status_code,200)
+
+    def test_failure_diagnostic_is_bounded_marks_missing_pixels_and_stays_private(self):
+        import upscale_api
+        from stitch_engine import read_bgr,write_png
+        job=self.run_fixture();folder=upscale_api.stage_folder(self.studio,job['id'],1)
+        image=read_bgr(folder/'redraw/0.png')
+        moved=cv2.warpAffine(image,np.array([[1,0,0],[0,1,-80]],np.float64),(image.shape[1],image.shape[0]),borderMode=cv2.BORDER_REFLECT_101)
+        write_png(folder/'redraw/0.png',moved)
+        self.studio.write("UPDATE jobs SET status='failed' WHERE id=?",(job['id'],))
+        response=self.client.get(f"/api/upscale/jobs/{job['id']}/diagnostics?level=1")
+        self.assertEqual(response.status_code,200,response.text[:300]);report=response.json()
+        self.assertEqual(report['tiles'][0]['state'],'coverage');self.assertGreater(report['tiles'][0]['missing_core_pixels'],1000)
+        for url in report['images'].values():
+            response=self.client.get(url);self.assertEqual(response.status_code,200)
+            with Image.open(io.BytesIO(response.content)) as preview:self.assertLessEqual(max(preview.size),1600)
+        anonymous=TestClient(self.studio.app,base_url='https://image.test')
+        self.assertEqual(anonymous.get(report['images']['raw']).status_code,401);anonymous.close()
+
+    def test_selected_redraw_preserves_peers_and_passes_new_template_and_injection(self):
+        import upscale_api
+        job=self.run_fixture(16);folder=upscale_api.stage_folder(self.studio,job['id'],2)
+        peers={p:p.read_bytes() for p in (folder/'redraw').glob('*.png') if p.name!='0.png'}
+        before=job['upscale_plan']['calls']['images']
+        self.studio.write("UPDATE jobs SET status='failed',outputs='[]' WHERE id=?",(job['id'],))
+        old=self.studio.setting('stitch_prompt',None)
+        self.studio.set_setting('stitch_prompt','CUSTOM SUPERSAMPLING {target_size}\n{prompt}\n{injection}')
+        try:
+            response=self.post(f"/api/upscale/jobs/{job['id']}/redraw",{'level':2,'tiles':[0],'upscale_injection':'Ink details {prompt} remain literal.','use_current_prompt':True})
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertTrue(all(p.read_bytes()==content for p,content in peers.items()))
+            self.assertFalse((folder/'redraw/0.png').exists());self.assertTrue(list((folder/'repairs').glob('*/0.png')))
+            prompts=[];resumed=self.run_fixture(jid=job['id'],instructions=prompts)
+            self.assertEqual(resumed['status'],'succeeded',resumed['error'])
+            self.assertEqual(resumed['upscale_plan']['calls']['images'],before+1)
+            self.assertGreaterEqual(resumed['upscale_plan']['budget']['images'],resumed['upscale_plan']['calls']['images'])
+            self.assertGreaterEqual(resumed['upscale_plan']['budget']['reviews'],resumed['upscale_plan']['calls']['reviews'])
+            self.assertTrue(all(p.read_bytes()==content for p,content in peers.items()))
+            self.assertTrue(any('CUSTOM SUPERSAMPLING' in p and 'Ink details {prompt} remain literal.' in p and '上次返回不符合要求' in p for p in prompts))
+        finally:
+            if old is None:self.studio.write("DELETE FROM settings WHERE key='stitch_prompt'")
+            else:self.studio.set_setting('stitch_prompt',old)
+
+    def test_selected_redraw_invalidates_later_stages_and_rejects_active_and_invalid_tiles(self):
+        import upscale_api
+        job=self.run_fixture(16);later=upscale_api.stage_folder(self.studio,job['id'],2)
+        self.studio.write("UPDATE jobs SET status='failed' WHERE id=?",(job['id'],))
+        self.assertEqual(self.post(f"/api/upscale/jobs/{job['id']}/redraw",{'level':1,'tiles':[99999]}).status_code,400)
+        response=self.post(f"/api/upscale/jobs/{job['id']}/redraw",{'level':1,'tiles':[0]})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertFalse(list((later/'redraw').glob('*.png')));self.assertFalse((later/'candidate.png').exists())
+        self.assertEqual(self.post(f"/api/upscale/jobs/{job['id']}/redraw",{'level':1,'tiles':[0]}).status_code,409)
+        self.studio.write("UPDATE jobs SET status='cancelled' WHERE id=?",(job['id'],))
+
+    def test_task_injection_is_saved_but_cannot_change_an_active_task(self):
+        jid=self.studio.create_jobs(self.studio.JobInput(prompt='Injection snapshot',source_asset_id=self.asset['id'],stitch=4,upscale_injection='Keep ink'))['ids'][0]
+        path=f'/api/upscale/jobs/{jid}/injection'
+        self.assertEqual(self.client.patch(path,json={'upscale_injection':'new'},headers=self.headers).status_code,409)
+        self.studio.write("UPDATE jobs SET status='failed' WHERE id=?",(jid,))
+        self.assertEqual(self.client.patch(path,json={'upscale_injection':'Precise lines'},headers=self.headers).status_code,200)
+        self.assertEqual(json.loads(self.studio.query('SELECT options FROM jobs WHERE id=?',(jid,),True)['options'])['upscale_injection'],'Precise lines')
+
+    def test_unselected_bad_peer_is_reported_without_a_hidden_redraw_call(self):
+        import upscale_api
+        job=self.run_fixture(16);folder=upscale_api.stage_folder(self.studio,job['id'],2)
+        peer=folder/'redraw/1.png'
+        with Image.open(peer) as image:size=image.size
+        Image.new('RGB',size,'white').save(peer);retained=peer.read_bytes()
+        self.studio.write("UPDATE jobs SET status='failed' WHERE id=?",(job['id'],))
+        response=self.post(f"/api/upscale/jobs/{job['id']}/redraw",{'level':2,'tiles':[0]})
+        self.assertEqual(response.status_code,200,response.text)
+        result=self.run_fixture(jid=job['id'])
+        self.assertEqual(result['status'],'failed')
+        self.assertIn('未选中',result['error']);self.assertEqual(peer.read_bytes(),retained)
+        self.assertEqual(result['upscale_plan']['calls']['images'],job['upscale_plan']['calls']['images']+1)
 
 
 if __name__=='__main__':unittest.main()
