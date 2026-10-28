@@ -5,6 +5,7 @@ import io
 import json
 import math
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -90,6 +91,53 @@ class UpscaleFeatures(unittest.TestCase):
     def tearDown(self):self.studio.set_setting('storage_limit_bytes',0)
 
     def post(self,path,body=None):return self.client.post(path,json=body or {},headers=self.headers)
+
+    def comparison_fixture(self):
+        from stitch_engine import save_json
+        source=Path(self.temporary.name)/'tmp'/'compare-source.png'
+        Image.fromarray(cv2.cvtColor(texture(960,768),cv2.COLOR_BGR2RGB)).save(source)
+        asset,_=self.studio.store_image_path(source,'compare-source.png')
+        jid=self.studio.create_jobs(self.studio.JobInput(prompt='Tile comparison fixture',source_asset_id=asset['id'],stitch=4))['ids'][0]
+        self.studio.write("UPDATE jobs SET status='failed' WHERE id=?",(jid,))
+        manifest=progressive_plan(960,768,4);stage=manifest['stages'][0];stage['folder']='stages/01-'+'c'*16
+        folder=self.studio.DATA/'jobs'/jid/'stitch'/stage['folder']
+        (folder/'crops').mkdir(parents=True);(folder/'redraw').mkdir()
+        shutil.copyfile(source,folder/'base.png');plan=execution_plan(stage);save_json(folder/'plan.json',plan)
+        save_json(folder.parent.parent/'progressive.json',manifest)
+        imaging.crop(source,plan['tiles'][0]['box'],folder/'crops/0.png')
+        Image.new('RGB',(2201,1651),'blue').save(folder/'redraw/0.png')
+        return jid,folder,plan['tiles'][0]
+
+    def test_comparison_shows_complete_input_and_native_output_as_private_bounded_previews(self):
+        jid,folder,tile=self.comparison_fixture();before={p:p.read_bytes() for p in (folder/'crops/0.png',folder/'redraw/0.png')}
+        url=f'/api/upscale/jobs/{jid}/comparison?level=1&tile=0';response=self.client.get(url)
+        self.assertEqual(response.status_code,200,response.text);data=response.json()
+        self.assertEqual(data['input_size'],[tile['box'][2]-tile['box'][0],tile['box'][3]-tile['box'][1]])
+        self.assertNotEqual(data['input_size'],[tile['core'][2]-tile['core'][0],tile['core'][3]-tile['core'][1]])
+        self.assertEqual(data['output_size'],[2201,1651]);self.assertEqual(data['expected_size'],tile['size'])
+        for image_url in data['images'].values():
+            preview=self.client.get(image_url);self.assertEqual(preview.status_code,200)
+            with Image.open(io.BytesIO(preview.content)) as image:self.assertLessEqual(max(image.size),1600)
+            self.assertIn('no-store',preview.headers['cache-control'])
+        self.assertTrue(all(p.read_bytes()==value for p,value in before.items()))
+        anonymous=TestClient(self.studio.app,base_url='https://image.test')
+        self.assertEqual(anonymous.get(url).status_code,401)
+        self.assertEqual(anonymous.get(data['images']['input']).status_code,401);anonymous.close()
+        Image.new('RGB',(1001,777),'red').save(folder/'redraw/0.png')
+        refreshed=self.client.get(url).json();self.assertNotEqual(refreshed['version'],data['version'])
+        self.assertEqual(refreshed['output_size'],[1001,777])
+
+    def test_comparison_missing_or_rejected_output_and_invalid_tile_are_handled(self):
+        jid,folder,_=self.comparison_fixture();url=f'/api/upscale/jobs/{jid}/comparison?level=1&tile=0'
+        (folder/'redraw/0.png').rename(folder/'redraw/rejected-0.png')
+        rejected=self.client.get(url).json();self.assertEqual(rejected['output_kind'],'rejected');self.assertTrue(rejected['images']['output'])
+        (folder/'redraw/rejected-0.png').unlink()
+        missing=self.client.get(url).json();self.assertIsNone(missing['output_size']);self.assertIsNone(missing['images']['output'])
+        self.assertEqual(self.client.get(url.replace('tile=0','tile=-1')).status_code,404)
+        self.assertEqual(self.client.get(url.replace('tile=0','tile=99999')).status_code,404)
+        self.studio.write("UPDATE jobs SET status='running' WHERE id=?",(jid,))
+        self.assertEqual(self.client.get(url).status_code,409)
+        self.studio.write("UPDATE jobs SET status='failed' WHERE id=?",(jid,))
 
     def test_plan_endpoint_keeps_all_sizes_and_needs_authentication(self):
         anonymous=TestClient(self.studio.app,base_url='https://image.test')

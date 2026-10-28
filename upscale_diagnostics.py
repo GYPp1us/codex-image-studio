@@ -15,6 +15,40 @@ from stitch_engine import estimate_affine, registration_mask, save_json,read_bgr
 ARTIFACTS=('source','raw','affine','top','center-raw','center-affine')
 
 
+def tile_comparison(folder,index,reserve=None):
+    """Compare the complete sent crop and native return, without registration."""
+    folder=Path(folder);plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'))
+    tile=next((t for t in plan['tiles'] if t['index']==index),None)
+    if tile is None:raise ValueError('图块不存在或已被细分，请重新打开诊断窗口')
+    source=folder/'crops'/f'{index}.png'
+    if not source.is_file():raise FileNotFoundError('本块输入检查点不存在')
+    output=folder/'redraw'/f'{index}.png';kind='raw'
+    if not output.is_file():output=folder/'redraw'/f'rejected-{index}.png';kind='rejected'
+    if not output.is_file():output=None
+    digest=hashlib.sha256(b'tile-comparison-v1')
+    for path in (source,output):
+        if path:
+            stat=path.stat();digest.update(f'{path.name}:{stat.st_size}:{stat.st_mtime_ns}'.encode())
+    digest.update(json.dumps(tile['size']).encode());version=digest.hexdigest()[:20]
+    destination=folder/'diagnostics'/'tile-comparison'/f'{index}-{version}'
+    report_path=destination/'report.json'
+    if report_path.is_file():return json.loads(report_path.read_text(encoding='utf-8'))
+    if reserve:reserve()
+    destination.mkdir(parents=True,exist_ok=True)
+    def save_preview(path,name):
+        temporary=destination/(name+'.tmp')
+        size=imaging.thumbnail(path,temporary,1600)
+        temporary.replace(destination/(name+'.webp'))
+        return size
+    original=imaging.info(source);actual=imaging.info(output) if output else None
+    report={'index':index,'number':index+1,'version':version,'input_size':[original['width'],original['height']],
+            'expected_size':tile['size'],'output_size':[actual['width'],actual['height']] if actual else None,
+            'output_kind':kind if output else None,'input_preview_size':save_preview(source,'input')}
+    if output:report['output_preview_size']=save_preview(output,'output')
+    save_json(report_path,report)
+    return report
+
+
 def fingerprint(folder):
     folder=Path(folder);digest=hashlib.sha256(b'failure-preview-v2')
     paths=[folder/'plan.json',folder/'base.png',*sorted((folder/'redraw').glob('*.png')),

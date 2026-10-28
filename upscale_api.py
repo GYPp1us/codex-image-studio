@@ -115,6 +115,28 @@ def register(app,studio):
         if not path.is_file():raise HTTPException(404)
         return FileResponse(path,media_type='image/webp',headers={'Cache-Control':'private, no-store'})
 
+    @app.get('/api/upscale/jobs/{jid}/comparison')
+    async def compare_tile(jid:str,level:int=1,tile:int=0,session=auth):
+        from upscale_diagnostics import tile_comparison
+        def prepare():
+            with studio.STORAGE.lock:
+                stopped(jid);folder=stage_folder(studio,jid,level)
+                try:
+                    return tile_comparison(folder,tile,lambda:studio.STORAGE.require(3*1024*1024,'准备图块输入输出对比'))
+                except (FileNotFoundError,ValueError) as error:raise HTTPException(404,str(error)) from error
+                finally:studio.STORAGE.invalidate()
+        result=await asyncio.to_thread(prepare)
+        base=f'/api/upscale/jobs/{jid}/comparison/{level}/{tile}/{result["version"]}'
+        return result|{'images':{'input':base+'/input','output':base+'/output' if result['output_size'] else None}}
+
+    @app.get('/api/upscale/jobs/{jid}/comparison/{level}/{tile}/{version}/{artifact}')
+    def compare_image(jid:str,level:int,tile:int,version:str,artifact:str,session=auth):
+        if tile<0 or not re.fullmatch('[a-f0-9]{20}',version) or artifact not in ('input','output'):raise HTTPException(404)
+        root=stage_folder(studio,jid,level)/'diagnostics'/'tile-comparison'/f'{tile}-{version}'
+        path=root/(artifact+'.webp')
+        if not (root/'report.json').is_file() or not path.is_file():raise HTTPException(404,'对比预览不存在')
+        return FileResponse(path,media_type='image/webp',headers={'Cache-Control':'private, no-store'})
+
     @app.patch('/api/upscale/jobs/{jid}/injection')
     def update_injection(jid:str,body:TaskInjection,session=auth):
         with studio.STORAGE.lock:
