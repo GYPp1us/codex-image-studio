@@ -80,7 +80,7 @@ const StudioService=(()=>{
       await Promise.all([...lastActive].filter(id=>!normal.items.some(b=>b.jobs.some(j=>j.id===id))&&!act.some(d=>d.items.some(b=>b.jobs.some(j=>j.id===id)))).map(async id=>rememberJob(await api('/api/jobs/'+id))));lastActive=current;
       const ups=[...batchMap.values()].flatMap(b=>b.jobs).filter(j=>j.options.stitch);
       await Promise.all(ups.filter(j=>initial||active(j)||!details.has(j.id)||details.get(j.id).status!==j.status).slice(0,20).map(async j=>{try{const d=await api('/api/upscale/jobs/'+j.id);details.set(j.id,d);rememberJob(d);}catch{}}));
-      projectImages();projectBatches();if(!firstSync){notifyChanges();if(S.coll&&!coll(S.coll)){await closeOverlays();S.coll=null;S.tab='works';renderPage();}else refresh();}
+      projectImages();projectBatches();if(!firstSync){notifyChanges();if(S.coll&&!coll(S.coll)){await closeOverlays();S.coll=null;S.tab='works';renderPage();}else if(!V.open&&!topScreen())refresh();}
       S.offline=false;updateChrome();firstSync=false;
     }catch(error){failure=error;throw error;}finally{loading=false;const waiting=syncWaiters;syncWaiters=[];waiting.forEach(w=>failure?w.reject(failure):w.resolve());}
   }
@@ -88,14 +88,14 @@ const StudioService=(()=>{
   function notifyChanges(){for(const j of jobs.values()){const old=knownStates.get(j.id);knownStates.set(j.id,j.status);if(old&&active({status:old})&&!active(j)&&S.settings.notify&&(!j.options.quick_edit||S.settings.quick.notify)){
       const output=j.outputs?.[0],text=j.status==='succeeded'?'任务已完成':j.status==='failed'?'任务失败':'任务已取消';toast(text,{action:output?'查看':'查看任务',run:()=>output?closeOverlays().then(()=>openViewer(output.id,'recent')):goBatch(j.batch_id)});}}}
   async function refreshData(){if(loading)await sync();await sync();saveDraft();}
-  function schedule(){clearTimeout(polling);if(!authenticated||stopped)return;polling=setTimeout(async()=>{if(!document.hidden){try{await sync();}catch(error){if(authenticated){S.offline=true;updateChrome();}}}schedule();},2500);}
+  function schedule(){clearTimeout(polling);if(!authenticated||stopped)return;polling=setTimeout(async()=>{if(!document.hidden&&!StudioZoom.isInteracting()){try{await sync();}catch(error){if(authenticated){S.offline=true;updateChrome();}}}schedule();},2500);}
   async function boot(){try{$('#tabbar').hidden=true;authState=await api('/api/auth/state');csrf=authState.csrf||'';authenticated=authState.authenticated;if(!authenticated)return login();
       $('#page').innerHTML='<div class="boot-state"><span class="spin"></span>正在打开工作台</div>';
       const [settingsData,ac,sub,catalog,library]=await Promise.all([api('/api/settings'),api('/api/account'),api('/api/setup/status'),api('/api/models'),api('/api/assets?kind=all&limit=200')]);
       account=ac;setup=sub;S.disconnected=!sub.authenticated;models=catalog.items;library.items.forEach(a=>rememberAsset(a));await sync({initial:true});mapSettings(settingsData);await restoreDraft();notifyChanges();renderPage();$('#tabbar').hidden=false;schedule();
       navigator.serviceWorker?.register('/sw.js',{scope:'/',updateViaCache:'none'}).catch(()=>{});
     }catch(error){if(!authenticated&&authState)return login();$('#page').innerHTML=`<div class="boot-state"><p>${esc(error.message)}</p><button class="secondary" data-act="boot-retry">重新连接</button></div>`;}}
-  function login(){sessionEpoch++;csrf="";clearTimeout(polling);$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;layers.splice(0);history.replaceState({depth:0},'');
+  function login(){StudioZoom.reset();sessionEpoch++;csrf="";clearTimeout(polling);$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;layers.splice(0);history.replaceState({depth:0},'');
     $('#page').innerHTML=`<div class="auth-wrap"><div class="auth-brand">${icon('sparkle',28)}<h1>Image Studio</h1><p>${authState?.initialized?'登录私人图片工作台':'设置私人图片工作台'}</p></div><form id="login-form" class="card"><div class="field-label">用户名</div><input class="input" name="username" autocomplete="username" minlength="2" maxlength="64" required><div class="field-label">密码</div><input class="input" name="password" type="password" autocomplete="${authState?.initialized?'current-password':'new-password'}" minlength="10" maxlength="256" required>${authState?.initialized?'':'<div class="field-label">初始化密钥</div><input class="input" name="setup_token" type="password" required>'}<p class="form-err" role="alert"></p><button class="primary" type="submit">${authState?.initialized?'登录':'创建工作台'}</button></form></div>`;
     $('#login-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,btn=$('button',form);btn.disabled=true;try{await post('/api/auth/'+(authState.initialized?'login':'setup'),Object.fromEntries(new FormData(form)));$('#tabbar').hidden=false;firstSync=true;await boot();}catch(error){$('.form-err',form).textContent=error.message;}finally{btn.disabled=false;}};
   }

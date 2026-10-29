@@ -27,3 +27,5 @@ button:disabled{cursor:default}
 @media(min-width:901px){.app{width:390px;max-width:390px;box-shadow:0 0 80px #00000016}}
 
 .st-coverage{color:var(--amber-ink)}
+.zoom-plane{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;contain:layout style;pointer-events:none}
+.zoom-plane .native-tiles{overflow:hidden}.zoom-plane .tile-fallback{z-index:0}.zoom-plane .tile-current{z-index:1}
