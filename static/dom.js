@@ -25,8 +25,11 @@ globalThis.StudioDOM = (() => {
   }
   function updateHTML(element, html) {
     if(!element || rendered.get(element) === html)return;
+    const animate=typeof window!=='undefined'&&typeof element.getBoundingClientRect==='function'&&!element.ownerDocument.documentElement.classList.contains('reduce-motion')&&typeof element.animate==='function';
+    const before=animate?new Map([...element.children].filter(n=>key(n)).map(n=>[key(n),n.getBoundingClientRect()])):null;
     const template=element.ownerDocument.createElement("template");template.innerHTML=html;
     children(element,template.content);rendered.set(element,html);
+    if(before)for(const node of element.children){const id=key(node),old=before.get(id);if(!id)continue;if(!old){node.classList.add('studio-enter');node.addEventListener('animationend',()=>node.classList.remove('studio-enter'),{once:true});}else{const now=node.getBoundingClientRect(),x=old.left-now.left,y=old.top-now.top;if(x||y)node.animate([{transform:`translate(${x}px,${y}px)`},{transform:'translate(0,0)'}],{duration:280,easing:'cubic-bezier(.32,.72,0,1)'});}}
   }
   return {updateHTML};
 })();

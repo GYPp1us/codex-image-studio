@@ -34,6 +34,7 @@ from cli_scheduler import CallPool
 import image_runtime as imaging
 from storage_manager import Storage, StorageFull, tree_bytes
 from prompt_capture import extract as extract_polished_prompt,REPORT_INSTRUCTION
+from interaction_api import GenerationDefaults, QuickDefaults, UpscaleDefaults, preferences, validate_regions, quick_model, enqueue_after_upscale
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -440,7 +441,7 @@ def change_password(body: dict, request: Request, session=Depends(require_user))
 
 @app.get("/api/state")
 def state(session=Depends(require_user)):
-    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "calls":CALL_POOL.snapshot() if CALL_POOL else {"active":0,"waiting":0}, "counts": query("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"], 'storage':STORAGE.usage()}
+    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "calls":CALL_POOL.snapshot() if CALL_POOL else {"active":0,"waiting":0}, "counts": query("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"], 'storage':STORAGE.usage(), 'preferences':preferences(sys.modules[__name__])}
 
 
 @app.get("/api/account")
@@ -527,11 +528,18 @@ class Settings(BaseModel):
     polish_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
     stitch_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
     storage_limit_bytes: int | None = Field(default=None,ge=0)
+    defaults: GenerationDefaults | None = None
+    quick: QuickDefaults | None = None
+    upscale: UpscaleDefaults | None = None
+    motion: bool | None = None
+    notify: bool | None = None
 
 
 @app.patch("/api/settings")
 def settings(body: Settings, session=Depends(require_user)):
     validate_model_choice(body.model or setting("model", MODEL), body.effort or setting("effort", EFFORT))
+    if body.quick:
+        quick_model(sys.modules[__name__], body.quick, body.model, body.effort)
     for template in (body.call_prompt, body.polish_prompt, body.stitch_prompt):
         if template is not None and "{prompt}" not in template:
             raise HTTPException(400, "调用提示词必须包含 {prompt} 变量")
@@ -647,7 +655,9 @@ def serialize_asset(a):
     if not a:
         return None
     large=a['width']*a['height']>16_000_000 or max(a['width'],a['height'])>8192
-    return {k: v for k, v in a.items() if k not in ("path", "sha")} | {"url": f"/media/{a['id']}", "thumbnail": f"/media/{a['id']}?thumbnail=1",'preview':f"/media/{a['id']}?preview=1" if large else f"/media/{a['id']}", 'tile_template':f"/api/assets/{a['id']}/tiles/{{level}}/{{x}}/{{y}}" if large else None}
+    origin=query('SELECT options FROM jobs WHERE id=?',(a.get('job_id'),),True) if a.get('job_id') else None
+    operation='quick-edit' if origin and json.loads(origin['options']).get('quick_edit') else None
+    return {k: v for k, v in a.items() if k not in ("path", "sha")} | {"url": f"/media/{a['id']}", "thumbnail": f"/media/{a['id']}?thumbnail=1",'preview':f"/media/{a['id']}?preview=1" if large else f"/media/{a['id']}", 'tile_template':f"/api/assets/{a['id']}/tiles/{{level}}/{{x}}/{{y}}" if large else None,'operation':operation}
 
 
 def store_image_path(source,name,kind='reference',job_id=None):
@@ -850,6 +860,10 @@ class Rectangle(BaseModel):
     height: int = Field(ge=16,strict=True)
 
 
+class EditRegion(Rectangle):
+    prompt: str = Field(default='',max_length=24000)
+
+
 class JobInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=24000)
     refs: list[str] = Field(default_factory=list, max_length=8)
@@ -859,9 +873,13 @@ class JobInput(BaseModel):
     polish: bool = False
     size: Literal["auto", "1024", "2048", "4096"] = "auto"
     stitch: Literal[0,4,16,64] = 0
+    after_upscale: Literal[0,4,16,64] = 0
     upscale_injection: str = Field(default='',max_length=12000)
     source_asset_id: str | None = Field(default=None, max_length=64)
     region: Rectangle | None = None
+    regions: list[EditRegion] | None = Field(default=None,min_length=1,max_length=6)
+    quick_edit: bool = False
+    system_probe: bool = False
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     model: str | None = Field(default=None, max_length=100)
     effort: str | None = Field(default=None, max_length=20)
@@ -890,6 +908,13 @@ def job_progress(job):
     status = job["status"]
     options=job.get("options",{})
     if isinstance(options,str):options=json.loads(options)
+    if options.get('regions'):
+        detail=json.loads(job.get('progress_detail') or '{}')
+        items=detail.get('regions') or [{'index':i,'status':'queued','label':'等待处理'} for i in range(len(options['regions']))]
+        done=sum(item['status']=='succeeded' for item in items)
+        label='正在合成结果' if detail.get('composing') else f'{done} / {len(items)} 个区域已完成'
+        if status in ('failed','cancelled','succeeded'):label={'failed':'部分区域失败，已保留完成的区域','cancelled':'已取消','succeeded':'区域重绘完成'}[status]
+        return {'regions':items,'stage':status,'label':label,'step':done,'total':len(items),'percent':round(done/len(items)*100),'indeterminate':status=='running','source':'server'}
     if options.get("stitch"):
         from stitch_engine import PHASES, LABELS
         value=json.loads(job.get("progress_detail") or '{}')
@@ -946,18 +971,24 @@ def _create_jobs(body):
     if body.ratio not in ("1:1", "3:2", "2:3", "16:9", "9:16", "auto"):
         raise HTTPException(400, "画幅不支持")
     refs = list(dict.fromkeys(body.refs))
-    if body.region and (not body.source_asset_id or body.stitch or body.count!=1):
+    editing=bool(body.region or body.regions)
+    if body.after_upscale and (body.stitch or editing or body.quick_edit or body.source_asset_id):
+        raise HTTPException(400,'生成后超分仅用于普通生成任务')
+    if body.region and body.regions:
+        raise HTTPException(400,'单区域与多区域字段不能同时提交')
+    if editing and (not body.source_asset_id or body.stitch or body.count!=1 or body.quick_edit):
         raise HTTPException(400,'局部重绘需要一张原图、一个矩形选区，且不能同时超分')
-    if body.source_asset_id and not body.stitch and not body.region:
+    if body.quick_edit and (not body.source_asset_id or body.stitch or body.count!=1):
+        raise HTTPException(400,'速改需要一张原图，且不能同时超分')
+    if body.source_asset_id and not body.stitch and not editing and not body.quick_edit:
         raise HTTPException(400, "发送现有图片到超分时必须选择倍率")
     if body.source_asset_id:
         source=query('SELECT * FROM assets WHERE id=?',(body.source_asset_id,),True)
         if not source or source.get('deleted'):raise HTTPException(400,'原图不存在或已删除')
-        if body.region:
-            from local_edit import context_box
-            try:context_box((source['width'],source['height']),body.region.model_dump())
+        if editing:
+            try:validate_regions((source['width'],source['height']),[item.model_dump() for item in (body.regions or [body.region])])
             except ValueError as error:raise HTTPException(400,str(error)) from error
-        else:
+        elif body.stitch:
             from stitch_planner import progressive_plan, PlanError
             try:progressive_plan(source['width'],source['height'],body.stitch)
             except PlanError as error:raise HTTPException(400,str(error)) from error
@@ -973,13 +1004,21 @@ def _create_jobs(body):
     if body.template_id and not template:
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
-    options.update(stitch=body.stitch,source_asset_id=body.source_asset_id,upscale_injection=body.upscale_injection,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch else '')
+    options.update(stitch=body.stitch,after_upscale=body.after_upscale,source_asset_id=body.source_asset_id,upscale_injection=body.upscale_injection,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch or body.after_upscale else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch or body.after_upscale else '')
     if body.region:
         options.update(region=body.region.model_dump(),polish=False,ratio='auto',size='auto',call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT))
+    if body.regions:
+        regions=[item.model_dump() for item in body.regions]
+        for region in regions:
+            region['prompt']=region['prompt'].strip() or body.prompt.strip()
+        options.update(regions=regions,polish=False,ratio='auto',size='auto',call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT))
+    if body.quick_edit:
+        options.update(quick_edit=True,requested_size=[source['width'],source['height']],ratio='auto',size='auto')
+    if body.system_probe:options['system_probe']=True
     batch, ids = uid(), []
-    collection_id = 'tpl-' + template['id'] if template else UNTEMPLATED_COLLECTION
+    collection_id = 'system-probe' if body.system_probe else 'tpl-' + template['id'] if template else UNTEMPLATED_COLLECTION
     with db() as c:
-        if not template:archive_deleted_untemplated(c)
+        if not template and not body.system_probe:archive_deleted_untemplated(c)
         c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,deleted=0", (collection_id, template['title'] if template else '无模板', body.prompt.strip(), now(), now()))
         for _ in range(body.count):
             jid = uid()
@@ -1009,8 +1048,9 @@ class UpscaleInput(BaseModel):
 
 
 class LocalEditInput(BaseModel):
-    prompt: str = Field(min_length=1,max_length=24000)
-    region: Rectangle
+    prompt: str = Field(default='',max_length=24000)
+    region: Rectangle | None = None
+    regions: list[EditRegion] | None = Field(default=None,min_length=1,max_length=6)
     model: str | None = Field(default=None,max_length=100)
     effort: str | None = Field(default=None,max_length=20)
 
@@ -1019,7 +1059,12 @@ class LocalEditInput(BaseModel):
 async def inpaint_asset(aid: str, body: LocalEditInput, session=Depends(require_user)):
     asset=query('SELECT id FROM assets WHERE id=? AND deleted=0',(aid,),True)
     if not asset:raise HTTPException(404,'原图不存在')
-    return await add_jobs(JobInput(prompt=body.prompt,source_asset_id=aid,region=body.region,model=body.model,effort=body.effort),session)
+    if bool(body.region)==bool(body.regions):raise HTTPException(400,'请选择一个或多个重绘区域')
+    if body.regions and any(not (region.prompt.strip() or body.prompt.strip()) for region in body.regions):
+        raise HTTPException(400,'每个区域需要单独要求或共用要求')
+    prompt=body.prompt.strip() or '\n'.join(f'区域 {i+1}：{region.prompt}' for i,region in enumerate(body.regions or []))
+    if not prompt:raise HTTPException(400,'请输入重绘要求')
+    return await add_jobs(JobInput(prompt=prompt,source_asset_id=aid,region=body.region,regions=body.regions,model=body.model,effort=body.effort),session)
 
 
 @app.post('/api/assets/{aid}/upscale')
@@ -1071,7 +1116,7 @@ async def save_source_asset(jid: str, session=Depends(require_user)):
 
 @app.post("/api/setup/probe")
 async def probe(session=Depends(require_user)):
-    body = JobInput(prompt="A single small matte black circle centered on a plain white background. Minimal geometric illustration, no text.", max_attempts=1)
+    body = JobInput(prompt="A single small matte black circle centered on a plain white background. Minimal geometric illustration, no text.", max_attempts=1, system_probe=True)
     result = await add_jobs(body, session)
     set_setting("probe", result["ids"][0])
     return result
@@ -1093,7 +1138,7 @@ def list_jobs(status: str = "", collection: str = "", limit: int = 50, offset: i
 @app.get("/api/collections")
 def collections(search: str = "", deleted: bool = False, limit: int = 50, offset: int = 0, session=Depends(require_user)):
     pattern=f'%{search[:100]}%'
-    predicate='deleted=? AND (name LIKE ? OR prompt LIKE ? OR EXISTS(SELECT 1 FROM jobs WHERE jobs.collection_id=collections.id AND jobs.prompt LIKE ?))'
+    predicate="id!='system-probe' AND deleted=? AND (name LIKE ? OR prompt LIKE ? OR EXISTS(SELECT 1 FROM jobs WHERE jobs.collection_id=collections.id AND jobs.prompt LIKE ?))"
     rows = query('SELECT * FROM collections WHERE '+predicate+' ORDER BY updated DESC LIMIT ? OFFSET ?', (int(deleted),pattern,pattern,pattern,max(1,min(limit,100)),max(0,offset)))
     for group in rows:
         group['template_id'] = group['id'][4:] if group['id'].startswith('tpl-') else ''
@@ -1245,6 +1290,10 @@ def make_instruction(j, directory):
     template = "Progress reporting: Immediately before invoking the image-generation tool, send one separate commentary message containing exactly [STUDIO_STAGE:image_generation]. Only after that tool returns, send one separate commentary message containing exactly [STUDIO_STAGE:receiving]. These are UI stage reports, not tool output or a claim of success. Never send a stage marker before its corresponding transition.\n" + template
     size = opts.get("size", "auto")
     resolution = "automatic native resolution" if size == "auto" else f"{size} pixels on the long edge, preserving the requested aspect ratio; use native generation, never shell resizing or upscaling"
+    if opts.get('quick_edit'):
+        width,height=opts['requested_size']
+        resolution=f'{width}x{height} pixels, exactly matching reference-1.png aspect ratio and native dimensions; report the actual native size if unsupported'
+        template='Edit reference-1.png according to the request, preserving all other content, composition, and its aspect ratio.\n'+template
     if "{size}" not in template:
         template = "Requested image size: {size}. If the tool cannot honor this resolution, report the actual native resolution.\n" + template
     values = {"ratio": opts["ratio"], "size": resolution, "transparent": str(opts["transparent"]), "references": ", ".join(f"reference-{i + 1}.png" for i, _ in enumerate(json.loads(j["refs"]))) or "none"}
@@ -1277,9 +1326,15 @@ def record_generated_image(jid, source):
         original=query('SELECT path FROM assets WHERE id=?',(options['source_asset_id'],),True)
         source=compose(original['path'],source,options['region'],DATA/'jobs'/jid/'edited.png')
     if job_cancelled(jid):return
-    result, _ = store_image_path(source,f"{'局部重绘' if options.get('region') else '生成作品'}-{jid[:8]}.png",'generated',jid)
-    write("UPDATE jobs SET status='succeeded',outputs=?,finished=?,error='' WHERE id=? AND status!='cancelled'", (json.dumps([result["id"]]), now(), jid))
-    write("UPDATE attempts SET status='succeeded',finished=?,error='' WHERE job_id=? AND number=(SELECT attempt FROM jobs WHERE id=?) AND status IN ('running','failed')", (now(), jid, jid))
+    kind='局部重绘' if options.get('region') or options.get('regions') else '速改' if options.get('quick_edit') else '生成作品'
+    result, _ = store_image_path(source,f"{kind}-{jid[:8]}.png",'generated',jid)
+    with db() as connection:
+        parent=connection.execute('SELECT * FROM jobs WHERE id=?',(jid,)).fetchone()
+        if not parent or parent['status']=='cancelled':return
+        connection.execute("UPDATE jobs SET status='succeeded',outputs=?,finished=?,error='' WHERE id=?", (json.dumps([result['id']]), now(), jid))
+        connection.execute("UPDATE attempts SET status='succeeded',finished=?,error='' WHERE job_id=? AND number=? AND status IN ('running','failed')", (now(), jid, parent['attempt']))
+        enqueue_after_upscale(sys.modules[__name__],connection,dict(parent),result)
+    WAKE.set()
     return result
 
 
@@ -1294,6 +1349,10 @@ def record_polished_prompt(jid,event):
 async def run_job(jid):
     j = query("SELECT * FROM jobs WHERE id=?", (jid,), True)
     options = json.loads(j["options"])
+    if options.get('regions'):
+        from region_workflow import run
+        await run(sys.modules[__name__],jid)
+        return
     if options.get('stitch'):
         from upscale_workflow import run
         await run(sys.modules[__name__],jid)
@@ -1432,3 +1491,5 @@ def index():
 
 from upscale_api import register as register_upscale_routes
 register_upscale_routes(app,sys.modules[__name__])
+from interaction_api import register as register_interaction_routes
+register_interaction_routes(app,sys.modules[__name__])

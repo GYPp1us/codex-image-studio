@@ -7,8 +7,8 @@
   const picture=a=>a?.preview||a?.thumbnail||a?.url||'';
   const set=(id,html)=>{const slot=document.getElementById(id);if(slot)updateHTML(slot,html);};
   function render(){
-    $('#page').innerHTML=`<div class="upscale-page"><header class="upscale-heading"><div><span class="eyebrow">PROGRESSIVE STUDIO</span><h1>渐进超分</h1><p>逐级细化，让每一次放大都有足够的像素支撑。</p></div><button class="btn secondary" data-action="upscale-new">${icon('plus')}新建超分</button></header><div class="upscale-workspace"><main class="upscale-main"><section class="upscale-composer"><div id="upscale-source-slot"></div><div class="upscale-choices"><div><span class="section-label">最终面积倍率</span><div class="upscale-factor-picker">${[4,16,64].map(f=>`<button data-action="upscale-factor" data-factor="${f}" class="${U.factor===f?'selected':''}"><strong>${f}×</strong><span>宽高各 ${Math.sqrt(f)} 倍 · ${Math.log(f)/Math.log(4)} 级</span></button>`).join('')}</div></div><div class="upscale-injection-field"><label for="upscale-injection">统一细节与画风约束（可选）</label><textarea id="upscale-injection" rows="3" maxlength="12000" placeholder="例如：保持原图线稿与平涂，统一笔触、配色和材质细节…">${esc(U.injection)}</textarea><div class="row between"><small class="muted">注入每一级、每一块的超分请求。</small><button class="link-btn" data-action="upscale-save-injection" id="upscale-save-injection" hidden>保存本任务约束</button></div></div><div class="upscale-controls">${modelControls('upscale')}<button class="btn primary" id="upscale-submit" data-action="upscale-start">加入超分队列${icon('arrow')}</button></div></div></section><div id="upscale-plan-slot"></div></main><aside class="upscale-history"><div class="section-label"><span>超分任务</span><span id="upscale-job-count"></span></div><div id="upscale-jobs-slot"></div><button class="link-btn" data-action="upscale-more">加载更多</button></aside></div><input type="file" id="upscale-upload" hidden accept="image/png,image/jpeg,image/webp,image/tiff"></div>`;
-    paintSource();paintPlan();refresh().catch(error=>toast(error.message));
+    $('#page').innerHTML=`<div class="upscale-page">${globalThis.StudioWorkspace?.modeTabs()||''}<header class="upscale-heading"><div><span class="eyebrow">PROGRESSIVE STUDIO</span><h1>渐进超分</h1><p>逐级细化，让每一次放大都有足够的像素支撑。</p></div><button class="btn secondary" data-action="upscale-new">${icon('plus')}新建超分</button></header><div class="upscale-workspace"><main class="upscale-main"><section class="upscale-composer"><div id="upscale-source-slot"></div><div class="upscale-choices"><div><span class="section-label">最终面积倍率</span><div class="upscale-factor-picker">${[4,16,64].map(f=>`<button data-action="upscale-factor" data-factor="${f}" class="${U.factor===f?'selected':''}"><strong>${f}×</strong><span>宽高各 ${Math.sqrt(f)} 倍 · ${Math.log(f)/Math.log(4)} 级</span></button>`).join('')}</div></div><div class="upscale-injection-field"><label for="upscale-injection">统一细节与画风约束（可选）</label><textarea id="upscale-injection" rows="3" maxlength="12000" placeholder="例如：保持原图线稿与平涂，统一笔触、配色和材质细节…">${esc(U.injection)}</textarea><div class="row between"><small class="muted">注入每一级、每一块的超分请求。</small><button class="link-btn" data-action="upscale-save-injection" id="upscale-save-injection" hidden>保存本任务约束</button></div></div><div class="upscale-controls">${modelControls('upscale')}<button class="btn primary" id="upscale-submit" data-action="upscale-start">加入超分队列${icon('arrow')}</button></div></div></section><div id="upscale-plan-slot"></div></main><aside class="upscale-history"><div class="section-label"><span>超分任务</span><span id="upscale-job-count"></span></div><div id="upscale-jobs-slot"></div><button class="link-btn" data-action="upscale-more">加载更多</button></aside></div><input type="file" id="upscale-upload" hidden accept="image/png,image/jpeg,image/webp,image/tiff"></div>`;
+    if(!U.selected&&!U.source){const defaults=S.config.preferences?.upscale||{};U.factor=defaults.factor||4;U.injection=defaults.default_injection||'';if(defaults.auto_select!==false){const recent=S.jobs.flatMap(j=>j.outputs)[0];if(recent){U.source=recent;estimate();}}}paintSource();paintPlan();refresh().catch(error=>toast(error.message));
   }
   function paintSource(){
     const a=U.detail?.source_image||U.source;
@@ -49,7 +49,7 @@
     set('upscale-jobs-slot',U.jobs.length?U.jobs.map(j=>`<button class="upscale-history-item ${U.selected===j.id?'selected':''}" data-action="upscale-open" data-id="${j.id}"><span>${j.options.stitch}× ${statusPill(j.status)}</span><strong>${esc(j.prompt.slice(0,45))}</strong><small>${fmtTime(j.created)} · ${esc(j.progress.label)}</small></button>`).join(''):'<p class="empty-list small">还没有超分任务</p>');
   }
   async function refresh(){
-    if(S.page!=='upscale')return;
+    if(S.page!=='create'||S.createMode!=='upscale')return;
     const data=await api(`/api/upscale/jobs?limit=${U.limit}`);U.jobs=data.items;rememberJobs(U.jobs);paintJobs();
     if(U.selected){const selected=U.selected,detail=await api(`/api/upscale/jobs/${selected}`);if(U.selected!==selected)return;U.detail=detail;U.factor=detail.options.stitch;rememberJobs([detail]);paintSource();paintPlan();}
   }
@@ -61,9 +61,9 @@
   }
   async function selectSource(id){
     const source=S.assetMap.get(id);if(!source)return;
-    U.source=source;U.selected=null;U.detail=null;closeModal();await navigate('upscale');await estimate();
+    U.source=source;U.selected=null;U.detail=null;U.factor=S.config.preferences?.upscale?.factor||4;U.injection=S.config.preferences?.upscale?.default_injection||'';closeModal();await navigate('upscale');await estimate();
   }
-  async function openJob(id){$('#upscale-injection')?.removeAttribute('data-job');U.selected=id;U.detail=null;if(S.page!=='upscale')await navigate('upscale');else await refresh();}
+  async function openJob(id){$('#upscale-injection')?.removeAttribute('data-job');U.selected=id;U.detail=null;if(S.page!=='create'||S.createMode!=='upscale')await navigate('upscale');else await refresh();}
   async function choose(){
     const data=await api('/api/assets?kind=all&limit=200');rememberAssets(data.items);
     modal('选择超分原图',`<div class="row between"><p class="small muted">选择作品或参考图</p><button class="btn secondary" data-action="upscale-upload">${icon('upload')}上传图片</button></div><div class="upscale-source-library">${data.items.map(a=>`<button data-action="upscale-source" data-id="${a.id}"><img loading="lazy" src="${esc(a.thumbnail)}" alt="${esc(a.name)}"><strong>${esc(a.name)}</strong><small>${a.width} × ${a.height}</small></button>`).join('')||'<p class="empty-list">先上传一张图片。</p>'}</div>`);
@@ -85,7 +85,7 @@
       let source=U.detail?.source_image||U.source;
       if(source&&!source.id&&source.source_job_id)source=await post(`/api/jobs/${source.source_job_id}/source-asset`);
       if(source){U.source=source;rememberAssets([source]);}
-      U.selected=null;U.detail=null;if(S.page!=='upscale')await navigate('upscale');if(U.source)await estimate();else{paintSource();paintPlan();}
+      U.selected=null;U.detail=null;if(S.page!=='create'||S.createMode!=='upscale')await navigate('upscale');if(U.source)await estimate();else{paintSource();paintPlan();}
     }
     else if(name==='upscale-start'){
       if(!U.source||!U.plan||U.busy)return;element.disabled=true;
@@ -101,7 +101,7 @@
     else if(name==='upscale-clear-cache')clearConfirmation(id);
     else if(name==='upscale-clear-confirm'){
       element.disabled=true;const result=await post(`/api/upscale/jobs/${id}/clear-cache`);closeModal();toast(`已释放 ${bytes(result.released_bytes)}`);
-      if(S.page==='settings')await renderStorage();else await refresh();
+      if(S.page==='settings'||$('#storage-settings'))await renderStorage();else await refresh();
     }
   }
   async function upload(file){

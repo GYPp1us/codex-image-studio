@@ -71,7 +71,7 @@ def find_image(studio,thread_id,directory):
     return candidate if candidate.is_file() and not candidate.is_symlink() else None
 
 
-async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False):
+async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False,kind=None):
     ensure_active(studio,jid)
     directory=folder/"calls"/name;directory.mkdir(parents=True,exist_ok=True,mode=0o700)
     (directory/"output.png").unlink(missing_ok=True)
@@ -81,7 +81,7 @@ async def cli_call(studio,jid,folder,name,instruction,references,model,effort,ph
     for index,path in enumerate(references):
         destination=directory/f"reference-{index+1}.png";shutil.copyfile(path,destination);args += ["-i",str(destination)]
     args += ["-"]
-    kind='redraw' if expected_size else 'image' if image else 'inspection'
+    kind=kind or ('redraw' if expected_size else 'image' if image else 'inspection')
     save_json(directory/"request.json",{"job_id":jid,"kind":kind,"expected_size":expected_size,"worker_instruction":instruction,"references":[p.name for p in references],"model":model,"effort":effort})
     thread_id="";messages=[];errors=[]
     def notify(label,active=True,source='server'):
