@@ -29,3 +29,5 @@ button:disabled{cursor:default}
 .st-coverage{color:var(--amber-ink)}
 .zoom-plane{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;contain:layout style;pointer-events:none}
 .zoom-plane .native-tiles{overflow:hidden}.zoom-plane .tile-fallback{z-index:0}.zoom-plane .tile-current{z-index:1}
+.viewer.redraw .v-stage{touch-action:none;-webkit-touch-callout:none}.viewer.redraw .v-quick,.viewer.redraw .v-actions{visibility:hidden}
+.download-status{display:flex;flex-direction:column;gap:12px;margin:4px 0 20px;font-variant-numeric:tabular-nums}.download-status .note{margin:0}.download-progress{width:100%;height:8px;accent-color:var(--sage-ink);border:0;border-radius:8px;overflow:hidden}.download-progress::-webkit-progress-bar{background:var(--surface-2);border-radius:8px}.download-progress::-webkit-progress-value{background:var(--sage-ink);border-radius:8px}.download-progress::-moz-progress-bar{background:var(--sage-ink)}.download-actions{display:flex;flex-direction:column;gap:10px}.download-actions a{display:flex;align-items:center;justify-content:center;text-decoration:none}.download-error{color:var(--red)}

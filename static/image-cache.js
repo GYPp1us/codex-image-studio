@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-const transfers=new Map(),bound=new WeakMap();
+const transfers=new Map(),bound=new WeakMap(),listeners=new Map();
 const canonical=url=>new URL(url,location.href).href;
 const size=n=>n>=1048576?(n/1048576).toFixed(1)+' MB':Math.round(n/1024)+' KB';
 function paint(image){
@@ -15,6 +15,24 @@ function paint(image){
   if(track){if(total||state.done)track.setAttribute('aria-valuenow',percent);else track.removeAttribute('aria-valuenow');track.setAttribute('aria-valuetext',label?.textContent||'');}
 }
 globalThis.StudioImages={
+  async original(url,{signal,onProgress=()=>{}}={}){
+    const key=canonical(url);if(new URL(key).origin!==new URL(location.href).origin)throw new Error('原图地址无效');
+    let reported=0;const progress=state=>{reported=Math.max(reported,state.loaded||0);onProgress({...state,loaded:reported});};
+    if(!listeners.has(key))listeners.set(key,new Set());listeners.get(key).add(progress);progress({loaded:0,total:0,done:false});
+    try{
+      const response=await fetch(key,{credentials:'same-origin',signal});
+      if(!response.ok)throw new Error(response.status===401?'登录已失效，请重新登录':`原图下载失败（${response.status}）`);
+      const type=response.headers.get('content-type')||'';if(!type.startsWith('image/'))throw new Error('服务器未返回有效图片');
+      const total=Number(response.headers.get('content-length'))||0;
+      if(!response.body?.getReader){const blob=await response.blob();progress({loaded:blob.size,total:total||blob.size,done:true});return blob;}
+      const reader=response.body.getReader(),parts=[];let loaded=0,last=0;
+      try{while(true){const chunk=await reader.read();if(chunk.done)break;if(signal?.aborted)throw new DOMException('已取消','AbortError');parts.push(chunk.value);loaded+=chunk.value.byteLength;
+        if(Date.now()-last>=80||total&&loaded>=total){last=Date.now();progress({loaded,total,done:false});}}
+      }catch(error){await reader.cancel().catch(()=>{});throw error;}finally{reader.releaseLock();}
+      if(signal?.aborted)throw new DOMException('已取消','AbortError');
+      const blob=new Blob(parts,{type});progress({loaded,total:total||loaded,done:true});return blob;
+    }finally{listeners.get(key)?.delete(progress);if(!listeners.get(key)?.size)listeners.delete(key);}
+  },
   markup(extra=''){return `<span class="image-download-status ${extra}" role="status"><span class="image-download-label">正在下载原图…</span><span class="motion-track" role="progressbar" aria-label="原图下载进度" aria-valuemin="0" aria-valuemax="100"><span class="motion-fill p0"></span></span></span>`;},
   hydrate(root=document){
     for(const image of root.querySelectorAll('img[data-full-image]')){
@@ -48,6 +66,7 @@ globalThis.StudioImages={
 navigator.serviceWorker?.addEventListener('message',event=>{
   if(event.data?.type!=='IMAGE_PROGRESS')return;
   const {url,loaded,total,done}=event.data;transfers.set(url,{loaded,total,done});
+  for(const listener of listeners.get(url)||[])listener({loaded,total,done});
   if(transfers.size>500)transfers.delete(transfers.keys().next().value);
   for(const frame of document.querySelectorAll('[data-image-view]'))if(frame.dataset.imageUrl===url){const image=frame.querySelector('img[data-full-image]');if(image)paint(image);}
 });

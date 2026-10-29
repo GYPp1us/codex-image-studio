@@ -4,6 +4,15 @@ const StudioService=(()=>{
   let sessionEpoch=0;
   let csrf='',authenticated=false,authState=null,config={},account={},setup={},prefs={},models=[],polling=null,loading=false,saveQueue=Promise.resolve(),draftTimer,installPrompt;
   const assets=new Map(),jobs=new Map(),batchMap=new Map(),plans=new Map(),planPending=new Map(),details=new Map(),collectionPages=new Map();
+  const workPages=new Map();
+  const workState=tab=>{if(!workPages.has(tab))workPages.set(tab,{ids:[],offset:0,total:0,ready:false,loading:false,error:false});return workPages.get(tab);};
+  const workItems=tab=>workState(tab).ids.map(id=>assets.get(id)).filter(a=>a&&!a.deleted&&(tab==='favorites'?a.fav:a.kind==='reference'));
+  async function loadWorks(tab,more=false){
+    if(!['references','favorites'].includes(tab))return;const page=workState(tab);if(page.loading)return;const epoch=sessionEpoch,offset=more?page.offset:0;page.loading=true;page.error=false;
+    if(S.tab==='works'&&!S.coll&&S.worksTab===tab)refresh();
+    try{const d=await api(`/api/assets?kind=${tab==='references'?'reference':'all'}${tab==='favorites'?'&favorite=true':''}&limit=80&offset=${offset}`);if(epoch!==sessionEpoch)return;d.items.forEach(a=>rememberAsset(a));page.ids=[...new Set([...(more?page.ids:[]),...d.items.map(a=>a.id)])];page.offset=offset+d.items.length;page.total=d.total;page.ready=true;projectImages();}
+    catch(error){page.error=true;throw error;}finally{page.loading=false;if(epoch===sessionEpoch&&S.tab==='works'&&!S.coll&&S.worksTab===tab&&!V.open)refresh();}
+  }
   let batchOffset=0,batchTotal=0,stopped=false,firstSync=true,lastActive=new Set(),syncWaiters=[];
   const factor=v=>Number(String(v).replace('×',''))||0,ratio=v=>v==='自动'?'auto':v,size=v=>({'自动':'auto','1K':'1024','2K':'2048','4K':'4096'}[v]||v);
   const labelRatio=v=>v==='auto'?'自动':v,labelSize=v=>({auto:'自动',1024:'1K',2048:'2K',4096:'4K'}[v]||v);
@@ -95,7 +104,7 @@ const StudioService=(()=>{
       account=ac;setup=sub;S.disconnected=!sub.authenticated;models=catalog.items;library.items.forEach(a=>rememberAsset(a));await sync({initial:true});mapSettings(settingsData);await restoreDraft();notifyChanges();renderPage();$('#tabbar').hidden=false;schedule();
       navigator.serviceWorker?.register('/sw.js',{scope:'/',updateViaCache:'none'}).catch(()=>{});
     }catch(error){if(!authenticated&&authState)return login();$('#page').innerHTML=`<div class="boot-state"><p>${esc(error.message)}</p><button class="secondary" data-act="boot-retry">重新连接</button></div>`;}}
-  function login(){StudioZoom.reset();sessionEpoch++;csrf="";clearTimeout(polling);$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;layers.splice(0);history.replaceState({depth:0},'');
+  function login(){StudioDownloads.cancel();StudioZoom.reset();workPages.clear();sessionEpoch++;csrf="";clearTimeout(polling);$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;layers.splice(0);history.replaceState({depth:0},'');
     $('#page').innerHTML=`<div class="auth-wrap"><div class="auth-brand">${icon('sparkle',28)}<h1>Image Studio</h1><p>${authState?.initialized?'登录私人图片工作台':'设置私人图片工作台'}</p></div><form id="login-form" class="card"><div class="field-label">用户名</div><input class="input" name="username" autocomplete="username" minlength="2" maxlength="64" required><div class="field-label">密码</div><input class="input" name="password" type="password" autocomplete="${authState?.initialized?'current-password':'new-password'}" minlength="10" maxlength="256" required>${authState?.initialized?'':'<div class="field-label">初始化密钥</div><input class="input" name="setup_token" type="password" required>'}<p class="form-err" role="alert"></p><button class="primary" type="submit">${authState?.initialized?'登录':'创建工作台'}</button></form></div>`;
     $('#login-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,btn=$('button',form);btn.disabled=true;try{await post('/api/auth/'+(authState.initialized?'login':'setup'),Object.fromEntries(new FormData(form)));$('#tabbar').hidden=false;firstSync=true;await boot();}catch(error){$('.form-err',form).textContent=error.message;}finally{btn.disabled=false;}};
   }
@@ -233,7 +242,7 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
     return `<div class="fx-stage pane-${FX.pane}" data-layout="aspect-ratio:${w}/${h}"><img src="${esc(d.images[FX.pane])}" alt="${PANE_CAP[FX.pane]}">${hits}</div><p class="fx-cap">${PANE_CAP[FX.pane]}</p>`;}
   async function compareTile(i){const id=FX.jid,version=failureVersion;FX.cmp=i;FX.side='output';FX.comparison=null;fxRender();const d=await api(`/api/upscale/jobs/${id}/comparison?level=${FX.level}&tile=${i}`);if(FX.jid!==id||FX.cmp!==i||failureVersion!==version||!FX.screen?.isConnected||FX.screen.style.pointerEvents==='none')return;FX.comparison=d;fxRender(FX.screen);$('#fx-view',FX.screen)?.scrollIntoView({block:'start',behavior:RM?'auto':'smooth'});}
   async function fxSubmit(){const el=topScreen(),btn=$('#fx-go',el);if(btn.disabled)return;btn.disabled=true;try{const selected=[...FX.sel].sort((a,b)=>a-b);await post(`/api/upscale/jobs/${FX.jid}/redraw`,{level:FX.level,tiles:selected,upscale_injection:$('#fx-inj',el).value.trim(),use_current_prompt:FX.latest});const bid=FX.bid;await back();await refreshData();S.expanded.add(bid);goBatch(bid);toast(`${selected.length} 块已加入重绘，其余图块保留`);}finally{btn.disabled=false;}}
-  function download(id){const im=assets.get(id);if(!im)throw new Error('图片不存在');const a=document.createElement('a');a.href=im.url+'?download=1';a.download=im.name||'image.png';a.rel='noopener';document.body.append(a);a.click();a.remove();toast('已开始下载');}
+  function download(id){const im=assets.get(id);if(!im)throw new Error('图片不存在');return StudioDownloads.open(im);}
   async function performAction(k,a,e){const id=a.dataset.id;
     switch(k){
       case 'boot-retry':await boot();break;
@@ -277,8 +286,10 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'task-info':await taskInfo(id);break;
       case 'im-native':await back();StudioZoom.toggleNative();break;
       case 'v-dl':download(V.list[V.i]);break;
-      case 'im-dl':await back();download(id);break;
-      case 'im-fav':rememberAsset(await api('/api/assets/'+id,{method:'PATCH',body:{favorite:!assets.get(id).fav}}));projectImages();await back();refresh();toast(assets.get(id).fav?'已收藏':'已取消收藏');break;
+      case 'im-dl':download(id);break;
+      case 'works-tab':{const tab=a.dataset.v;if(!['generated','references','favorites'].includes(tab))break;S.worksTab=tab;renderPage();if(tab!=='generated')await loadWorks(tab);break;}
+      case 'works-more':await loadWorks(S.worksTab,workState(S.worksTab).ready&&!workState(S.worksTab).error);break;
+      case 'im-fav':rememberAsset(await api('/api/assets/'+id,{method:'PATCH',body:{favorite:!assets.get(id).fav}}));projectImages();await back();if(S.worksTab==='favorites')await loadWorks('favorites');if(!V.open)refresh();toast(assets.get(id).fav?'已收藏':'已取消收藏');break;
       case 'copy-prompt':await navigator.clipboard.writeText(assets.get(id)?.prompt||'');toast('提示词已复制');break;
       case 'rd-submit':a.disabled=true;try{await redraw();}finally{if(a.isConnected)a.disabled=false;}break;
       case 'up-f':{const L=a.closest('.sheet-layer');L.dataset.f=a.dataset.v;$$('#upo .opt',L).forEach(b=>b.classList.toggle('on',b===a));paintSheetPlan(L);break;}
@@ -310,6 +321,6 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   const safe=fn=>(...args)=>Promise.resolve().then(()=>fn(...args)).catch(report);
   return {boot,api,report,action,makeUp,planHTML,settingsHTML,username:()=>account.username||"",requestedRatio:id=>labelRatio(jobs.get(assets.get(id)?.job_id)?.options.ratio||"auto"),settingChanged,refreshSettings,modelName,models:()=>models,config:()=>config,loadCollection,batchMore:()=>batchOffset<batchTotal,
     generate:safe(generate),reroll:safe(reroll),deleteImage:safe(deleteImage),loadTemplate:safe(loadTemplate),infoSheet:safe(infoSheet),upscaleSheet,pickerSheet:safe(pickerSheet),meSheet,tplSheet,tplSaveForm,openFailure:safe(openFailure),fxView,fxSubmit:safe(fxSubmit),sendQuick,editImage,
-    stop(){stopped=true;clearTimeout(polling);}};
+    workItems,workState,loadWorks,stop(){stopped=true;clearTimeout(polling);}};
 })();
 const studioReady=StudioService.boot();

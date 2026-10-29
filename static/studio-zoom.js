@@ -143,7 +143,7 @@ const StudioZoom=(()=>{
   }
   stage.addEventListener('pointerdown',e=>{
     if(e.button>0||V.redraw||!ensure())return;measure();points.set(e.pointerId,point(e));
-    if(points.size>=2||scale>1.0001){drag=null;track.style.transform='';closing=false;startGesture();stage.setPointerCapture(e.pointerId);e.stopImmediatePropagation();}
+    if(points.size>=2||scale>1.0001){if(typeof cancelViewerDrag==='function')cancelViewerDrag();else drag=null;track.getAnimations?.().forEach(a=>a.cancel());track.style.transform='';closing=false;startGesture();stage.setPointerCapture(e.pointerId);e.stopImmediatePropagation();}
   },true);
   stage.addEventListener('pointermove',e=>{
     if(!points.has(e.pointerId)||!gesture||!metrics)return;const p=point(e);points.set(e.pointerId,p);e.stopImmediatePropagation();
@@ -159,7 +159,7 @@ const StudioZoom=(()=>{
   stage.addEventListener('wheel',e=>{if(V.redraw||!ensure())return;e.preventDefault();lastWheel=now();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?metrics.height:1);zoomTo(scale*Math.exp(-delta*.002),point(e));settle();},{passive:false});
   function resized(){
     if(!V.open)return;
-    if(V.redraw){const im=img(currentId()),previous=V.fitRect||fitRect(im),next=fitRect(im);for(const r of V.regions){r.x=next.x+(r.x-previous.x)/previous.w*next.w;r.y=next.y+(r.y-previous.y)/previous.h*next.h;r.w=r.w/previous.w*next.w;r.h=r.h/previous.h*next.h;}const image=curImg();if(image)Object.assign(image.style,{left:next.x+'px',top:next.y+'px',width:next.w+'px',height:next.h+'px'});V.fitRect=next;renderRegions();}
+    if(V.redraw){selCancel();const im=img(currentId()),previous=V.fitRect||fitRect(im),next=fitRect(im);for(const r of V.regions){r.x=next.x+(r.x-previous.x)/previous.w*next.w;r.y=next.y+(r.y-previous.y)/previous.h*next.h;r.w=r.w/previous.w*next.w;r.h=r.h/previous.h*next.h;}const image=curImg();if(image)Object.assign(image.style,{left:next.x+'px',top:next.y+'px',width:next.w+'px',height:next.h+'px'});V.fitRect=next;renderRegions();}
     else if(ensure()){points.clear();gesture=null;measure();sizeSurface();schedulePaint(true);}
   }
   const requestResize=()=>{if(resizeFrame===null)resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;resized();});};
