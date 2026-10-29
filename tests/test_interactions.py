@@ -70,6 +70,41 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(self.post('/api/assets/missing/quick-edit',{'prompt':'change'}).status_code,404)
         self.assertEqual(self.post(f"/api/assets/{self.asset['id']}/quick-edit",{'prompt':'  '}).status_code,400)
 
+    def test_quick_edit_demo_switches_snapshot_real_spec_and_reference_choice(self):
+        previous = self.studio.setting('quick', {})
+        try:
+            for keep_spec in (False, True):
+                for use_ref in (False, True):
+                    with self.subTest(keep_spec=keep_spec, use_ref=use_ref):
+                        response = self.client.patch('/api/settings', json={'quick': {
+                            'keep_spec': keep_spec, 'use_ref': use_ref, 'notify': False}}, headers=self.headers)
+                        self.assertEqual(response.status_code, 200, response.text)
+                        result = self.post(f"/api/assets/{self.asset['id']}/quick-edit", {
+                            'prompt': '晚霞映照的山谷', 'spec': {'ratio': '9:16', 'size': '2048'}})
+                        self.assertEqual(result.status_code, 200, result.text)
+                        job = self.client.get('/api/jobs/' + result.json()['ids'][0]).json()
+                        self.assertEqual(job['refs'], [self.asset['id']] if use_ref else [])
+                        self.assertEqual(job['options'].get('requested_size'), [501, 337] if keep_spec else None)
+                        self.assertEqual(job['options']['ratio'], 'auto' if keep_spec else '9:16')
+                        self.assertEqual(job['options']['size'], 'auto' if keep_spec else '2048')
+                        self.assertEqual(job['source_image']['id'], self.asset['id'])
+                        row = self.studio.query('SELECT * FROM jobs WHERE id=?', (job['id'],), True)
+                        instruction = self.studio.make_instruction(row, Path(self.temp.name))
+                        if not use_ref:
+                            self.assertNotIn('Edit reference-1.png', instruction)
+                        if keep_spec:
+                            self.assertIn('501x337 pixels', instruction)
+        finally:
+            self.studio.set_setting('quick', previous)
+
+    def test_motion_mode_roundtrips_without_resetting_legacy_preferences(self):
+        for mode in ('system', 'reduce', 'full'):
+            response = self.client.patch('/api/settings', json={'motion_mode': mode}, headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(self.client.get('/api/settings').json()['motion_mode'], mode)
+            self.assertTrue(self.studio.setting('paused'))
+        self.assertEqual(self.client.patch('/api/settings', json={'motion_mode': 'invalid'}, headers=self.headers).status_code, 422)
+
     def test_quick_edit_provenance_survives_renaming_and_default_effort_matches_its_model(self):
         catalog=self.studio.model_catalog()
         self.studio.set_setting('model_catalog',catalog+[{'id':'gpt-test-fast','name':'Test model','efforts':['low'],'default_effort':'low'}])

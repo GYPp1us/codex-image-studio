@@ -1,43 +1,52 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
-  <meta name="theme-color" content="#faf9f6">
-  <meta name="description" content="私人图片工作台：用干净上下文生成，管理提示词、参考图与作品。">
-  <title>Image Studio</title>
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Image Studio">
-  <link rel="manifest" href="/static/manifest.webmanifest">
-  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/style.css?v=20261029-ui1">
-  <link rel="stylesheet" href="/static/compact.css?v=20261029-ui1">
-  <link rel="stylesheet" href="/static/mobile.css?v=20261029-ui1">
-  <link rel="stylesheet" href="/static/progress.css?v=20261029-ui1">
-  <link rel="stylesheet" href="/static/viewer.css?v=20261029-ui1">
-  <link rel="stylesheet" href="/static/loading.css?v=20261029-ui1">
-  <script src="/static/dom.js?v=20261029-ui1" defer></script>
-  <script src="/static/navigation.js?v=20261029-ui1" defer></script>
-  <script src="/static/viewer.js?v=20261029-ui1" defer></script>
-  <script src="/static/image-cache.js?v=20261029-ui1" defer></script>
-  <link rel="stylesheet" href="/static/upscale.css?v=20261029-ui1">
-  <script src="/static/upscale.js?v=20261029-ui1" defer></script>
-  <link rel="stylesheet" href="/static/upscale-failure.css?v=20261029-ui1">
-  <script src="/static/upscale-failure.js?v=20261029-ui1" defer></script>
-  <link rel="stylesheet" href="/static/polish.css?v=20261029-ui1">
-  <script src="/static/polish.js?v=20261029-ui1" defer></script>
-  <link rel="stylesheet" href="/static/workspace.css?v=20261029-ui1">
-  <script src="/static/tasks.js?v=20261029-ui1" defer></script>
-  <script src="/static/settings.js?v=20261029-ui1" defer></script>
-  <script src="/static/workspace.js?v=20261029-ui1" defer></script>
-  <script src="/static/app.js?v=20261029-ui1" defer></script>
-  <script src="/static/install.js?v=20261029-ui1" defer></script>
-</head>
-<body>
-  <div id="app"><div class="boot"><span class="spinner"></span>正在打开工作台</div></div>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="theme-color" content="#f5f4ef"><meta name="description" content="Image Studio 私人图片工作台">
+<title>Image Studio</title><meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/static/manifest.webmanifest"><link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/studio.css?v=20261029-demo2"><link rel="stylesheet" href="/static/studio-service.css?v=20261029-demo2">
+<script src="/static/image-cache.js?v=20261029-demo2" defer></script>
+<script src="/static/studio-layout.js?v=20261029-demo2" defer></script><script src="/static/studio-ui.js?v=20261029-demo2" defer></script><script src="/static/studio-zoom.js?v=20261029-demo2" defer></script><script src="/static/studio-service.js?v=20261029-demo2" defer></script>
+</head><body><div class="app" id="app" aria-label="Image Studio">
+<div id="page"></div>
+  <nav class="tabbar" id="tabbar">
+    <span class="tab-ind" id="tab-ind"></span>
+    <button class="tab" data-act="tab" data-tab="create"><span class="ti" data-ic="sparkle"></span>创作</button>
+    <button class="tab" data-act="tab" data-tab="works"><span class="ti" data-ic="layers"></span>作品</button>
+    <button class="tab" data-act="tab" data-tab="queue"><span class="ti" data-ic="list"></span><span class="badge zero" id="badge">0</span>任务</button>
+    <button class="tab" data-act="tab" data-tab="templates"><span class="ti" data-ic="book"></span>模板</button>
+  </nav>
+  <div class="viewer" id="viewer">
+    <div class="v-bg"></div>
+    <div class="v-stage" id="v-stage"><div class="v-track" id="v-track"></div></div>
+    <header class="v-top">
+      <button class="icon-btn" data-act="v-back" aria-label="返回" data-ic="back"></button>
+      <div class="v-title"><b id="v-count"></b><span id="v-sub"></span></div>
+      <button class="icon-btn v-info" data-act="v-info" aria-label="信息" data-ic="info"></button>
+      <button class="icon-btn v-more" data-act="v-more" aria-label="更多" data-ic="more"></button>
+    </header>
+    <div class="v-quick">
+      <div class="qe-chips" id="qe-chips"></div>
+      <form class="qe-bar" id="qe-form" autocomplete="off"><input id="qe-input" placeholder="一句话速改，例如：换成白天" enterkeyhint="send" maxlength="400"><button class="qe-send" id="qe-send" type="submit" aria-label="发送速改" disabled data-ic="arrowup"></button></form>
+      <button class="qe-meta" data-act="qe-settings"><span id="qe-meta"></span><span data-ic="sliders14"></span></button>
+    </div>
+    <footer class="v-actions">
+      <button class="v-act" data-act="v-dl"><span class="ic" data-ic="download"></span>下载</button>
+      <button class="v-act" data-act="v-ref"><span class="ic" data-ic="imgplus"></span>用作参考</button>
+      <button class="v-act" data-act="v-reroll"><span class="ic" data-ic="refresh"></span>再抽一张</button>
+      <button class="v-act" data-act="v-redraw"><span class="ic" data-ic="select"></span>局部重绘</button>
+      <button class="v-act" data-act="v-up"><span class="ic" data-ic="grid"></span>超分</button>
+    </footer>
+    <div class="v-redraw">
+      <div class="v-hint"><span id="rd-hint">在图上拖动框选区域，可以框选多个</span><button data-act="rd-cancel">取消</button></div>
+      <div class="rd-chips" id="rd-chips" style="display:none"></div>
+      <textarea id="rd-text" rows="2" placeholder="描述选区里需要修改的内容…"></textarea>
+      <button class="rd-shared" id="rd-shared" data-act="rd-shared" style="display:none"><span>所有区域使用同一条要求</span><span class="switch" id="rd-shared-sw"></span></button>
+      <div class="rd-row"><span class="rd-note" id="rd-note">只替换选区内像素，选区外保持原图</span><button class="rd-submit" id="rd-submit" data-act="rd-submit" disabled>提交重绘</button></div>
+    </div>
+  </div>
+  <div id="screens"></div>
+  <div id="layers"></div>
   <div id="toast" role="status" aria-live="polite"></div>
-  <dialog id="modal" aria-label="详情"><div id="modal-content"></div></dialog>
-</body>
-</html>
+</div></body></html>

@@ -10,6 +10,7 @@ import shutil
 import statistics
 import time
 from pathlib import Path
+from call_errors import authentication_status_error
 
 import image_runtime as imaging
 from stitch_engine import REGISTRATION_VERSION, save_json,alignment_current
@@ -117,7 +118,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
                 states[index].update(state='done',label=f'{measured.actual[0]}×{measured.actual[1]} 已返回');publish();return None
             except (WorkflowError,ValueError,OSError) as exc:
                 error=str(exc)
-                if re.search(r'unauthorized|authentication|401|403|quota|usage limit|policy|moderation|unavailable|not supported',error,re.I):raise
+                if authentication_status_error(error) or re.search(r'unauthorized|authentication|quota|usage limit|policy|moderation|unavailable|not supported',error,re.I):raise
         states[index].update(state='failed',label='返回不符合要求');publish()
         raise WorkflowError(f'第 {index+1} 块达到尝试上限：{error}')
 

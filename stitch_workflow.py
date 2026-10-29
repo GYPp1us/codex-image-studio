@@ -10,6 +10,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
+from call_errors import authentication_status_error
 
 from PIL import Image
 from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json, refresh_registered_tile
@@ -225,7 +226,7 @@ async def run(studio,jid):
             attempt=budgets.get(key,0)+1;budgets[key]=attempt
             try:return await cli_call(studio,jid,folder,f"{key}-{run_token}-try-{attempt}",instruction,refs,model,effort,phase,done,units,on_progress=on_progress,expected_size=expected_size)
             except WorkflowError as error:
-                if attempt==maximum or re.search(r"unauthorized|authentication|401|403|quota|usage limit|policy|moderation|unavailable|not supported",str(error),re.I):raise
+                if attempt==maximum or authentication_status_error(error) or re.search(r"unauthorized|authentication|quota|usage limit|policy|moderation|unavailable|not supported",str(error),re.I):raise
                 if on_progress:on_progress(f'准备第 {attempt+1}/{maximum} 次重试',False,'server')
                 else:progress(studio,jid,phase,done,units,detail=f"{name} · 第 {attempt+1}/{maximum} 次",waiting=True,substage="准备重试")
                 for _ in range(min(10,attempt*3)):

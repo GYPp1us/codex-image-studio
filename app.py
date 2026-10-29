@@ -19,6 +19,7 @@ import sys
 import tempfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from call_errors import authentication_status_error
 from typing import Literal
 from urllib.parse import parse_qs, urlsplit
 
@@ -532,6 +533,7 @@ class Settings(BaseModel):
     quick: QuickDefaults | None = None
     upscale: UpscaleDefaults | None = None
     motion: bool | None = None
+    motion_mode: Literal['system', 'reduce', 'full'] | None = None
     notify: bool | None = None
 
 
@@ -879,6 +881,8 @@ class JobInput(BaseModel):
     region: Rectangle | None = None
     regions: list[EditRegion] | None = Field(default=None,min_length=1,max_length=6)
     quick_edit: bool = False
+    quick_keep_spec: bool = True
+    quick_use_ref: bool = True
     system_probe: bool = False
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     model: str | None = Field(default=None, max_length=100)
@@ -992,7 +996,7 @@ def _create_jobs(body):
             from stitch_planner import progressive_plan, PlanError
             try:progressive_plan(source['width'],source['height'],body.stitch)
             except PlanError as error:raise HTTPException(400,str(error)) from error
-        if body.source_asset_id not in refs:refs.append(body.source_asset_id)
+        if (not body.quick_edit or body.quick_use_ref) and body.source_asset_id not in refs:refs.append(body.source_asset_id)
         if len(refs)>8:raise HTTPException(400,'每次最多使用 8 张参考图')
     for aid in refs:
         if not query("SELECT id FROM assets WHERE id=?", (aid,), True):
@@ -1013,7 +1017,9 @@ def _create_jobs(body):
             region['prompt']=region['prompt'].strip() or body.prompt.strip()
         options.update(regions=regions,polish=False,ratio='auto',size='auto',call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT))
     if body.quick_edit:
-        options.update(quick_edit=True,requested_size=[source['width'],source['height']],ratio='auto',size='auto')
+        options.update(quick_edit=True,quick_keep_spec=body.quick_keep_spec,quick_use_ref=body.quick_use_ref)
+        if body.quick_keep_spec:
+            options.update(requested_size=[source['width'],source['height']],ratio='auto',size='auto')
     if body.system_probe:options['system_probe']=True
     batch, ids = uid(), []
     collection_id = 'system-probe' if body.system_probe else 'tpl-' + template['id'] if template else UNTEMPLATED_COLLECTION
@@ -1290,10 +1296,11 @@ def make_instruction(j, directory):
     template = "Progress reporting: Immediately before invoking the image-generation tool, send one separate commentary message containing exactly [STUDIO_STAGE:image_generation]. Only after that tool returns, send one separate commentary message containing exactly [STUDIO_STAGE:receiving]. These are UI stage reports, not tool output or a claim of success. Never send a stage marker before its corresponding transition.\n" + template
     size = opts.get("size", "auto")
     resolution = "automatic native resolution" if size == "auto" else f"{size} pixels on the long edge, preserving the requested aspect ratio; use native generation, never shell resizing or upscaling"
-    if opts.get('quick_edit'):
+    if opts.get('quick_edit') and opts.get('requested_size'):
         width,height=opts['requested_size']
-        resolution=f'{width}x{height} pixels, exactly matching reference-1.png aspect ratio and native dimensions; report the actual native size if unsupported'
-        template='Edit reference-1.png according to the request, preserving all other content, composition, and its aspect ratio.\n'+template
+        resolution=f'{width}x{height} pixels, preserving this aspect ratio and native dimensions; report the actual native size if unsupported'
+        if opts.get('quick_use_ref',True):
+            template='Edit reference-1.png according to the request, preserving all other content, composition, and its aspect ratio.\n'+template
     if "{size}" not in template:
         template = "Requested image size: {size}. If the tool cannot honor this resolution, report the actual native resolution.\n" + template
     values = {"ratio": opts["ratio"], "size": resolution, "transparent": str(opts["transparent"]), "references": ", ".join(f"reference-{i + 1}.png" for i, _ in enumerate(json.loads(j["refs"]))) or "none"}
@@ -1442,7 +1449,7 @@ async def run_job(jid):
                 return
             write("UPDATE attempts SET status='failed',error=?,finished=? WHERE job_id=? AND number=? AND status='running'", (error, now(), jid, attempt))
             # Permanent authentication, capability and policy failures should not consume repeated attempts.
-            permanent = bool(re.search(r"not (?:available|supported)|unavailable|no.*image.*tool|unauthorized|authentication|401|403|登录|工具不可用|不支持|not logged|usage limit|quota|moderation|policy", error, re.I))
+            permanent = authentication_status_error(error) or bool(re.search(r"not (?:available|supported)|unavailable|no.*image.*tool|unauthorized|authentication|登录|工具不可用|不支持|not logged|usage limit|quota|moderation|policy", error, re.I))
             if attempt >= j["max_attempts"] or permanent:
                 write("UPDATE jobs SET status='failed',error=?,finished=? WHERE id=? AND status!='cancelled'", (error, now(), jid))
                 return

@@ -234,7 +234,9 @@ class UpscaleFeatures(unittest.TestCase):
         self.assertIn('画幅',job['error'])
 
     def test_malformed_return_retries_without_publishing_invalid_bytes(self):
-        job=self.run_fixture(malformed=True)
+        import upscale_workflow as workflow
+        with patch.object(workflow.time,'time_ns',return_value=1793264013831838877):
+            job=self.run_fixture(malformed=True)
         self.assertEqual(job['status'],'succeeded',job['error'])
         self.assertEqual(job['upscale_plan']['calls']['images'],2)
 

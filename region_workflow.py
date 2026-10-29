@@ -6,6 +6,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from call_errors import authentication_status_error
 
 from local_edit import prepare, compose
 from stitch_engine import save_json
@@ -63,8 +64,8 @@ async def run(studio, jid):
             except Exception as error:
                 detail = str(getattr(error, 'detail', error))[:2000]
                 update(index, status='failed', error=detail, label='区域重绘失败')
-                if attempt == job['max_attempts'] or any(token in detail.lower() for token in
-                        ('unauthorized', 'authentication', 'unavailable', 'usage limit', 'quota', '401', '403', '登录', '额度')):
+                if attempt == job['max_attempts'] or authentication_status_error(detail) or any(token in detail.lower() for token in
+                        ('unauthorized', 'authentication', 'unavailable', 'usage limit', 'quota', '登录', '额度')):
                     raise WorkflowError(f'区域 {index + 1}：{detail}') from error
                 await asyncio.sleep(min(5 * attempt, 30))
 

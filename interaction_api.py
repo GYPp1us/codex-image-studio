@@ -22,6 +22,14 @@ class QuickDefaults(BaseModel):
     effort: str | None = Field(default=None, max_length=20)
     use_source_template: bool = True
     polish: bool = False
+    keep_spec: bool = True
+    use_ref: bool = True
+    notify: bool = True
+
+
+class QuickEditSpec(BaseModel):
+    ratio: Literal['1:1', '3:2', '2:3', '16:9', '9:16', 'auto'] = '1:1'
+    size: Literal['auto', '1024', '2048', '4096'] = 'auto'
 
 
 class UpscaleDefaults(BaseModel):
@@ -33,7 +41,8 @@ class UpscaleDefaults(BaseModel):
 def preferences(studio):
     return {key: model(**studio.setting(key, {})).model_dump() for key, model in
             (('defaults', GenerationDefaults), ('quick', QuickDefaults), ('upscale', UpscaleDefaults))} | {
-                'motion': studio.setting('motion', True), 'notify': studio.setting('notify', False)}
+                'motion': studio.setting('motion', True),
+                'motion_mode': studio.setting('motion_mode', 'system'), 'notify': studio.setting('notify', False)}
 
 
 def validate_regions(size, regions):
@@ -48,6 +57,7 @@ def validate_regions(size, regions):
 
 class QuickEditInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=24000)
+    spec: QuickEditSpec | None = None
 
 
 def quick_model(studio, config, model=None, effort=None):
@@ -94,8 +104,10 @@ def register(app, studio):
         if template and not studio.query('SELECT id FROM templates WHERE id=?', (template,), True):
             template = None
         model, effort = quick_model(studio, config)
-        return await studio.add_jobs(studio.JobInput(prompt=body.prompt, refs=[aid], source_asset_id=aid,
-            quick_edit=True, ratio='auto', size='auto', polish=config.polish,
+        spec = body.spec or QuickEditSpec(**studio.setting('defaults', {}))
+        return await studio.add_jobs(studio.JobInput(prompt=body.prompt, refs=[aid] if config.use_ref else [], source_asset_id=aid,
+            quick_edit=True, quick_keep_spec=config.keep_spec, quick_use_ref=config.use_ref,
+            ratio='auto' if config.keep_spec else spec.ratio, size='auto' if config.keep_spec else spec.size, polish=config.polish,
             transparent=bool(json.loads(origin['options']).get('transparent')) if origin else False,
             model=model, effort=effort, template_id=template), session)
 
