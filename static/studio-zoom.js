@@ -51,7 +51,7 @@ const StudioZoom=(()=>{
   }
   function render(time){
     frameId=null;if(closing||!ensure())return;clampPose();
-    if(scale<=1.0001&&!gesture){releaseSurface();restorePreview();return;}
+    if(scale<=1.0001&&!gesture&&tween===null){releaseSurface();restorePreview();return;}
     makeSurface();const g=geometry();plane.style.transform=`translate3d(${g.x}px,${g.y}px,0) scale(${scale})`;
     if(asset.tile_template&&(forceTiles||time-lastTiles>=TILE_INTERVAL)){const force=forceTiles;forceTiles=false;lastTiles=time;updateTiles(force);}
   }
@@ -87,7 +87,7 @@ const StudioZoom=(()=>{
     animateZoom(Math.min(Math.max(2,asset.w/metrics.fit.w),3),p);schedulePaint(true);vw.classList.remove('chrome-off');
   }
   function settle(){clearTimeout(settleTimer);settleTimer=setTimeout(()=>{settleTimer=null;schedulePaint(true);},110);}
-  function toggleNative(animate){if(!ensure()||V.redraw)return;closing=false;const p={x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2},target=scale>1.0001?1:Math.max(1,asset.w/metrics.fit.w);if(animate)animateZoom(target,p);else zoomTo(target,p);schedulePaint(true);vw.classList.remove('chrome-off');}
+  function toggleNative(animate){if(!ensure()||V.redraw)return;cancelTween();closing=false;const p={x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2},target=scale>1.0001?1:Math.max(1,asset.w/metrics.fit.w);if(animate)animateZoom(target,p);else zoomTo(target,p);schedulePaint(true);vw.classList.remove('chrome-off');}
   function cancelEntry(entry){
     if(entry.status==='loading'||entry.status==='decoding'){active--;entry.image.onload=entry.image.onerror=null;entry.image.removeAttribute('src');}
     if(entry.status==='ready')cacheBytes-=entry.bytes;
@@ -163,8 +163,9 @@ const StudioZoom=(()=>{
   function stop(){cancelTween();closing=true;epoch++;cancelWork();return plane||preview;}
   function fit(){reset();if(ensure())restorePreview();}
   function startGesture(){
+    const pinched=gesture?.kind==='pinch'||gesture?.pinched;
     const list=[...points.values()];if(list.length>=2){const [a,b]=list,mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2};gesture={kind:'pinch',distance:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),scale,anchor:anchorAt(mid)};}
-    else if(list.length)gesture={kind:'pan',point:list[0],x,y,moved:false,time:now()};
+    else if(list.length)gesture={kind:'pan',point:list[0],x,y,moved:false,pinched:!!pinched,time:now()};
   }
   stage.addEventListener('pointerdown',e=>{
     if(e.button>0||V.redraw||!ensure())return;if(tween!==null){cancelTween();}measure();points.set(e.pointerId,point(e));
@@ -178,14 +179,14 @@ const StudioZoom=(()=>{
       x=gesture.x+dx;y=gesture.y+dy;clampPose();schedulePaint();}
   },{capture:true,passive:true});
   function up(e){
-    points.delete(e.pointerId);if(!gesture)return;e.stopImmediatePropagation();const tap=e.type!=='pointercancel'&&gesture.kind==='pan'&&!gesture.moved&&now()-gesture.time<350;
+    points.delete(e.pointerId);if(!gesture)return;e.stopImmediatePropagation();const tap=e.type!=='pointercancel'&&gesture.kind==='pan'&&!gesture.pinched&&!gesture.moved&&now()-gesture.time<350;
     const ended=gesture;if(e.type==='pointercancel')points.clear();if(points.size)startGesture();else{gesture=null;schedulePaint(true);
       if(tap){if(typeof viewerTap==='function')viewerTap(e);else vw.classList.toggle('chrome-off');}
       else if(scale<1)animateZoom(1,{x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2});
       else if(e.type!=='pointercancel'&&ended.kind==='pan'&&ended.moved&&now()-(ended.lastT??0)<80&&Math.hypot(ended.vx||0,ended.vy||0)>.3)fling(ended.vx,ended.vy);}
   }
   stage.addEventListener('pointerup',up,true);stage.addEventListener('pointercancel',up,true);
-  stage.addEventListener('wheel',e=>{if(V.redraw||!ensure())return;e.preventDefault();lastWheel=now();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?metrics.height:1);zoomTo(scale*Math.exp(-delta*.002),point(e));settle();},{passive:false});
+  stage.addEventListener('wheel',e=>{if(V.redraw||!ensure())return;cancelTween();e.preventDefault();lastWheel=now();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?metrics.height:1);zoomTo(scale*Math.exp(-delta*.002),point(e));settle();},{passive:false});
   function resized(){
     if(!V.open)return;
     if(V.redraw){selCancel();const im=img(currentId()),previous=V.fitRect||fitRect(im),next=fitRect(im);for(const r of V.regions){r.x=next.x+(r.x-previous.x)/previous.w*next.w;r.y=next.y+(r.y-previous.y)/previous.h*next.h;r.w=r.w/previous.w*next.w;r.h=r.h/previous.h*next.h;}const image=curImg();if(image)Object.assign(image.style,{left:next.x+'px',top:next.y+'px',width:next.w+'px',height:next.h+'px'});V.fitRect=next;renderRegions();}

@@ -50,6 +50,13 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  await vm.runInContext('studioReady',context);
  return {context,document,requests,flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
+
+function previewLoads(f,{decode=true}={}){
+ const loads=[];
+ f.context.Image=function(){let resolve,reject;const ready=new Promise((yes,no)=>{resolve=yes;reject=no;});const loader={fetchPriority:'auto'};if(decode)loader.decode=()=>ready;loads.push({loader,resolve,reject});return loader;};
+ return loads;
+}
+const previewTick=()=>new Promise(resolve=>setImmediate(resolve));
 test('production entry uses only transplanted component styles and real adapter',()=>{
  assert.doesNotMatch(html,/workspace\.css|style\.css|mobile\.css|app\.js/);assert.match(html,/studio-ui\.js/);assert.match(html,/studio-layout\.js/);
  const ui=fs.readFileSync('static/studio-ui.js','utf8');assert.doesNotMatch(ui,/makeImage|newBatch|Math\.random\(\).*status|simulated scheduler|thread.started demo/);
@@ -116,4 +123,27 @@ test('reference pagination reaches older uploads without losing the first page o
  const f=await fixture({gallery:true,paginated:true});f.run('S.tab="works";renderPage()');await f.service.action('works-tab',{dataset:{v:'references'}},{});assert.equal(f.document.querySelectorAll('#works-grid .tile').length,80);
  await f.service.action('works-more',{dataset:{}},{});assert.match(f.requests.at(-1).path,/offset=80/);assert.equal(f.document.querySelectorAll('#works-grid .tile').length,81);assert.equal(f.document.querySelector('[data-act="works-more"]').hidden,true);
  f.run('openViewer("reference-79","references")');assert.equal(f.run('V.list.length'),81);assert.equal(f.run('V.i'),80);
+});
+
+test('progressive preview keeps its thumbnail until the high-resolution image has decoded',async()=>{
+ const f=await fixture(),loads=previewLoads(f);f.run('openViewer("asset","recent")');const image=f.document.querySelector('.slide[data-o="0"] img');
+ assert.equal(image.getAttribute('src'),baseAsset.thumbnail);await previewTick();assert.equal(image.getAttribute('src'),baseAsset.thumbnail);
+ loads[0].resolve();await previewTick();assert.equal(image.getAttribute('src'),baseAsset.preview);
+});
+
+test('a failed preview decode preserves the working thumbnail',async()=>{
+ const f=await fixture(),loads=previewLoads(f);f.run('openViewer("asset","recent")');const image=f.document.querySelector('.slide[data-o="0"] img');
+ loads[0].reject(new Error('Preview unavailable'));await previewTick();assert.equal(image.getAttribute('src'),baseAsset.thumbnail);
+});
+
+test('without image.decode a preview waits for load and retains its fallback on error',async()=>{
+ for(const success of [false,true]){const f=await fixture(),loads=previewLoads(f,{decode:false});f.run('openViewer("asset","recent")');const image=f.document.querySelector('.slide[data-o="0"] img');
+  await previewTick();assert.equal(image.getAttribute('src'),baseAsset.thumbnail);
+  if(success)loads[0].loader.onload?.();else loads[0].loader.onerror?.();await previewTick();assert.equal(image.getAttribute('src'),success?baseAsset.preview:baseAsset.thumbnail);
+ }
+});
+
+test('a late decoded preview cannot replace a newer source on the same image',async()=>{
+ const f=await fixture(),loads=previewLoads(f);f.run('openViewer("asset","recent");showProgressive(curImg(),{...img("asset"),thumbnail:"/new-thumb",preview:"/new-preview"},true)');
+ const image=f.document.querySelector('.slide[data-o="0"] img');assert.equal(image.getAttribute('src'),'/new-thumb');loads[1].resolve();await previewTick();assert.equal(image.getAttribute('src'),'/new-preview');loads[0].resolve();await previewTick();assert.equal(image.getAttribute('src'),'/new-preview');
 });

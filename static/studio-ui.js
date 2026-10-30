@@ -433,9 +433,11 @@ function showProgressive(image,im,urgent){
   const low=src(im),high=picture(im);
   if(!high||high===low||typeof Image!=="function"){image.src=high||low;return;}
   image.src=low;image.dataset.want=high;
-  const loader=new Image();loader.decoding="async";if("fetchPriority" in loader)loader.fetchPriority=urgent?"high":"low";loader.src=high;
-  const swap=()=>{if(image.dataset.want===high&&image.getAttribute("src")!==high)image.src=high;};
-  (typeof loader.decode==="function"?loader.decode():Promise.resolve()).then(swap,swap);
+  const loader=new Image();loader.decoding="async";if("fetchPriority" in loader)loader.fetchPriority=urgent?"high":"low";
+  const clear=()=>{loader.onload=loader.onerror=null;};
+  const swap=()=>{clear();if(image.dataset.want===high&&image.getAttribute("src")!==high)image.src=high;};
+  const canDecode=typeof loader.decode==="function";loader.onerror=clear;if(!canDecode)loader.onload=swap;loader.src=high;
+  if(canDecode)loader.decode().then(swap,clear);
 }
 function layoutSlides(){
   if(typeof StudioZoom!=="undefined")StudioZoom.reset();
