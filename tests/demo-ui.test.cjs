@@ -5,14 +5,14 @@ const html=fs.readFileSync('static/index.html','utf8');
 const prompt='Generate an image using {prompt}, preserving the requested native dimensions.';
 const baseAsset={id:'asset',width:900,height:1200,name:'山色.png',kind:'generated',bytes:1234,created:1000,job_id:'job',url:'/media/asset',thumbnail:'/media/asset?thumbnail=1',preview:'/media/asset?preview=1',favorite:0,tags:''};
 function makeJob(id,extra={}){return {id,batch_id:'batch',prompt:'静谧山色',status:'queued',created:1000,collection_id:'untemplated',template_id:'',refs:[],references:[],outputs:[],attempt:0,max_attempts:3,error:'',model:'gpt-test',effort:'high',options:{ratio:'1:1',size:'auto',model:'gpt-test',effort:'high',stitch:0},progress:{stage:'queued',label:'等待调度'},...extra};}
-async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false}={}){
+async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false}={}){
  const {window}=parseHTML(html),{document}=window;const requests=[],timers=new Map();let timerId=0,stateReads=0;
  const asset=huge?{...baseAsset,width:12000,height:8000,tile_template:'/api/assets/asset/tiles/{level}/{x}/{y}'}:baseAsset;
  const dataJobs=[makeJob('job',{status:'succeeded',outputs:[asset]}),...Array.from({length:19},(_,i)=>makeJob('job'+i))];
  const plan={factor:4,input_size:[900,1200],output_size:[1800,2400],budget:{images:3,reviews:1,max_calls:10},stages:[{index:1,input_size:[900,1200],output_size:[1800,2400],columns:1,rows:3,tile_count:3,status:'failed',cuts:{x:[],y:[400,800]},budget:{images:3,reviews:1,max_calls:10},diagnostic_available:true}]};
  const up=makeJob('up',{batch_id:'upbatch',status:'failed',options:{stitch:4,source_asset_id:'asset'},source_image:asset,upscale_plan:plan,error:'图块验收失败'});
  const batches=[{id:'batch',created:1000,jobs:dataJobs},{id:'upbatch',created:999,jobs:[up]}];
- const prefs={defaults:{ratio:'3:2',size:'auto',count:3,transparent:false,polish:false,stitch:0},quick:{keep_spec:true,use_ref:true,use_source_template:true,effort:'high',notify:true},upscale:{factor:4,auto_select:true,default_injection:''},motion:false,motion_mode:'reduce',notify:false,call_prompt:prompt,polish_prompt:prompt,stitch_prompt:prompt,default_call_prompt:prompt,default_polish_prompt:prompt,default_stitch_prompt:prompt};
+ const prefs={defaults:{ratio:'3:2',size:'auto',count:3,transparent:false,polish:false,stitch:0},quick:{keep_spec:true,use_ref:true,use_source_template:true,effort:'high',notify:true},upscale:{factor:4,auto_select:true,default_injection:''},motion:legacyMotion,motion_mode:motion,notify:false,call_prompt:prompt,polish_prompt:prompt,stitch_prompt:prompt,default_call_prompt:prompt,default_polish_prompt:prompt,default_stitch_prompt:prompt};
  const state={model:'gpt-test',effort:'high',concurrency:2,max_attempts:3,paused:true,preferences:prefs};
  const storage={bytes:1024,limit_bytes:0,free_bytes:1e9,groups:{database:512},tasks:[],trash:{assets:0,collections:0}};
  const fetch=async(path,opt={})=>{requests.push({path,method:opt.method||'GET',body:typeof opt.body==='string'?JSON.parse(opt.body):opt.body,headers:opt.headers});let d;
@@ -45,10 +45,11 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  window.HTMLElement.prototype.getBoundingClientRect=function(){return {x:0,y:0,left:0,top:0,right:390,bottom:844,width:390,height:844};};
  window.HTMLElement.prototype.animate=function(){return {finished:Promise.resolve({cancel(){}}),cancel(){}};};window.HTMLElement.prototype.scrollIntoView=function(){};window.HTMLElement.prototype.scrollTo=function(){};
  window.HTMLElement.prototype.setPointerCapture=function(){};window.HTMLElement.prototype.blur=function(){};
- const context=vm.createContext({document,window,console,Headers,FormData,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null,setItem(){}},matchMedia:()=>({matches:true}),performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
- for(const file of ['studio-layout.js','studio-ui.js','studio-zoom.js','studio-download.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
+ const mediaListeners=[],media={matches:systemReduce,addEventListener:(type,listener)=>{if(type==='change')mediaListeners.push(listener);}};
+ const context=vm.createContext({document,window,console,Headers,FormData,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null,setItem(){}},matchMedia:()=>media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
+ for(const file of ['studio-layout.js','studio-ui.js','studio-chrome.js','studio-zoom.js','studio-download.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
  await vm.runInContext('studioReady',context);
- return {context,document,requests,flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
+ return {context,document,requests,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
 
 function previewLoads(f,{decode=true}={}){
@@ -71,11 +72,12 @@ test('failure workspace uses diagnostic images, stable adaptive tile IDs and nat
 test('settings persist demo quick switches and all three motion modes',async()=>{const f=await fixture();f.run('S.settings.quick.keepSpec=false;S.settings.quick.useRef=false;S.settings.motion="full"');await f.service.settingChanged('motion');const req=f.requests.find(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(req.body.motion_mode,'full');assert.equal(req.body.quick.keep_spec,false);assert.equal(req.body.quick.use_ref,false);assert.equal(req.body.paused,undefined);});
 test('unauthenticated boot shows login and hides workspace navigation',async()=>{const f=await fixture({unauth:true});assert.ok(f.document.querySelector('#login-form'));assert.equal(f.document.querySelector('#tabbar').hidden,true);assert.equal(f.requests.some(r=>r.path==='/api/assets?kind=all&limit=200'),false);});
 
-test('all demo component rules are retained verbatim except simulated image distortions',()=>{
+test('demo component rules are retained except simulated distortions and the replaced motion policy',()=>{
  const demo=fs.readFileSync('docs/ui-proposal/index.html','utf8'),css=fs.readFileSync('static/studio.css','utf8');
  const start='/* ---------- page chrome ---------- */';
- const source=demo.slice(demo.indexOf(start),demo.indexOf('</style>')).split('\n').filter(line=>!line.startsWith('.cmp-l.out.')).join('\n').replace(/\s+/g,' ').trim();
- const product=css.slice(css.indexOf(start),css.indexOf('/* Real viewport:')).replace(/\s+/g,' ').trim();assert.equal(product,source);
+ const withoutMotion=text=>text.replace(/^html\.rm .*$/gm,'').replace(/@media \(prefers-reduced-motion:reduce\)\{[\s\S]*?\n\}/g,'');
+ const source=withoutMotion(demo.slice(demo.indexOf(start),demo.indexOf('</style>'))).split('\n').filter(line=>!line.startsWith('.cmp-l.out.')).join('\n').replace(/\s+/g,' ').trim();
+ const product=withoutMotion(css.slice(css.indexOf(start),css.indexOf('/* Real viewport:'))).replace(/\s+/g,' ').trim();assert.equal(product,source);
 });
 test('sheet content switches preserve one history layer and serialized back closes one at a time',async()=>{const f=await fixture();f.run('openViewer("asset","recent");openSheet({title:"第一步",html:"内容"});openSheet({title:"第二步",html:"新内容"})');assert.equal(f.run('layers.length'),2);assert.equal(f.document.querySelectorAll('.sheet-layer').length,1);assert.equal(f.document.querySelector('.sheet-head h2').textContent,'第二步');await Promise.all([f.run('back()'),f.run('back()')]);assert.equal(f.run('layers.length'),0);assert.equal(f.run('V.open'),false);});
 test('Android back hook consumes a sheet or viewer and returns false at root',async()=>{const f=await fixture();assert.equal(f.run('studioBack()'),false);f.run('openSheet({title:"详情",html:"内容"})');assert.equal(f.run('studioBack()'),true);await f.run('historyQueue');assert.equal(f.run('layers.length'),0);});
@@ -146,4 +148,35 @@ test('without image.decode a preview waits for load and retains its fallback on 
 test('a late decoded preview cannot replace a newer source on the same image',async()=>{
  const f=await fixture(),loads=previewLoads(f);f.run('openViewer("asset","recent");showProgressive(curImg(),{...img("asset"),thumbnail:"/new-thumb",preview:"/new-preview"},true)');
  const image=f.document.querySelector('.slide[data-o="0"] img');assert.equal(image.getAttribute('src'),'/new-thumb');loads[1].resolve();await previewTick();assert.equal(image.getAttribute('src'),'/new-preview');loads[0].resolve();await previewTick();assert.equal(image.getAttribute('src'),'/new-preview');
+});
+
+test('explicit motion modes control both CSS and JS regardless of the OS preference or old boolean',async()=>{
+ for(const systemReduce of [false,true])for(const motion of ['system','reduce','full']){
+  const f=await fixture({systemReduce,motion,legacyMotion:false}),reduced=motion==='reduce'||motion==='system'&&systemReduce;
+  assert.equal(f.run('RM'),reduced,`${motion}, OS reduce=${systemReduce}`);assert.equal(f.run('D(300)'),reduced?1:300);assert.equal(f.document.documentElement.classList.contains('rm'),reduced);assert.equal(f.document.documentElement.dataset.motion,motion);
+ }
+});
+
+test('system motion preference changes are live while explicit full and reduce keep their meaning',async()=>{
+ const f=await fixture({motion:'system',systemReduce:false});f.setSystemReduce(true);assert.equal(f.run('RM'),true);f.setSystemReduce(false);assert.equal(f.run('RM'),false);
+ f.run('S.settings.motion="full";applyMotion()');f.setSystemReduce(true);assert.equal(f.run('D(300)'),300);assert.equal(f.document.documentElement.classList.contains('rm'),false);
+ f.run('S.settings.motion="reduce";applyMotion()');f.setSystemReduce(false);assert.equal(f.run('RM'),true);assert.equal(f.document.documentElement.classList.contains('rm'),true);
+});
+
+test('legacy motion boolean is used when the server has no explicit motion mode',async()=>{
+ const reduced=await fixture({motion:null,legacyMotion:false,systemReduce:false});assert.equal(reduced.run('S.settings.motion'),'reduce');assert.equal(reduced.run('RM'),true);
+ const system=await fixture({motion:null,legacyMotion:true,systemReduce:false});assert.equal(system.run('S.settings.motion'),'system');assert.equal(system.run('RM'),false);
+});
+
+test('only the resolved reduced mode shortens CSS animations and cannot create a 1ms infinite loop',()=>{
+ const components=fs.readFileSync('static/studio.css','utf8'),policy=fs.readFileSync('static/studio-service.css','utf8');
+ assert.doesNotMatch(components,/@media\s*\(prefers-reduced-motion/);assert.doesNotMatch(components,/animation-duration:1ms/);
+ const rule=policy.match(/html\.rm \*,html\.rm \*::before,html\.rm \*::after\{([^}]+)\}/);assert.ok(rule);assert.match(rule[1],/animation-iteration-count:1!important/);assert.match(components,/animation:rot \.9s linear infinite/);
+});
+
+test('viewer theme and dark chrome are held until the closing animation finishes',async()=>{
+ const f=await fixture({motion:'full',legacyMotion:true,systemReduce:false});f.run('openViewer("asset","recent")');let finish;
+ f.document.querySelector('.slide[data-o="0"] img').animate=()=>({finished:new Promise(resolve=>finish=resolve),cancel(){}});
+ f.run('closeViewer()');assert.equal(f.document.documentElement.classList.contains('viewer-present'),true);assert.equal(f.document.querySelector('#app').classList.contains('dark-sb'),true);assert.equal(f.document.querySelector('meta[name="theme-color"]').content,'#0c0c0a');
+ finish();await previewTick();assert.equal(f.document.documentElement.classList.contains('viewer-present'),false);assert.equal(f.document.querySelector('#app').classList.contains('dark-sb'),false);assert.equal(f.document.querySelector('meta[name="theme-color"]').content,'#f5f4ef');
 });

@@ -3,7 +3,7 @@
 "use strict";
 /* ================= utils ================= */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
-const sysRM=matchMedia("(prefers-reduced-motion: reduce)").matches;let RM=sysRM;
+const systemMotion=matchMedia("(prefers-reduced-motion: reduce)");let RM=systemMotion.matches;
 const D=ms=>RM?1:ms;
 const E={std:"cubic-bezier(.2,.8,.2,1)",emph:"cubic-bezier(.32,.72,0,1)",exit:"cubic-bezier(.4,0,1,1)"};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -457,6 +457,7 @@ const curImg=()=>$('.slide[data-o="0"] img',track);
 const srcTile=id=>{const t=$(`#page .tile[data-id="${id}"]`);if(!t)return null;const s=t.closest(".scroll,.recent");const r=t.getBoundingClientRect(),a=$("#page .scroll").getBoundingClientRect();return r.bottom>a.top+4&&r.top<a.bottom-4&&r.right>a.left&&r.left<a.right?t:null;};
 function openViewer(id,listKind,opts={}){
   if(V.open)return;V.gen++;V.list=listFor(listKind,id);V.i=Math.max(0,V.list.indexOf(id));V.open=true;
+  StudioChrome.enterViewer();
   vw.classList.add("open");vw.classList.remove("chrome-off","redraw");app.classList.add("dark-sb");layoutSlides();
   const cur=curImg(),tile=srcTile(id),to=rectOf(cur);
   V.bgAnim?.cancel();vbg.style.opacity="0";
@@ -476,8 +477,7 @@ function closeViewer(){
   const op=getComputedStyle(vbg).opacity;V.bgAnim?.cancel();
   vbg.animate([{opacity:op},{opacity:0}],{duration:D(260),easing:E.std,fill:"forwards"});vbg.style.opacity="0";
   $$(".v-top,.v-actions",vw).forEach(e=>e.animate([{opacity:1},{opacity:0}],{duration:D(120),fill:"forwards"}).finished.then(a=>a.cancel()));
-  app.classList.remove("dark-sb");
-  const g=V.gen,finish=()=>{if(V.gen!==g||V.open)return;vw.classList.remove("open");StudioZoom.reset();track.innerHTML="";placeToast();if($("#page .top")&&!topScreen())refresh();};
+  const g=V.gen,finish=()=>{if(V.gen!==g||V.open)return;vw.classList.remove("open");app.classList.remove("dark-sb");StudioChrome.leaveViewer();StudioZoom.reset();track.innerHTML="";placeToast();if($("#page .top")&&!topScreen())refresh();};
   if(!zoomed&&tile&&from&&!RM){cur.style.visibility="hidden";tile.style.visibility="hidden";
     fly(from,rectOf(tile),src(img(id)),320,3,12,vw).then(()=>{tile.style.visibility="";finish();});}
   else if(visual)visual.animate(zoomed?[{opacity:1},{opacity:0}]:[{opacity:1,transform:visual.style.transform||"none"},{opacity:0,transform:"scale(.9)"}],{duration:D(220),easing:E.exit,fill:"forwards"}).finished.then(finish);
@@ -647,6 +647,7 @@ app.addEventListener("click",async e=>{
   const a=e.target.closest("[data-act]");if(!a)return;
   if(lpFired){lpFired=false;if(a.dataset.act==="img")return;}
   const k=a.dataset.act,id=a.dataset.id;
+  if(k==="img"&&img(id))StudioChrome.enterViewer();
   if(await StudioService.action(k,a,e))return;
   switch(k){
     case"tab":go(a.dataset.tab);break;
@@ -790,7 +791,8 @@ function openSettings(section){
 }
 let savedT;
 function settingChanged(...args){return StudioService.settingChanged(...args);}
-function applyMotion(){const m=S.settings.motion;RM=m==="reduce"||(m==="system"&&sysRM);document.documentElement.classList.toggle("rm",RM);}
+function applyMotion(){const m=S.settings.motion;RM=m==="reduce"||(m==="system"&&systemMotion.matches);document.documentElement.classList.toggle("rm",RM);document.documentElement.dataset.motion=m;}
+if(systemMotion.addEventListener)systemMotion.addEventListener("change",applyMotion);else systemMotion.addListener?.(applyMotion);
 function promptEditor(k){const [title,vars]=PROMPT_META[k];
   openSheet({title,html:`<textarea class="input mono" id="pe-text" rows="8">${esc(S.settings.prompts[k])}</textarea>
     <div class="var-chips">${vars.map(v=>`<button type="button" data-act="pe-var">${v}</button>`).join("")}</div>
@@ -835,4 +837,5 @@ function fxSel(el=topScreen()){
 function fxSubmit(...args){return StudioService.fxSubmit(...args);}
 
 // Real data boot is owned by studio-service.js. No simulated jobs or timers.
+applyMotion();
 hydrateIcons();

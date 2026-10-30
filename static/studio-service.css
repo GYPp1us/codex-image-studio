@@ -1,4 +1,16 @@
 /* Backend-only surfaces reuse the demo's fields, rows, sheets and typography. */
+/* JS resolves the saved mode and OS preference for CSS and WAAPI alike.
+   Reduced infinite indicators stop instead of looping every millisecond. */
+html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:1ms!important;transition-delay:0s!important}
+html.rm::view-transition-group(*),html.rm::view-transition-old(*),html.rm::view-transition-new(*){animation:none!important}
+/* A separate transition snapshot keeps navigation above the moving page. */
+#tabbar{view-transition-name:studio-tabbar}
+::view-transition-group(studio-tabbar){z-index:100;animation:none!important}
+::view-transition-old(studio-tabbar){display:none}
+::view-transition-new(studio-tabbar){animation:none!important;mix-blend-mode:normal}
+html.viewer-present,html.viewer-present body{background:#0c0c0a}
+.app:fullscreen,.app:-webkit-full-screen{width:100%;max-width:none;height:100dvh;top:0;box-shadow:none}
+.app:fullscreen::backdrop{background:#0c0c0a}
 [hidden]{display:none!important}
 input,textarea,select{font:inherit;color:inherit}
 button:disabled{cursor:default}
