@@ -284,7 +284,7 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'retry-job':await post('/api/jobs/'+id+'/retry');await back();await refreshData();break;
       case 'log':{const jid=a.dataset.t||S.batches.find(b=>b.id===a.dataset.b)?.tasks.find(t=>t.status==='failed')?.id||id;const L=openSheet({title:'任务日志',html:'<p class="note">正在读取日志…</p>'});const revision=L.dataset.revision,log=await api('/api/jobs/'+jid+'/log');if(L.isConnected&&L.style.pointerEvents!=='none'&&revision===L.dataset.revision)swapSheet(L,'任务日志',`<pre class="prompt-box task-log">${esc(log.text)}</pre>`);break;}
       case 'task-info':await taskInfo(id);break;
-      case 'im-native':await back();StudioZoom.toggleNative();break;
+      case 'im-native':await back();StudioZoom.toggleNative(true);break;
       case 'v-dl':download(V.list[V.i]);break;
       case 'im-dl':download(id);break;
       case 'works-tab':{const tab=a.dataset.v;if(!['generated','references','favorites'].includes(tab))break;S.worksTab=tab;renderPage();if(tab!=='generated')await loadWorks(tab);break;}

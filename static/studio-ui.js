@@ -413,12 +413,22 @@ function listFor(kind,id){
 }
 function fitRect(im){const W=app.offsetWidth,H=app.offsetHeight,top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
   let w=aw,h=w/R;if(h>ah){h=ah;w=h*R;}return{x:(W-w)/2,y:top+(ah-h)/2,w,h};}
+// The grid thumbnail is already decoded, so it paints on the first frame; the preview replaces it
+// only once fully decoded, so open, swipe and the fly handoff never show a blank or half-drawn slide.
+function showProgressive(image,im,urgent){
+  const low=src(im),high=picture(im);
+  if(!high||high===low||typeof Image!=="function"){image.src=high||low;return;}
+  image.src=low;image.dataset.want=high;
+  const loader=new Image();loader.decoding="async";if("fetchPriority" in loader)loader.fetchPriority=urgent?"high":"low";loader.src=high;
+  const swap=()=>{if(image.dataset.want===high&&image.getAttribute("src")!==high)image.src=high;};
+  (typeof loader.decode==="function"?loader.decode():Promise.resolve()).then(swap,swap);
+}
 function layoutSlides(){
   if(typeof StudioZoom!=="undefined")StudioZoom.reset();
   track.style.transform="";
   const old=new Map($$(".slide",track).map(el=>[el.dataset.id,el]));
   for(const o of [-1,0,1]){const id=V.list[V.i+o];if(!id||!img(id))continue;const im=img(id),r=fitRect(im);let slide=old.get(id);old.delete(id);
-    if(!slide){slide=document.createElement("div");slide.className="slide";slide.dataset.id=id;const image=document.createElement("img");image.alt="";image.draggable=false;image.src=picture(im);slide.append(image);}
+    if(!slide){slide=document.createElement("div");slide.className="slide";slide.dataset.id=id;const image=document.createElement("img");image.alt="";image.draggable=false;image.decoding="async";showProgressive(image,im,o===0);slide.append(image);}
     slide.dataset.o=o;slide.style.transform=`translateX(calc(${o} * (100% + 20px)))`;Object.assign($("img",slide).style,{left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px',transform:''});track.append(slide);
   }
   for(const el of old.values())el.remove();
@@ -457,7 +467,13 @@ function closeViewer(){
   else if(visual)visual.animate(zoomed?[{opacity:1},{opacity:0}]:[{opacity:1,transform:visual.style.transform||"none"},{opacity:0,transform:"scale(.9)"}],{duration:D(220),easing:E.exit,fill:"forwards"}).finished.then(finish);
   else finish();
 }
-let finishSlide=null,viewerFrame=null;
+let finishSlide=null,viewerFrame=null,tapTimer=null,lastTap=null;
+function viewerTap(e){
+  const t=performance.now(),p={clientX:e.clientX,clientY:e.clientY};
+  if(lastTap&&t-lastTap.t<280&&Math.hypot(p.clientX-lastTap.clientX,p.clientY-lastTap.clientY)<32){clearTimeout(tapTimer);tapTimer=null;lastTap=null;StudioZoom.toggleAt(p);return;}
+  lastTap={...p,t};clearTimeout(tapTimer);
+  tapTimer=setTimeout(()=>{tapTimer=null;lastTap=null;if(V.open&&!V.redraw)vw.classList.toggle("chrome-off");},260);
+}
 function slideTo(dir,dx=0,velocity=0){
   const W=app.offsetWidth+20,target=-dir*W,generation=V.gen;
   const animation=track.animate([{transform:`translate3d(${dx}px,0,0)`},{transform:`translate3d(${target}px,0,0)`}],{duration:D(clamp(Math.abs(target-dx)/Math.max(1.4,Math.abs(velocity)),140,260)),easing:E.emph});
@@ -481,7 +497,7 @@ stage.addEventListener("pointermove",e=>{
 });
 const dragEnd=e=>{
   if(V.redraw){if(e.pointerType!=="touch"){if(e.type==="pointercancel")selCancel();else selEnd();}return;}if(!drag||e.pointerId!==drag.pointer)return;if(viewerFrame!==null)cancelAnimationFrame(viewerFrame);paintViewerDrag();const d=drag;cancelViewerDrag();
-  if(!d.axis){if(e.type!=="pointercancel"&&performance.now()-d.t<350)vw.classList.toggle("chrome-off");return;}
+  if(!d.axis){if(e.type!=="pointercancel"&&performance.now()-d.t<350)viewerTap(e);return;}
   if(d.axis==="x"){const velocity=performance.now()-d.lastT<90?d.velocity:0,advance=Math.abs(d.dx)>64||Math.abs(d.dx)>24&&Math.abs(velocity)>.35&&Math.sign(velocity)===Math.sign(d.dx);
     if(e.type!=="pointercancel"&&advance&&d.dx<0&&V.i<V.list.length-1)slideTo(1,d.dx,velocity);else if(e.type!=="pointercancel"&&advance&&d.dx>0&&V.i>0)slideTo(-1,d.dx,velocity);
     else{track.animate([{transform:`translate3d(${d.dx}px,0,0)`},{transform:"none"}],{duration:D(180),easing:E.emph});track.style.transform="";}}

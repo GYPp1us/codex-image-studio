@@ -4,7 +4,7 @@
 const StudioZoom=(()=>{
   const MAX_REQUESTS=4,MAX_CACHE_BYTES=64*1024*1024,MAX_ENTRIES=96,MAX_WANTED=56,TILE_INTERVAL=90;
   let asset=null,id=null,metrics=null,preview=null,plane=null,tileLayer=null,fallbackLayer=null;
-  let scale=1,x=0,y=0,frameId=null,resizeFrame=null,settleTimer=null,retryTimer=null,gesture=null,closing=false;
+  let tween=null,scale=1,x=0,y=0,frameId=null,resizeFrame=null,settleTimer=null,retryTimer=null,gesture=null,closing=false;
   let epoch=0,active=0,cacheBytes=0,clock=0,lastTiles=-Infinity,signature='',forceTiles=false,lastWheel=-Infinity;
   let queue=[],wanted=new Set(),visible=new Set();const cache=new Map(),points=new Map();
   const currentId=()=>V.list[V.i];
@@ -57,12 +57,37 @@ const StudioZoom=(()=>{
   }
   function anchorAt(p){const g=geometry();return {x:(p.x-g.x)/g.w,y:(p.y-g.y)/g.h};}
   function zoomTo(value,p,anchor=anchorAt(p)){
-    const r=metrics.fit;scale=clamp(value,1,Math.max(4,asset.w/r.w*2));
+    const r=metrics.fit,pinching=gesture?.kind==='pinch';scale=clamp(value<1&&pinching?1-(1-value)*.4:value,pinching?.82:1,Math.max(4,asset.w/r.w*2));
     x=p.x-(r.x+(r.w-r.w*scale)/2)-anchor.x*r.w*scale;
     y=p.y-(r.y+(r.h-r.h*scale)/2)-anchor.y*r.h*scale;clampPose();schedulePaint();
   }
+  function cancelTween(){if(tween!==null)cancelAnimationFrame(tween);tween=null;}
+  // Eased scale/pan for double-tap, the native-pixel action and the spring back from an over-pinch.
+  function animateZoom(target,p,anchor){
+    cancelTween();const from={scale,x,y};zoomTo(target,p,anchor);const to={scale,x,y};
+    if(typeof RM!=='undefined'&&RM){schedulePaint(true);return;}
+    scale=from.scale;x=from.x;y=from.y;const start=now(),duration=300;
+    const step=()=>{const k=Math.min(1,(now()-start)/duration),e=1-(1-k)**3;
+      scale=from.scale+(to.scale-from.scale)*e;x=from.x+(to.x-from.x)*e;y=from.y+(to.y-from.y)*e;
+      if(k<1){tween=requestAnimationFrame(step);schedulePaint();}else{tween=null;schedulePaint(true);}};
+    tween=requestAnimationFrame(step);
+  }
+  // Momentum after a pan, stopping at the image edges.
+  function fling(vx,vy){
+    cancelTween();if(typeof RM!=='undefined'&&RM)return;let last=now();
+    const step=()=>{const t=now(),dt=Math.min(32,t-last);last=t;x+=vx*dt;y+=vy*dt;const bx=x,by=y;clampPose();
+      if(x!==bx)vx=0;if(y!==by)vy=0;const decay=.95**(dt/16);vx*=decay;vy*=decay;
+      if(V.open&&!gesture&&Math.hypot(vx,vy)>.02){tween=requestAnimationFrame(step);schedulePaint();}else{tween=null;schedulePaint(true);}};
+    tween=requestAnimationFrame(step);
+  }
+  function toggleAt(client){
+    if(!ensure()||V.redraw)return;measure();closing=false;
+    if(scale>1.0001){animateZoom(1,{x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2});return;}
+    const p=client?point(client):{x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2};
+    animateZoom(Math.min(Math.max(2,asset.w/metrics.fit.w),3),p);schedulePaint(true);vw.classList.remove('chrome-off');
+  }
   function settle(){clearTimeout(settleTimer);settleTimer=setTimeout(()=>{settleTimer=null;schedulePaint(true);},110);}
-  function toggleNative(){if(!ensure()||V.redraw)return;closing=false;const p={x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2};zoomTo(scale>1.0001?1:Math.max(1,asset.w/metrics.fit.w),p);schedulePaint(true);vw.classList.remove('chrome-off');}
+  function toggleNative(animate){if(!ensure()||V.redraw)return;closing=false;const p={x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2},target=scale>1.0001?1:Math.max(1,asset.w/metrics.fit.w);if(animate)animateZoom(target,p);else zoomTo(target,p);schedulePaint(true);vw.classList.remove('chrome-off');}
   function cancelEntry(entry){
     if(entry.status==='loading'||entry.status==='decoding'){active--;entry.image.onload=entry.image.onerror=null;entry.image.removeAttribute('src');}
     if(entry.status==='ready')cacheBytes-=entry.bytes;
@@ -134,28 +159,32 @@ const StudioZoom=(()=>{
     for(const entry of [...cache.values()])cancelEntry(entry);cache.clear();cacheBytes=0;active=0;queue=[];wanted.clear();visible.clear();signature='';
     if(plane){if(preview?.parentNode===plane)plane.before(preview);plane.remove();}plane=tileLayer=fallbackLayer=null;
   }
-  function reset(){epoch++;cancelWork();releaseSurface();restorePreview();asset=null;id=null;metrics=null;preview=null;scale=1;x=y=0;closing=false;lastTiles=-Infinity;forceTiles=false;lastWheel=-Infinity;}
-  function stop(){closing=true;epoch++;cancelWork();return plane||preview;}
+  function reset(){cancelTween();epoch++;cancelWork();releaseSurface();restorePreview();asset=null;id=null;metrics=null;preview=null;scale=1;x=y=0;closing=false;lastTiles=-Infinity;forceTiles=false;lastWheel=-Infinity;}
+  function stop(){cancelTween();closing=true;epoch++;cancelWork();return plane||preview;}
   function fit(){reset();if(ensure())restorePreview();}
   function startGesture(){
     const list=[...points.values()];if(list.length>=2){const [a,b]=list,mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2};gesture={kind:'pinch',distance:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),scale,anchor:anchorAt(mid)};}
     else if(list.length)gesture={kind:'pan',point:list[0],x,y,moved:false,time:now()};
   }
   stage.addEventListener('pointerdown',e=>{
-    if(e.button>0||V.redraw||!ensure())return;measure();points.set(e.pointerId,point(e));
+    if(e.button>0||V.redraw||!ensure())return;if(tween!==null){cancelTween();}measure();points.set(e.pointerId,point(e));
     if(points.size>=2||scale>1.0001){if(typeof cancelViewerDrag==='function')cancelViewerDrag();else drag=null;track.getAnimations?.().forEach(a=>a.cancel());track.style.transform='';closing=false;startGesture();stage.setPointerCapture(e.pointerId);e.stopImmediatePropagation();}
   },true);
   stage.addEventListener('pointermove',e=>{
     if(!points.has(e.pointerId)||!gesture||!metrics)return;const p=point(e);points.set(e.pointerId,p);e.stopImmediatePropagation();
     if(gesture.kind==='pinch'&&points.size>=2){const [a,b]=[...points.values()];zoomTo(gesture.scale*Math.hypot(a.x-b.x,a.y-b.y)/gesture.distance,{x:(a.x+b.x)/2,y:(a.y+b.y)/2},gesture.anchor);}
-    else if(gesture.kind==='pan'){const dx=p.x-gesture.point.x,dy=p.y-gesture.point.y;gesture.moved=gesture.moved||Math.hypot(dx,dy)>3;x=gesture.x+dx;y=gesture.y+dy;clampPose();schedulePaint();}
+    else if(gesture.kind==='pan'){const dx=p.x-gesture.point.x,dy=p.y-gesture.point.y;gesture.moved=gesture.moved||Math.hypot(dx,dy)>3;const t=now(),dt=t-(gesture.lastT??gesture.time);
+      if(dt>=4){gesture.vx=(gesture.x+dx-(gesture.lastX??gesture.x))/dt*.7+(gesture.vx||0)*.3;gesture.vy=(gesture.y+dy-(gesture.lastY??gesture.y))/dt*.7+(gesture.vy||0)*.3;gesture.lastX=gesture.x+dx;gesture.lastY=gesture.y+dy;gesture.lastT=t;}
+      x=gesture.x+dx;y=gesture.y+dy;clampPose();schedulePaint();}
   },{capture:true,passive:true});
   function up(e){
     points.delete(e.pointerId);if(!gesture)return;e.stopImmediatePropagation();const tap=e.type!=='pointercancel'&&gesture.kind==='pan'&&!gesture.moved&&now()-gesture.time<350;
-    if(e.type==='pointercancel')points.clear();if(points.size)startGesture();else{gesture=null;schedulePaint(true);if(tap)vw.classList.toggle('chrome-off');}
+    const ended=gesture;if(e.type==='pointercancel')points.clear();if(points.size)startGesture();else{gesture=null;schedulePaint(true);
+      if(tap){if(typeof viewerTap==='function')viewerTap(e);else vw.classList.toggle('chrome-off');}
+      else if(scale<1)animateZoom(1,{x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2});
+      else if(e.type!=='pointercancel'&&ended.kind==='pan'&&ended.moved&&now()-(ended.lastT??0)<80&&Math.hypot(ended.vx||0,ended.vy||0)>.3)fling(ended.vx,ended.vy);}
   }
   stage.addEventListener('pointerup',up,true);stage.addEventListener('pointercancel',up,true);
-  stage.addEventListener('dblclick',e=>{if(V.redraw)return;e.preventDefault();toggleNative();});
   stage.addEventListener('wheel',e=>{if(V.redraw||!ensure())return;e.preventDefault();lastWheel=now();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?metrics.height:1);zoomTo(scale*Math.exp(-delta*.002),point(e));settle();},{passive:false});
   function resized(){
     if(!V.open)return;
@@ -164,5 +193,5 @@ const StudioZoom=(()=>{
   }
   const requestResize=()=>{if(resizeFrame===null)resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;resized();});};
   addEventListener('resize',requestResize);globalThis.visualViewport?.addEventListener('resize',requestResize);
-  return {reset,stop,fit,toggleNative,paint(){if(ensure())schedulePaint(true);},isZoomed:()=>scale>1.0001,isInteracting:()=>points.size>0||now()-lastWheel<150,cacheUsage:()=>({bytes:cacheBytes,entries:cache.size,active})};
+  return {reset,stop,fit,toggleNative,toggleAt,paint(){if(ensure())schedulePaint(true);},isZoomed:()=>scale>1.0001,isInteracting:()=>points.size>0||now()-lastWheel<150,cacheUsage:()=>({bytes:cacheBytes,entries:cache.size,active})};
 })();
