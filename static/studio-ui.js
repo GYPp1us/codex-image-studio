@@ -411,7 +411,21 @@ function listFor(kind,id){
   if(kind?.startsWith("batch:")){const b=S.batches.find(x=>x.id===kind.slice(6));return b?b.tasks.filter(t=>t.img&&img(t.img)).map(t=>t.img):[id];}
   return [id];
 }
-function fitRect(im){const W=app.offsetWidth,H=app.offsetHeight,top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
+// While a viewer input has focus (and until its keyboard has closed) the image keeps the geometry it had
+// before the keyboard appeared, so the keyboard and the input panel float over a still picture instead of
+// squeezing it; IME candidate bars that change the keyboard height no longer move the image or its regions.
+const KB={hold:false,w:0,h:0,until:0};
+function viewerEditing(){const a=document.activeElement;return !!(V.open&&a&&vw.contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName));}
+function viewerHeight(){
+  const h=app.offsetHeight;if(!KB.hold)return h;const t=performance.now();
+  if(app.offsetWidth===KB.w&&(viewerEditing()||t<KB.until||(h<KB.h&&t<KB.until+2500)))return KB.h;
+  KB.hold=false;return h;
+}
+document.addEventListener("focusin",e=>{if(!KB.hold&&V.open&&vw.contains(e.target)&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName)){KB.hold=true;KB.w=app.offsetWidth;KB.h=app.offsetHeight;KB.until=0;}});
+document.addEventListener("focusout",()=>{if(KB.hold)KB.until=performance.now()+800;});
+// An Enter that only confirms an IME composition must not submit the quick-edit (or any other) form.
+document.addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.isComposing||e.keyCode===229)&&e.target?.form)e.preventDefault();},true);
+function fitRect(im){const W=app.offsetWidth,H=viewerHeight(),top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
   let w=aw,h=w/R;if(h>ah){h=ah;w=h*R;}return{x:(W-w)/2,y:top+(ah-h)/2,w,h};}
 // The grid thumbnail is already decoded, so it paints on the first frame; the preview replaces it
 // only once fully decoded, so open, swipe and the fly handoff never show a blank or half-drawn slide.
@@ -554,8 +568,9 @@ function renderRegions(){
 function renderChips(){const box=$("#rd-chips"),n=V.regions.length;box.style.display=n?"flex":"none";
   box.innerHTML=V.regions.map((g,i)=>{const ok=(V.shared?V.sharedText:g.text).trim();return `<button class="rd-chip${i===V.active?" on":""}" data-act="rd-pick" data-i="${i}">#${i+1}${ok?icon("check",13):""}</button>`;}).join("");}
 function updDim(tmp){let d=$("#rd-dim");const list=[...V.regions,...(tmp?[tmp]:[])];if(!list.length){d?.remove();return;}
-  const W=app.offsetWidth,H=app.offsetHeight;
+  const W=app.offsetWidth,H=viewerHeight();
   if(!d){d=document.createElementNS("http://www.w3.org/2000/svg","svg");d.id="rd-dim";d.setAttribute("class","rd-dim");d.innerHTML='<path fill-rule="evenodd" fill="rgba(0,0,0,.5)"/>';stage.append(d);}
+  d.style.width=W+"px";d.style.height=H+"px";
   d.setAttribute("viewBox",`0 0 ${W} ${H}`);d.firstChild.setAttribute("d",`M0 0H${W}V${H}H0Z`+list.map(g=>`M${g.x} ${g.y}h${g.w}v${g.h}h${-g.w}Z`).join(""));}
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 function local(e){const a=app.getBoundingClientRect(),s=sc();return{x:(e.clientX-a.left)/s,y:(e.clientY-a.top)/s};}

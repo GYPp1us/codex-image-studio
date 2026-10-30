@@ -23,11 +23,11 @@ button:disabled{cursor:default}
 .saved.save-error{color:var(--red);opacity:1}.trow .n{flex:none}.trow .link-btn{flex:none}
 #viewer{touch-action:none}.native-tiles{position:absolute;inset:0;pointer-events:none;overflow:hidden}.native-tiles img{position:absolute;max-width:none;border-radius:0}
 .bp>span:nth-child(2){white-space:nowrap;flex:none}.bp .bbar{min-width:0;max-width:48px;overflow:hidden}.bp .bbar i{min-width:0}.bp .to{min-width:0}.sum .st{min-width:0}.b-status .tg{max-width:100%;overflow:hidden}
-.app{height:var(--studio-vh,100dvh)}.template-refs:empty{display:none}.primary[href]{text-decoration:none}
+.app{height:var(--studio-vh,100dvh);top:var(--studio-vv-top,0px)}.template-refs:empty{display:none}.primary[href]{text-decoration:none}
 @media(min-width:901px){.app{width:390px;max-width:390px;box-shadow:0 0 80px #00000016}}
 
 .st-coverage{color:var(--amber-ink)}
 .zoom-plane{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;contain:layout style;pointer-events:none}
 .zoom-plane .native-tiles{overflow:hidden}.zoom-plane .tile-fallback{z-index:0}.zoom-plane .tile-current{z-index:1}
-.viewer.redraw .v-stage{touch-action:none;-webkit-touch-callout:none}.viewer.redraw .v-quick,.viewer.redraw .v-actions{visibility:hidden}
+.viewer.redraw .v-stage{touch-action:none;-webkit-touch-callout:none}.viewer.redraw .v-quick,.viewer.redraw .v-actions{visibility:hidden;transition:opacity var(--d2),transform var(--d3) var(--e-emph),visibility 0s linear var(--d3)}
 .download-status{display:flex;flex-direction:column;gap:12px;margin:4px 0 20px;font-variant-numeric:tabular-nums}.download-status .note{margin:0}.download-progress{width:100%;height:8px;accent-color:var(--sage-ink);border:0;border-radius:8px;overflow:hidden}.download-progress::-webkit-progress-bar{background:var(--surface-2);border-radius:8px}.download-progress::-webkit-progress-value{background:var(--sage-ink);border-radius:8px}.download-progress::-moz-progress-bar{background:var(--sage-ink)}.download-actions{display:flex;flex-direction:column;gap:10px}.download-actions a{display:flex;align-items:center;justify-content:center;text-decoration:none}.download-error{color:var(--red)}
