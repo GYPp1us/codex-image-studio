@@ -38,9 +38,14 @@ class UpscaleDefaults(BaseModel):
     default_injection: str = Field(default='', max_length=12000)
 
 
+class Appearance(BaseModel):
+    mode: Literal['system', 'light', 'dark'] = 'system'
+    accent: str = Field(default='#5d7350', pattern=r'^#[0-9a-fA-F]{6}$')
+
+
 def preferences(studio):
     return {key: model(**studio.setting(key, {})).model_dump() for key, model in
-            (('defaults', GenerationDefaults), ('quick', QuickDefaults), ('upscale', UpscaleDefaults))} | {
+            (('defaults', GenerationDefaults), ('quick', QuickDefaults), ('upscale', UpscaleDefaults), ('appearance', Appearance))} | {
                 'motion': studio.setting('motion', True),
                 'motion_mode': studio.setting('motion_mode', 'system'), 'notify': studio.setting('notify', False)}
 

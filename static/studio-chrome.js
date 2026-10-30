@@ -56,6 +56,7 @@ const StudioChrome=(()=>{
     const observer=new MutationObserver(followChrome);
     for(const el of document.querySelectorAll('#layers,#screens'))observer.observe(el,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style']});
     window.addEventListener('resize',followChrome);
+    document.addEventListener('studio-theme-change',()=>{syncNative();followChrome();});
     document.addEventListener('visibilitychange',()=>{if(!document.hidden){syncNative();followChrome();}});
   }
   function restore(ticket){
@@ -63,6 +64,7 @@ const StudioChrome=(()=>{
     if(savedTheme!==null){theme()?.setAttribute('content',savedTheme);savedTheme=null;}
     const meta=status();if(createdStatus)meta?.remove();else if(savedStatus!==null)meta?.setAttribute('content',savedStatus);
     savedStatus=null;createdStatus=false;
+    if(typeof StudioTheme!=='undefined')StudioTheme.refreshChrome();
     syncNative();followChrome();
   }
   function exitOwned(){

@@ -4,10 +4,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="theme-color" content="#f5f4ef"><meta name="description" content="Image Studio 私人图片工作台">
 <title>Image Studio</title><meta name="apple-mobile-web-app-capable" content="yes">
+<script src="/static/studio-theme.js?v=20261030-personal1"></script>
 <link rel="manifest" href="/static/manifest.webmanifest"><link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/studio.css?v=20261030-native-bars1"><link rel="stylesheet" href="/static/studio-service.css?v=20261030-native-bars1">
-<script src="/static/image-cache.js?v=20261030-native-bars1" defer></script>
-<script src="/static/studio-layout.js?v=20261030-native-bars1" defer></script><script src="/static/studio-ui.js?v=20261030-native-bars1" defer></script><script src="/static/studio-chrome.js?v=20261030-native-bars1" defer></script><script src="/static/studio-zoom.js?v=20261030-native-bars1" defer></script><script src="/static/studio-download.js?v=20261030-native-bars1" defer></script><script src="/static/studio-service.js?v=20261030-native-bars1" defer></script>
+<link rel="stylesheet" href="/static/studio.css?v=20261030-personal1"><link rel="stylesheet" href="/static/studio-service.css?v=20261030-personal1">
+<script src="/static/image-cache.js?v=20261030-personal1" defer></script>
+<script src="/static/studio-layout.js?v=20261030-personal1" defer></script><script src="/static/studio-ui.js?v=20261030-personal1" defer></script><script src="/static/studio-chrome.js?v=20261030-personal1" defer></script><script src="/static/studio-zoom.js?v=20261030-personal1" defer></script><script src="/static/studio-download.js?v=20261030-personal1" defer></script><script src="/static/studio-references.js?v=20261030-personal1" defer></script><script src="/static/studio-picker.js?v=20261030-personal1" defer></script><script src="/static/studio-avatar.js?v=20261030-personal1" defer></script><script src="/static/studio-service.js?v=20261030-personal1" defer></script>
 </head><body><div class="app" id="app" aria-label="Image Studio">
 <div id="page"></div>
   <nav class="tabbar" id="tabbar">
@@ -45,6 +46,7 @@
       <button class="rd-shared" id="rd-shared" data-act="rd-shared" style="display:none"><span>所有区域使用同一条要求</span><span class="switch" id="rd-shared-sw"></span></button>
       <div class="rd-row"><span class="rd-note" id="rd-note">只替换选区内像素，选区外保持原图</span><button class="rd-submit" id="rd-submit" data-act="rd-submit" disabled>提交重绘</button></div>
     </div>
+    <div class="v-reference-actions"><button class="primary" data-act="reference-select"></button></div>
   </div>
   <div id="screens"></div>
   <div id="layers"></div>

@@ -35,7 +35,8 @@ from cli_scheduler import CallPool
 import image_runtime as imaging
 from storage_manager import Storage, StorageFull, tree_bytes
 from prompt_capture import extract as extract_polished_prompt,REPORT_INSTRUCTION
-from interaction_api import GenerationDefaults, QuickDefaults, UpscaleDefaults, preferences, validate_regions, quick_model, enqueue_after_upscale
+from interaction_api import Appearance, GenerationDefaults, QuickDefaults, UpscaleDefaults, preferences, validate_regions, quick_model, enqueue_after_upscale
+import account_profile
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -448,7 +449,7 @@ def state(session=Depends(require_user)):
 @app.get("/api/account")
 def account(session=Depends(require_user)):
     user = query("SELECT username,created FROM users WHERE id=1", one=True)
-    return user | {"session_count": query("SELECT COUNT(*) AS n FROM sessions WHERE expires>?", (now(),), True)["n"]}
+    return user | {"session_count": query("SELECT COUNT(*) AS n FROM sessions WHERE expires>?", (now(),), True)["n"], "avatar_url": account_profile.avatar_url(sys.modules[__name__])}
 
 
 class AccountInput(BaseModel):
@@ -532,6 +533,7 @@ class Settings(BaseModel):
     defaults: GenerationDefaults | None = None
     quick: QuickDefaults | None = None
     upscale: UpscaleDefaults | None = None
+    appearance: Appearance | None = None
     motion: bool | None = None
     motion_mode: Literal['system', 'reduce', 'full'] | None = None
     notify: bool | None = None
@@ -1500,3 +1502,4 @@ from upscale_api import register as register_upscale_routes
 register_upscale_routes(app,sys.modules[__name__])
 from interaction_api import register as register_interaction_routes
 register_interaction_routes(app,sys.modules[__name__])
+account_profile.register(app,sys.modules[__name__])
