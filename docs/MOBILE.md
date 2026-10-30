@@ -30,7 +30,9 @@ Android 版本具有独立图标、窗口和会话，主要采用竖屏布局。
 
 「完整动效」会覆盖系统的减少动态效果，转圈和进度流光保持正常时长；「跟随系统」实时响应系统偏好，「减少动效」使用静止的状态指示，不高速循环。页面切换时底栏独立于移动的页面快照，始终保持在上方。
 
-Android 和提供全屏 API 的 iPad 浏览器中，点击图片会尝试隐藏系统栏；拒绝全屏不影响查看。退出时等待退场和全屏恢复完成后再切回原来的顶部配色。iPhone Safari 的普通页面全屏能力仍受 [WebKit 平台限制](https://bugs.webkit.org/show_bug.cgi?id=206854)，网页 / PWA 无法保证隐藏系统状态栏，因此采用稳定的深色查看器配色。实际系统栏行为仍需目标设备验证。
+Android APK 1.1.0 使用原生沉浸模式隐藏图片查看页的状态栏和导航栏，边缘滑动可临时呼出；退出图片后恢复。二级菜单的状态栏随遮罩一起变灰，底部系统栏匹配面板底色，拖动和退场时同步更新。原生窗口分别绘制上下安全区域，兼容 Android 15 起强制的边到边显示，图标按背景亮度切换。旧 APK 必须下载安装新版并覆盖安装，单独刷新网页无法更新原生窗口控制。
+
+网页及 PWA 在浏览器提供全屏 API 时尝试隐藏系统栏；拒绝全屏不影响查看。退出时等待退场和全屏恢复完成后再切回原来的顶部配色。iPhone Safari 的普通页面全屏能力仍受 [WebKit 平台限制](https://bugs.webkit.org/show_bug.cgi?id=206854)，网页 / PWA 无法保证隐藏系统状态栏，因此采用稳定的深色查看器配色。实际系统栏行为仍需目标设备验证。
 
 作品页增加参考图和收藏分栏，支持分页读取较早记录。相册左右切图按帧合并触摸位移，复用相邻图片；局部重绘在减少动态效果模式下也可正常框选，完成框选后由用户自行点击输入框编辑，避免键盘自动弹出打断下一次框选。
 
@@ -48,9 +50,9 @@ Android 和提供全屏 API 的 iPad 浏览器中，点击图片会尝试隐藏�
 
 脚本使用官方 aapt2、javac、d8、zipalign 和 apksigner 编译，生成 `downloads/image-studio.apk` 和 SHA256 校验文件，并验证 APK 签名。首次构建生成 `android/signing/`，之后复用同一签名证书以支持覆盖安装；请私下备份整个目录。签名私钥、密码、构建缓存和 APK 均被 Git 忽略。更改客户端原生功能后，应递增 `AndroidManifest.xml` 的 versionCode 和 versionName；网页界面更新无需重新安装 APK。
 
-当前客户端固定连接 `https://image.arcol.site/`。自行部署时修改 `MainActivity.java` 的 HOME、trusted 主机校验，以及应用包名。生产构建禁止明文网络、文件 URL、混合内容和第三方 Cookie，不提供 JavaScript 原生权限桥。OpenAI 授权页面交由系统浏览器打开。上传使用文档选择器，不索取整个相册或文件系统权限。
+当前客户端固定连接 `https://image.arcol.site/`。自行部署时修改 `MainActivity.java` 的 HOME、trusted 主机校验、消息通道的目标源，以及应用包名。生产构建禁止明文网络、文件 URL、混合内容和第三方 Cookie，不提供 JavaScript 原生权限桥。系统栏使用仅向可信主框架发送的 WebMessagePort，只接受查看器状态和两个十六进制颜色；导航时销毁旧通道，不开放文件、凭据或其他原生操作。OpenAI 授权页面交由系统浏览器打开。上传使用文档选择器，不索取整个相册或文件系统权限。
 
-下载 APK 后放在服务端源码目录的 `downloads/image-studio.apk`，应用会通过 `/downloads/image-studio.apk` 提供下载。Web App 清单在 `/static/manifest.webmanifest`，Service Worker 从 `/sw.js` 注册；Android WebView 同样启用该缓存，无需为本次网页功能更新重新安装 APK。
+下载 APK 后放在服务端源码目录的 `downloads/image-studio.apk`，应用会通过 `/downloads/image-studio.apk` 提供下载。发布前比较新旧证书摘要，保持同一签名以支持覆盖安装。Web App 清单在 `/static/manifest.webmanifest`，Service Worker 从 `/sw.js` 注册；Android WebView 同样启用该缓存。
 
 原图、缩略图与固定的超分原图使用本机持久 Cache Storage，合并同一文件的同时请求。缓存最多 192 MB、300 项，超额时删除较早缓存；大于总预算的单文件直接联网加载。重启页面或应用后可以复用缓存，浏览器仍可能因系统存储压力清理。登录状态在工作进程首次使用缓存时验证，此后最多缓存 30 秒授权检查结果；页面 API 返回未登录或主动退出登录时会清除图片缓存。账户设置可查看占用并清空。鉴权失败响应、下载附件、API JSON、临时候选图、会话及订阅凭据不会缓存；缓存不可用时继续从网络加载。
 
@@ -63,3 +65,5 @@ npm test
 ```
 
 后端测试覆盖润色与尺寸快照、模板保存、删除恢复及安装资源；DOM 测试验证多次轮询与列表重排不会重新创建缩略图。APK 构建与签名验证不等同于特定手机的运行测试，安装后仍应在目标设备检查系统选择器、键盘、下载和返回手势。
+
+系统栏集成测试：在独立测试设备启动后执行 `./tests/android/run.ps1 -SdkRoot D:/Android/Sdk -DeviceSerial emulator-5568`。脚本构建独立 QA 包和测试签名，运行真实 Activity 与网页通道，断言状态栏 / 导航栏隐藏、焦点恢复、菜单遮罩配色、实际顶部像素及关闭恢复。测试使用本地页面，不登录账户、不调用生图。模拟器测试结束后必须立即关闭；测试包和私钥仅保留在被忽略的 `.build-cache/android-qa/` 中。

@@ -3,9 +3,11 @@
     <item name="android:fontFamily">sans</item>
     <item name="android:windowLightStatusBar">true</item>
     <item name="android:windowLightNavigationBar">true</item>
-    <item name="android:statusBarColor">#FAF9F6</item>
-    <item name="android:navigationBarColor">#FAF9F6</item>
-    <item name="android:windowBackground">#FAF9F6</item>
+    <item name="android:statusBarColor">@android:color/transparent</item>
+    <item name="android:navigationBarColor">@android:color/transparent</item>
+    <item name="android:enforceStatusBarContrast">false</item>
+    <item name="android:enforceNavigationBarContrast">false</item>
+    <item name="android:windowBackground">#F5F4EF</item>
     <item name="android:colorAccent">#5D7350</item>
     <item name="android:windowActionModeOverlay">true</item>
   </style>
