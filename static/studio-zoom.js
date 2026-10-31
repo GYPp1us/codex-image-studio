@@ -11,7 +11,7 @@ const StudioZoom=(()=>{
   const now=()=>performance.now();
   function measure(){
     const previous=metrics?.fit,rect=app.getBoundingClientRect(),width=app.offsetWidth,height=typeof viewerHeight==='function'?viewerHeight():app.offsetHeight;
-    const top=(parseFloat(getComputedStyle(app).getPropertyValue('--safe-top'))||0)+58,area=Math.max(1,height-top-200);
+    const top=(parseFloat(getComputedStyle(app).getPropertyValue('--safe-top'))||0)+58,area=Math.max(1,height-top-(V.reference?96:200));
     let w=width,h=w*asset.h/asset.w;if(h>area){h=area;w=h*asset.w/asset.h;}
     metrics={width,height,rect,screenScale:rect.width/width||1,dpr:Math.max(1,globalThis.devicePixelRatio||1),
       fit:{x:(width-w)/2,y:top+(area-h)/2,w,h},area};
