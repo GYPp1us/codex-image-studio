@@ -44,3 +44,21 @@ test('huge images use a bounded preview and visible native tiles, including the 
   assert.ok(right);assert.ok(parseFloat(right.style.width)<100*512/40001);
   viewer.close(false);
 });
+
+test('multiple rectangles keep individual prompts and reject overlapping selections before submission',async()=>{
+  const {viewer}=fixture();let received;viewer.options.onSubmit=async body=>received=body;viewer.action('edit');
+  viewer.dialog.querySelector('.viewer-shared').checked=false;
+  viewer.dialog.querySelector('.viewer-prompt').value='blue flowers';viewer.region={x:10,y:20,width:80,height:60};viewer.updateSelection();viewer.action('add-region');
+  viewer.region={x:40,y:30,width:80,height:60};viewer.updateSelection();assert.equal(viewer.dialog.querySelector('.viewer-submit').disabled,true);
+  viewer.region={x:240,y:200,width:90,height:80};viewer.dialog.querySelector('.viewer-prompt').value='green leaves';viewer.updateSelection();await viewer.submit();
+  assert.equal(received.regions.length,2);assert.equal(received.regions[0].prompt,'blue flowers');assert.equal(received.regions[1].prompt,'green leaves');assert.equal(received.region,undefined);
+});
+
+test('viewer next and previous switch image identity and quick-edit uses the current source',async()=>{
+  const {viewer}=fixture();let requested;const source=viewer.asset,other={id:'next-image',url:'/media/next-image',width:503,height:751};
+  viewer.options.sequence=[source,other];viewer.options.onAction=async(...args)=>requested=args;
+  viewer.change(1);assert.equal(viewer.asset.id,'next-image');assert.match(viewer.dialog.querySelector('.viewer-quick-spec').textContent,/503 × 751/);
+  viewer.dialog.querySelector('.viewer-quick-prompt').value='  make it evening  ';await viewer.dialog.querySelector('.viewer-quick').onsubmit({preventDefault(){}});
+  assert.equal(requested[0],'quick-edit');assert.equal(requested[1].id,'next-image');assert.equal(requested[2],'make it evening');
+  viewer.change(-1);assert.equal(viewer.asset.id,'source');
+});

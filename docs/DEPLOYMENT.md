@@ -46,7 +46,7 @@ sudo journalctl -u image-studio -n 100 --no-pager
 curl -fsS http://127.0.0.1:8788/api/health
 ```
 
-账户与调用设置位于头像菜单。建议从 2 路并发开始，按机器资源与订阅额度调整。
+账户与调用设置已合并到头像菜单的“设置”页。建议从 2 路并发开始，按机器资源与订阅额度调整。
 
 `deploy/studio_operator.py` 从标准输入读取包含 `username`、`password` 的 JSON，不将凭据放进命令参数；支持状态、模型、任务和日志查询。`probe`、`smoke` 会发起真实生成并消耗额度。
 

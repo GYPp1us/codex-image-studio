@@ -10,6 +10,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
+from call_errors import authentication_status_error
 
 from PIL import Image
 from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json, refresh_registered_tile
@@ -71,7 +72,7 @@ def find_image(studio,thread_id,directory):
     return candidate if candidate.is_file() and not candidate.is_symlink() else None
 
 
-async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False):
+async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False,kind=None):
     ensure_active(studio,jid)
     directory=folder/"calls"/name;directory.mkdir(parents=True,exist_ok=True,mode=0o700)
     (directory/"output.png").unlink(missing_ok=True)
@@ -81,7 +82,7 @@ async def cli_call(studio,jid,folder,name,instruction,references,model,effort,ph
     for index,path in enumerate(references):
         destination=directory/f"reference-{index+1}.png";shutil.copyfile(path,destination);args += ["-i",str(destination)]
     args += ["-"]
-    kind='redraw' if expected_size else 'image' if image else 'inspection'
+    kind=kind or ('redraw' if expected_size else 'image' if image else 'inspection')
     save_json(directory/"request.json",{"job_id":jid,"kind":kind,"expected_size":expected_size,"worker_instruction":instruction,"references":[p.name for p in references],"model":model,"effort":effort})
     thread_id="";messages=[];errors=[]
     def notify(label,active=True,source='server'):
@@ -225,7 +226,7 @@ async def run(studio,jid):
             attempt=budgets.get(key,0)+1;budgets[key]=attempt
             try:return await cli_call(studio,jid,folder,f"{key}-{run_token}-try-{attempt}",instruction,refs,model,effort,phase,done,units,on_progress=on_progress,expected_size=expected_size)
             except WorkflowError as error:
-                if attempt==maximum or re.search(r"unauthorized|authentication|401|403|quota|usage limit|policy|moderation|unavailable|not supported",str(error),re.I):raise
+                if attempt==maximum or authentication_status_error(error) or re.search(r"unauthorized|authentication|quota|usage limit|policy|moderation|unavailable|not supported",str(error),re.I):raise
                 if on_progress:on_progress(f'准备第 {attempt+1}/{maximum} 次重试',False,'server')
                 else:progress(studio,jid,phase,done,units,detail=f"{name} · 第 {attempt+1}/{maximum} 次",waiting=True,substage="准备重试")
                 for _ in range(min(10,attempt*3)):
