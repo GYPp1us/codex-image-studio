@@ -364,7 +364,6 @@ html[data-vt=pop]::view-transition-new(page){animation:vt-pop-in .32s cubic-bezi
 .rd-shared .switch{transform:scale(.85);transform-origin:right center}
 .rd-shared .switch:not(.on){background:rgba(255,255,255,.22)}
 /* ================= v0.2 ================= */
-html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;animation-delay:0s!important;transition-duration:1ms!important}
 .card-head .grow{flex:1}
 .card-head{gap:8px}
 .clear-btn{height:32px;padding:0 10px;border-radius:16px;font-size:13px;color:var(--ink-3);display:inline-flex;align-items:center;gap:3px;transition:opacity var(--d2),transform var(--d2) var(--e-emph),background var(--d1)}
@@ -497,11 +496,6 @@ button.s-row:active{background:var(--surface-2)}
 .up-plan div:first-child{border-top:0}
 .up-plan b{font-weight:600}
 .up-plan .tot{background:var(--surface-2);color:var(--ink-2)}
-
-@media (prefers-reduced-motion:reduce){
-  *,*::before,*::after{animation-duration:1ms!important;animation-delay:0s!important;transition-duration:1ms!important}
-  ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}
-}
 
 /* Real viewport: the prototype phone bezel and fake OS status bar are presentation-only. */
 .app{position:relative;width:100%;max-width:none;height:100dvh;overflow:hidden;overflow:clip;background:var(--bg);isolation:isolate;user-select:none;-webkit-user-select:none;--safe-top:env(safe-area-inset-top,0px);--tab-h:calc(62px + env(safe-area-inset-bottom,0px))}

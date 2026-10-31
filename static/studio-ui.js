@@ -3,7 +3,7 @@
 "use strict";
 /* ================= utils ================= */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
-const sysRM=matchMedia("(prefers-reduced-motion: reduce)").matches;let RM=sysRM;
+const systemMotion=matchMedia("(prefers-reduced-motion: reduce)");let RM=systemMotion.matches;
 const D=ms=>RM?1:ms;
 const E={std:"cubic-bezier(.2,.8,.2,1)",emph:"cubic-bezier(.32,.72,0,1)",exit:"cubic-bezier(.4,0,1,1)"};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -30,6 +30,7 @@ const P={
   grid:'<rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 16v-4.5M12 8h.01"/>',
   more:'<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>',
+  grip:'<path d="M9 5h.01M15 5h.01M9 12h.01M15 12h.01M9 19h.01M15 19h.01" stroke-width="3"/>',
   star:'<path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>',
   trash:'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   sliders:'<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
@@ -127,8 +128,9 @@ function vt(kind,fn){
 }
 
 /* ================= render ================= */
-const topBar=(title,right="")=>`<header class="top"><button class="avatar" data-act="me" aria-label="账户">${esc(StudioService.username().slice(0,1).toUpperCase())}</button><h1>${title}</h1><span class="grow"></span>${right}</header><div class="banner-slot"></div>`;
+const topBar=(title,right="")=>`<header class="top"><button class="avatar" data-user-avatar data-act="me" aria-label="账户">${StudioService.avatar()}</button><h1>${title}</h1><span class="grow"></span>${right}</header><div class="banner-slot"></div>`;
 function renderPage(){
+  if(typeof StudioReferences!=='undefined')StudioReferences.cancel();
   const p=$("#page");
   if(S.tab==="create")p.innerHTML=createHTML();
   else if(S.tab==="works")p.innerHTML=S.coll?collHTML():worksHTML();
@@ -214,7 +216,7 @@ function updateCreate(){
   const c=S.composer;updateInto();
   $("#clear-btn")?.classList.toggle("off",!(c.prompt.trim()||c.refs.length||c.template));
   $("#ref-count").textContent=`${c.refs.length} / 8`;
-  syncList($("#refs"),[...c.refs.map(id=>({id})),{id:"__add"}],x=>x.id,x=>x.id==="__add"?`<button class="ref-add" data-act="pick-refs" aria-label="添加参考图">${icon("plus",22)}</button>`:`<div class="ref"><img src="${src(img(x.id))}" alt=""><button class="rm" data-act="rm-ref" data-id="${x.id}" aria-label="移除">${icon("x",12)}</button></div>`);
+  StudioReferences.render($("#refs"),{read:()=>S.composer.refs,write:refs=>StudioService.setComposerRefs(refs),add:()=>pickerSheet()});
   $("#sum1").textContent=`${c.ratio} · ${c.count} 张`;
   $("#sum2").textContent=[c.size==="自动"?"自动尺寸":c.size+" 长边",c.polish&&"润色",c.transparent&&"透明",c.stitch!=="关"&&"生成后 "+c.stitch+" 超分",StudioService.modelName(c.model)+" · "+c.effort].filter(Boolean).join(" · ");
   updBp();
@@ -331,8 +333,8 @@ function closeColl(){
 }
 
 /* ================= sheets ================= */
-function openSheet({title,html,cls="",onMount}){
-  const existing=layers.at(-1)?.type==="sheet"&&topSheet();
+function openSheet({title,html,cls="",onMount,stack=false}){
+  const existing=!stack&&layers.at(-1)?.type==="sheet"&&topSheet();
   if(existing){const sh=$(".sheet",existing);sh.className="sheet "+cls;sh.setAttribute("aria-label",title||"");delete existing.dataset.upSource;swapSheet(existing,title||"",html,onMount);placeToast();return existing;}
 
   const L=document.createElement("div");L.className="sheet-layer";
@@ -404,6 +406,7 @@ function flyDot(fromEl,toEl){
 /* ================= viewer ================= */
 const V={gen:0,open:false,list:[],i:0,redraw:false,sel:null,bgAnim:null,hidden:null};
 const vw=$("#viewer"),track=$("#v-track"),stage=$("#v-stage"),vbg=$(".v-bg",vw);
+function releaseReferenceOwners(){for(const [element,inert] of V.referenceOwners||[])element.inert=inert;V.referenceOwners=null;}
 function listFor(kind,id){
   if(kind==="references"||kind==="favorites")return StudioService.workItems(kind).map(i=>i.id);
   if(kind==="recent")return S.images.slice(0,10).map(i=>i.id);
@@ -411,28 +414,58 @@ function listFor(kind,id){
   if(kind?.startsWith("batch:")){const b=S.batches.find(x=>x.id===kind.slice(6));return b?b.tasks.filter(t=>t.img&&img(t.img)).map(t=>t.img):[id];}
   return [id];
 }
-function fitRect(im){const W=app.offsetWidth,H=app.offsetHeight,top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
+// While a viewer input has focus (and until its keyboard has closed) the image keeps the geometry it had
+// before the keyboard appeared, so the keyboard and the input panel float over a still picture instead of
+// squeezing it; IME candidate bars that change the keyboard height no longer move the image or its regions.
+const KB={hold:false,w:0,h:0,until:0};
+function viewerEditing(){const a=document.activeElement;return !!(V.open&&a&&vw.contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName));}
+function viewerHeight(){
+  const h=app.offsetHeight;if(!KB.hold)return h;const t=performance.now();
+  if(app.offsetWidth===KB.w&&(viewerEditing()||t<KB.until||(h<KB.h&&t<KB.until+2500)))return KB.h;
+  KB.hold=false;return h;
+}
+document.addEventListener("focusin",e=>{if(!KB.hold&&V.open&&vw.contains(e.target)&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName)){KB.hold=true;KB.w=app.offsetWidth;KB.h=app.offsetHeight;KB.until=0;}});
+document.addEventListener("focusout",()=>{if(KB.hold)KB.until=performance.now()+800;});
+// An Enter that only confirms an IME composition must not submit the quick-edit (or any other) form.
+document.addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.isComposing||e.keyCode===229)&&e.target?.form)e.preventDefault();},true);
+function fitRect(im){const W=app.offsetWidth,H=viewerHeight(),top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=V.reference?96:200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
   let w=aw,h=w/R;if(h>ah){h=ah;w=h*R;}return{x:(W-w)/2,y:top+(ah-h)/2,w,h};}
+// The grid thumbnail is already decoded, so it paints on the first frame; the preview replaces it
+// only once fully decoded, so open, swipe and the fly handoff never show a blank or half-drawn slide.
+function showProgressive(image,im,urgent){
+  const low=src(im),high=picture(im);
+  if(!high||high===low||typeof Image!=="function"){image.src=high||low;return;}
+  image.src=low;image.dataset.want=high;
+  const loader=new Image();loader.decoding="async";if("fetchPriority" in loader)loader.fetchPriority=urgent?"high":"low";
+  const clear=()=>{loader.onload=loader.onerror=null;};
+  const swap=()=>{clear();if(image.dataset.want===high&&image.getAttribute("src")!==high)image.src=high;};
+  const canDecode=typeof loader.decode==="function";loader.onerror=clear;if(!canDecode)loader.onload=swap;loader.src=high;
+  if(canDecode)loader.decode().then(swap,clear);
+}
 function layoutSlides(){
   if(typeof StudioZoom!=="undefined")StudioZoom.reset();
   track.style.transform="";
   const old=new Map($$(".slide",track).map(el=>[el.dataset.id,el]));
   for(const o of [-1,0,1]){const id=V.list[V.i+o];if(!id||!img(id))continue;const im=img(id),r=fitRect(im);let slide=old.get(id);old.delete(id);
-    if(!slide){slide=document.createElement("div");slide.className="slide";slide.dataset.id=id;const image=document.createElement("img");image.alt="";image.draggable=false;image.src=picture(im);slide.append(image);}
+    if(!slide){slide=document.createElement("div");slide.className="slide";slide.dataset.id=id;const image=document.createElement("img");image.alt="";image.draggable=false;image.decoding="async";showProgressive(image,im,o===0);slide.append(image);}
     slide.dataset.o=o;slide.style.transform=`translateX(calc(${o} * (100% + 20px)))`;Object.assign($("img",slide).style,{left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px',transform:''});track.append(slide);
   }
   for(const el of old.values())el.remove();
   const im=img(V.list[V.i]),c=coll(im?.coll);
   $("#v-count").textContent=V.list.length>1?`${V.i+1} / ${V.list.length}`:"1 / 1";
   $("#v-sub").textContent=c?c.name:"参考图";
+  if(V.reference){$("#v-sub").textContent=im?.name||'参考图';const button=$('[data-act="reference-select"]',vw);button.hidden=!V.reference.onSelect;button.disabled=false;button.textContent=V.reference.selected?.(im.id)?'取消选择本图':'选择本图';}
   updQuickMeta();
 }
 const curImg=()=>$('.slide[data-o="0"] img',track);
 const srcTile=id=>{const t=$(`#page .tile[data-id="${id}"]`);if(!t)return null;const s=t.closest(".scroll,.recent");const r=t.getBoundingClientRect(),a=$("#page .scroll").getBoundingClientRect();return r.bottom>a.top+4&&r.top<a.bottom-4&&r.right>a.left&&r.left<a.right?t:null;};
 function openViewer(id,listKind,opts={}){
-  if(V.open)return;V.gen++;V.list=listFor(listKind,id);V.i=Math.max(0,V.list.indexOf(id));V.open=true;
+  if(V.open)return;V.gen++;V.reference=opts.reference?opts:null;V.list=opts.ids||listFor(listKind,id);V.i=Math.max(0,V.list.indexOf(id));V.open=true;
+  releaseReferenceOwners();if(V.reference){V.referenceOwners=$$('#page,#tabbar,#layers,#screens').map(el=>[el,el.inert]);for(const [el] of V.referenceOwners)el.inert=true;}
+  vw.classList.toggle('reference-preview',!!V.reference);
+  StudioChrome.enterViewer();
   vw.classList.add("open");vw.classList.remove("chrome-off","redraw");app.classList.add("dark-sb");layoutSlides();
-  const cur=curImg(),tile=srcTile(id),to=rectOf(cur);
+  const cur=curImg(),tile=V.reference?null:srcTile(id),to=rectOf(cur);
   V.bgAnim?.cancel();vbg.style.opacity="0";
   V.bgAnim=vbg.animate([{opacity:0},{opacity:1}],{duration:D(280),easing:E.std,fill:"forwards"});
   V.bgAnim.finished.then(()=>{vbg.style.opacity="1";V.bgAnim?.cancel();V.bgAnim=null;}).catch(()=>{});
@@ -446,18 +479,23 @@ function openViewer(id,listKind,opts={}){
 function closeViewer(){
   if(!V.open)return;cancelViewerDrag();finishSlide?.();exitRedraw();V.open=false;
   const id=V.list[V.i],cur=curImg(),zoomed=StudioZoom.isZoomed(),visual=StudioZoom.stop()||cur;if(V.hidden){V.hidden.style.visibility="";V.hidden=null;}
-  const tile=srcTile(id),from=cur?rectOf(cur):null;
+  const tile=V.reference?null:srcTile(id),from=cur?rectOf(cur):null;
   const op=getComputedStyle(vbg).opacity;V.bgAnim?.cancel();
   vbg.animate([{opacity:op},{opacity:0}],{duration:D(260),easing:E.std,fill:"forwards"});vbg.style.opacity="0";
   $$(".v-top,.v-actions",vw).forEach(e=>e.animate([{opacity:1},{opacity:0}],{duration:D(120),fill:"forwards"}).finished.then(a=>a.cancel()));
-  app.classList.remove("dark-sb");
-  const g=V.gen,finish=()=>{if(V.gen!==g||V.open)return;vw.classList.remove("open");StudioZoom.reset();track.innerHTML="";placeToast();if($("#page .top")&&!topScreen())refresh();};
+  const g=V.gen,finish=()=>{if(V.gen!==g||V.open)return;releaseReferenceOwners();vw.classList.remove("open","reference-preview");V.reference=null;app.classList.remove("dark-sb");StudioChrome.leaveViewer();StudioZoom.reset();track.innerHTML="";placeToast();if($("#page .top")&&!topScreen())refresh();};
   if(!zoomed&&tile&&from&&!RM){cur.style.visibility="hidden";tile.style.visibility="hidden";
     fly(from,rectOf(tile),src(img(id)),320,3,12,vw).then(()=>{tile.style.visibility="";finish();});}
   else if(visual)visual.animate(zoomed?[{opacity:1},{opacity:0}]:[{opacity:1,transform:visual.style.transform||"none"},{opacity:0,transform:"scale(.9)"}],{duration:D(220),easing:E.exit,fill:"forwards"}).finished.then(finish);
   else finish();
 }
-let finishSlide=null,viewerFrame=null;
+let finishSlide=null,viewerFrame=null,tapTimer=null,lastTap=null;
+function viewerTap(e){
+  const t=performance.now(),p={clientX:e.clientX,clientY:e.clientY};
+  if(lastTap&&t-lastTap.t<280&&Math.hypot(p.clientX-lastTap.clientX,p.clientY-lastTap.clientY)<32){clearTimeout(tapTimer);tapTimer=null;lastTap=null;StudioZoom.toggleAt(p);return;}
+  lastTap={...p,t};clearTimeout(tapTimer);
+  tapTimer=setTimeout(()=>{tapTimer=null;lastTap=null;if(V.open&&!V.redraw)vw.classList.toggle("chrome-off");},260);
+}
 function slideTo(dir,dx=0,velocity=0){
   const W=app.offsetWidth+20,target=-dir*W,generation=V.gen;
   const animation=track.animate([{transform:`translate3d(${dx}px,0,0)`},{transform:`translate3d(${target}px,0,0)`}],{duration:D(clamp(Math.abs(target-dx)/Math.max(1.4,Math.abs(velocity)),140,260)),easing:E.emph});
@@ -481,7 +519,7 @@ stage.addEventListener("pointermove",e=>{
 });
 const dragEnd=e=>{
   if(V.redraw){if(e.pointerType!=="touch"){if(e.type==="pointercancel")selCancel();else selEnd();}return;}if(!drag||e.pointerId!==drag.pointer)return;if(viewerFrame!==null)cancelAnimationFrame(viewerFrame);paintViewerDrag();const d=drag;cancelViewerDrag();
-  if(!d.axis){if(e.type!=="pointercancel"&&performance.now()-d.t<350)vw.classList.toggle("chrome-off");return;}
+  if(!d.axis){if(e.type!=="pointercancel"&&performance.now()-d.t<350)viewerTap(e);return;}
   if(d.axis==="x"){const velocity=performance.now()-d.lastT<90?d.velocity:0,advance=Math.abs(d.dx)>64||Math.abs(d.dx)>24&&Math.abs(velocity)>.35&&Math.sign(velocity)===Math.sign(d.dx);
     if(e.type!=="pointercancel"&&advance&&d.dx<0&&V.i<V.list.length-1)slideTo(1,d.dx,velocity);else if(e.type!=="pointercancel"&&advance&&d.dx>0&&V.i>0)slideTo(-1,d.dx,velocity);
     else{track.animate([{transform:`translate3d(${d.dx}px,0,0)`},{transform:"none"}],{duration:D(180),easing:E.emph});track.style.transform="";}}
@@ -538,8 +576,9 @@ function renderRegions(){
 function renderChips(){const box=$("#rd-chips"),n=V.regions.length;box.style.display=n?"flex":"none";
   box.innerHTML=V.regions.map((g,i)=>{const ok=(V.shared?V.sharedText:g.text).trim();return `<button class="rd-chip${i===V.active?" on":""}" data-act="rd-pick" data-i="${i}">#${i+1}${ok?icon("check",13):""}</button>`;}).join("");}
 function updDim(tmp){let d=$("#rd-dim");const list=[...V.regions,...(tmp?[tmp]:[])];if(!list.length){d?.remove();return;}
-  const W=app.offsetWidth,H=app.offsetHeight;
+  const W=app.offsetWidth,H=viewerHeight();
   if(!d){d=document.createElementNS("http://www.w3.org/2000/svg","svg");d.id="rd-dim";d.setAttribute("class","rd-dim");d.innerHTML='<path fill-rule="evenodd" fill="rgba(0,0,0,.5)"/>';stage.append(d);}
+  d.style.width=W+"px";d.style.height=H+"px";
   d.setAttribute("viewBox",`0 0 ${W} ${H}`);d.firstChild.setAttribute("d",`M0 0H${W}V${H}H0Z`+list.map(g=>`M${g.x} ${g.y}h${g.w}v${g.h}h${-g.w}Z`).join(""));}
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 function local(e){const a=app.getBoundingClientRect(),s=sc();return{x:(e.clientX-a.left)/s,y:(e.clientY-a.top)/s};}
@@ -614,8 +653,10 @@ app.addEventListener("click",async e=>{
   const a=e.target.closest("[data-act]");if(!a)return;
   if(lpFired){lpFired=false;if(a.dataset.act==="img")return;}
   const k=a.dataset.act,id=a.dataset.id;
+  if(k==="img"&&img(id))StudioChrome.enterViewer();
   if(await StudioService.action(k,a,e))return;
   switch(k){
+    case"reference-select":{const choice=V.reference,selected=V.list[V.i];if(V.open&&choice?.onSelect&&!choice.pending){choice.pending=true;a.disabled=true;await back();await choice.onSelect(selected);}break;}
     case"tab":go(a.dataset.tab);break;
     case"clear-all":{const c=S.composer,snap={prompt:c.prompt,refs:[...c.refs],template:c.template,ack:c.ack},ta=$("#prompt");
       const apply=()=>{Object.assign(c,{prompt:"",refs:[],template:null,ack:false});if(ta)ta.value="";refresh();};
@@ -757,7 +798,8 @@ function openSettings(section){
 }
 let savedT;
 function settingChanged(...args){return StudioService.settingChanged(...args);}
-function applyMotion(){const m=S.settings.motion;RM=m==="reduce"||(m==="system"&&sysRM);document.documentElement.classList.toggle("rm",RM);}
+function applyMotion(){const m=S.settings.motion;RM=m==="reduce"||(m==="system"&&systemMotion.matches);document.documentElement.classList.toggle("rm",RM);document.documentElement.dataset.motion=m;}
+if(systemMotion.addEventListener)systemMotion.addEventListener("change",applyMotion);else systemMotion.addListener?.(applyMotion);
 function promptEditor(k){const [title,vars]=PROMPT_META[k];
   openSheet({title,html:`<textarea class="input mono" id="pe-text" rows="8">${esc(S.settings.prompts[k])}</textarea>
     <div class="var-chips">${vars.map(v=>`<button type="button" data-act="pe-var">${v}</button>`).join("")}</div>
@@ -802,4 +844,5 @@ function fxSel(el=topScreen()){
 function fxSubmit(...args){return StudioService.fxSubmit(...args);}
 
 // Real data boot is owned by studio-service.js. No simulated jobs or timers.
+applyMotion();
 hydrateIcons();
