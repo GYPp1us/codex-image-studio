@@ -289,3 +289,112 @@ class TaskProgressTests(unittest.TestCase):
         self.assertTrue(projected['indeterminate'])
         self.assertIsNone(projected.get('percent'))
         self.assertIsNone(projected.get('fraction'))
+
+    def test_upscale_retry_keeps_checkpoint_timeline_visible_while_queued(self):
+        jid = self.studio.create_jobs(self.studio.JobInput(prompt='retry progress fixture', source_asset_id=self.asset['id'], stitch=16))['ids'][0]
+        completed = [{'index': 1, 'state': 'done', 'checkpoint': True}]
+        detail = {'stage': 'redraw', 'level': 2, 'levels': 2, 'fraction': .6, 'children': completed,
+                  'level_states': {'1': {'index': 1, 'status': 'succeeded', 'tiles': completed, 'phases': {}},
+                                   '2': {'index': 2, 'status': 'failed', 'tiles': completed, 'phases': {}}}}
+        self.studio.write("UPDATE jobs SET status='failed',progress_detail=? WHERE id=?", (json.dumps(detail), jid))
+        from stitch_engine import save_json
+        from stitch_planner import progressive_plan
+        manifest = progressive_plan(256, 192, 16)
+        for stage in manifest['stages']:
+            stage['status'] = 'succeeded' if stage['index'] == 1 else 'failed'
+            stage['progress'] = detail['level_states'][str(stage['index'])]
+        root = self.studio.DATA / 'jobs' / jid / 'stitch'
+        root.mkdir(parents=True)
+        save_json(root / 'progressive.json', manifest)
+        before = self.client.get('/api/jobs/' + jid).json()['progress']
+        self.assertEqual(len(before['timeline']), 2)
+        response = self.client.post('/api/jobs/' + jid + '/retry', headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        queued = self.client.get('/api/jobs/' + jid).json()
+        self.assertEqual(queued['status'], 'queued')
+        self.assertEqual(queued['progress'].get('children'), completed)
+        self.assertEqual([level['index'] for level in queued['progress'].get('timeline', [])], [1, 2])
+        recorded = json.loads((root / 'progressive.json').read_text(encoding='utf-8'))
+        self.assertEqual([stage['status'] for stage in recorded['stages']], ['succeeded', 'queued'])
+        self.assertEqual([stage['progress'] for stage in recorded['stages']], queued['progress']['timeline'])
+
+    def test_selected_redraw_resets_only_selected_tile_and_retains_peer_progress(self):
+        from stitch_engine import save_json
+        from stitch_planner import progressive_plan, execution_plan
+        image = io.BytesIO()
+        Image.new('RGB', (1024, 1024), 'white').save(image, 'PNG')
+        source = self.client.post('/api/assets', files={'file': ('source-large.png', image.getvalue(), 'image/png')}, headers=self.headers).json()['asset']
+        jid = self.studio.create_jobs(self.studio.JobInput(prompt='selected retry fixture', source_asset_id=source['id'], stitch=4))['ids'][0]
+        manifest = progressive_plan(1024, 1024, 4)
+        stage = manifest['stages'][0]
+        stage.update(status='failed', folder='stages/01-' + 'd' * 16)
+        plan = execution_plan(stage)
+        self.assertGreaterEqual(len(plan['tiles']), 2)
+        root = self.studio.DATA / 'jobs' / jid / 'stitch'
+        folder = root / stage['folder']
+        (folder / 'redraw').mkdir(parents=True)
+        (folder / 'diagnostics').mkdir()
+        for tile in plan['tiles']:
+            Image.new('RGB', (8, 8), 'blue').save(folder / 'redraw' / f"{tile['index']}.png")
+        save_json(folder / 'plan.json', plan)
+        save_json(root / 'progressive.json', manifest)
+        children = [{'index': t['index']+1, 'state': 'done', 'checkpoint': True} for t in plan['tiles']]
+        state = {'index': 1, 'status': 'failed', 'tiles': children, 'phases': {'redraw': {'status': 'succeeded'}}}
+        detail = {'stage': 'inspection', 'level': 1, 'levels': 1, 'fraction': .8,
+                  'children': children, 'level_states': {'1': state}}
+        self.studio.write("UPDATE jobs SET status='failed',progress_detail=? WHERE id=?", (json.dumps(detail), jid))
+        selected = plan['tiles'][0]['index']
+        with patch('upscale_diagnostics.render', return_value={'tiles': [{'index': selected, 'reason': 'fixture'}]}):
+            response = self.client.post(f'/api/upscale/jobs/{jid}/redraw', json={'level': 1, 'tiles': [selected], 'repair_request': 'fixture'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        result = self.client.get('/api/jobs/' + jid).json()
+        current = {part['index']: part for part in result['progress']['children']}
+        self.assertEqual(current[selected+1]['state'], 'queued')
+        self.assertFalse(current[selected+1]['checkpoint'])
+        for tile in plan['tiles'][1:]:
+            self.assertEqual(current[tile['index']+1]['state'], 'done')
+            self.assertTrue(current[tile['index']+1]['checkpoint'])
+        self.assertEqual(result['progress']['timeline'][0]['status'], 'queued')
+        stored_manifest = json.loads((root / 'progressive.json').read_text(encoding='utf-8'))
+        self.assertEqual(stored_manifest['stages'][0]['progress'], result['progress']['timeline'][0])
+        self.assertEqual(stored_manifest['stages'][0]['status'], 'pending')
+
+    def test_selecting_an_earlier_level_shows_its_requeued_progress(self):
+        from task_progress import restart_detail
+        level1 = [{'index': 1, 'state': 'done', 'checkpoint': True}, {'index': 2, 'state': 'done', 'checkpoint': True}]
+        level2 = [{'index': 1, 'state': 'done', 'checkpoint': True}]
+        detail = {'level': 2, 'levels': 2, 'children': level2, 'level_states': {
+            '1': {'index': 1, 'status': 'succeeded', 'tiles': level1, 'phases': {}},
+            '2': {'index': 2, 'status': 'failed', 'tiles': level2, 'phases': {}}}}
+        job = {'options': {'stitch': 16}, 'progress_detail': json.dumps(detail)}
+        queued = restart_detail(job, {'level': 1, 'tiles': [0]})
+        self.assertEqual(queued['level'], 1)
+        self.assertEqual(queued['children'][0]['state'], 'queued')
+        self.assertEqual(queued['children'][1]['state'], 'done')
+        self.assertEqual(queued['level_states']['2']['tiles'][0]['state'], 'queued')
+
+    def test_retry_after_clearing_cache_discards_stale_checkpoint_progress(self):
+        from stitch_engine import save_json
+        from stitch_planner import progressive_plan
+        jid = self.studio.create_jobs(self.studio.JobInput(prompt='cleared progress fixture', source_asset_id=self.asset['id'], stitch=4))['ids'][0]
+        tiles = [{'index': 1, 'state': 'done', 'checkpoint': True}]
+        detail = {'stage': 'redraw', 'level': 1, 'levels': 1, 'fraction': .5, 'children': tiles,
+                  'level_states': {'1': {'index': 1, 'status': 'failed', 'tiles': tiles, 'phases': {}}}}
+        self.studio.write("UPDATE jobs SET status='failed',progress_detail=? WHERE id=?", (json.dumps(detail), jid))
+        root = self.studio.DATA / 'jobs' / jid / 'stitch'
+        folder = root / 'stages' / ('01-' + 'e' * 16) / 'redraw'
+        folder.mkdir(parents=True)
+        Image.new('RGB', (8, 8), 'blue').save(folder / '0.png')
+        manifest = progressive_plan(256, 192, 4)
+        manifest['stages'][0].update(status='failed', folder='stages/01-' + 'e' * 16, progress=detail['level_states']['1'])
+        save_json(root / 'progressive.json', manifest)
+        cleared = self.client.post(f'/api/upscale/jobs/{jid}/clear-cache', headers=self.headers)
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertFalse(folder.exists())
+        retry = self.client.post(f'/api/jobs/{jid}/retry', headers=self.headers)
+        self.assertEqual(retry.status_code, 200, retry.text)
+        queued = self.client.get('/api/jobs/' + jid).json()
+        self.assertEqual(queued['status'], 'queued')
+        self.assertFalse(queued['progress'].get('children'))
+        self.assertFalse(queued['progress'].get('timeline'))
+        self.assertEqual(queued['progress']['percent'], 0)

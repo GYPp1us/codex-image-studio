@@ -201,7 +201,13 @@ def register(app,studio):
                 if stage['index']==body.level:repair_budget(stage,plan,len(indices));save_json(folder/'plan.json',plan)
             manifest.update(status='queued');manifest.pop('actual_size',None);manifest.pop('error',None)
             refresh_totals(manifest);save_json(root_for(studio,jid)/'progressive.json',manifest)
-            studio.write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',finished=NULL,started=NULL,stage='',progress_detail='{}' WHERE id=?",(json.dumps(options),jid))
+            from task_progress import restart_detail
+            progress_detail=restart_detail(job,{'level':body.level,'tiles':indices})
+            for stage in manifest['stages']:
+                state=progress_detail.get('level_states',{}).get(str(stage['index']))
+                if state:stage['progress']=state
+            save_json(root_for(studio,jid)/'progressive.json',manifest)
+            studio.write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',finished=NULL,started=NULL,stage='',progress_detail=? WHERE id=?",(json.dumps(options),json.dumps(progress_detail),jid))
             studio.STORAGE.invalidate();studio.WAKE.set()
         return {'ok':True,'tiles':indices,'expected_images':len(indices),'expected_reviews':1}
 

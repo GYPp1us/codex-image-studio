@@ -1244,7 +1244,20 @@ async def retry_job(jid: str, session=Depends(require_user)):
         if j["status"] not in ("failed", "cancelled"):
             raise HTTPException(409, "只有失败或取消的任务可以重试；再次抽卡请使用重新生成")
         options=json.loads(j["options"]);options.pop("repair_selection",None)
-        write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail='{}' WHERE id=?", (json.dumps(options),jid))
+        from task_progress import restart_detail
+        detail=restart_detail(j)
+        if options.get('stitch'):
+            from upscale_api import load_manifest,root_for
+            manifest=load_manifest(sys.modules[__name__],jid)
+            if manifest and manifest.get('cache_cleared'):detail={}
+            elif manifest:
+                from stitch_engine import save_json
+                for stage in manifest['stages']:
+                    state=detail.get('level_states',{}).get(str(stage['index']))
+                    if state:stage.update(progress=state,status=state['status'])
+                manifest.update(status='queued');manifest.pop('error',None)
+                save_json(root_for(sys.modules[__name__],jid)/'progressive.json',manifest)
+        write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail=? WHERE id=?", (json.dumps(options),json.dumps(detail),jid))
         WAKE.set()
         return {"ok": True}
 

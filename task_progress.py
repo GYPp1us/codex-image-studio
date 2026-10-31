@@ -38,6 +38,51 @@ def call_fraction(item):
     return (CALL_STAGES.index(stage) + .5) / 4 if stage in CALL_STAGES else 0.0
 
 
+def restart_detail(job, selection=None):
+    """Keep successful checkpoints visible while a retry is queued.
+
+    Invalidated tiles and their downstream phases are reset explicitly. Failed
+    calls become queued work, rather than remaining red in the new attempt.
+    """
+    detail=mapping(job.get('progress_detail'))
+    def reset(items, selected=None):
+        for item in items:
+            invalid=selected is not None and item.get('index',0)-1 in selected
+            state=item.get('state',item.get('status'))
+            if invalid or state not in ('done','succeeded'):
+                key='state' if 'state' in item else 'status'
+                item.update({key:'queued','stage':'queued','checkpoint':False,'label':'等待重试'})
+                item.pop('error',None)
+        return items
+    if mapping(job.get('options')).get('stitch'):
+        from stitch_engine import PHASES
+        states=detail.get('level_states',{})
+        for key,state in states.items():
+            level=int(key);invalid_level=selection and level>=selection['level']
+            if state.get('status')=='succeeded' and not invalid_level:continue
+            chosen=set(selection['tiles']) if selection and level==selection['level'] else None
+            if selection and level>selection['level']:chosen={t.get('index',0)-1 for t in state.get('tiles',[])}
+            state['tiles']=reset(state.get('tiles',[]),chosen)
+            phases=state.get('phases',{})
+            phases={phase:value for phase,value in phases.items() if value.get('status')=='succeeded' and (not invalid_level or phase in ('base','cutting'))}
+            if selection and level>selection['level']:phases={}
+            state.update(status='queued',phases=phases)
+            state.pop('error',None)
+            work=sum(1 for phase in PHASES if phase!='redraw' and phases.get(phase,{}).get('status')=='succeeded')
+            work+=sum(call_fraction(t) for t in state['tiles'])/max(1,len(state['tiles']))
+            state['fraction']=work/len(PHASES)
+        if selection:detail['level']=selection['level']
+        current=states.get(str(detail.get('level',1)),{})
+        detail.update(children=current.get('tiles',[]),fraction=sum(s.get('fraction',0) for s in states.values())/max(1,detail.get('levels',1)))
+    elif mapping(job.get('options')).get('regions'):
+        detail['regions']=reset(detail.get('regions',[]));detail['composing']=False
+        if detail.get('composition',{}).get('status')!='succeeded':detail['composition']={'status':'queued','done':0,'units':len(detail['regions'])}
+    else:return {}
+    detail.update(waiting=False,active=0,source='server',stage='checkpoint_wait')
+    for key in ('error','substage'):detail.pop(key,None)
+    return detail
+
+
 def project(job, paused=False):
     status = job.get('status', 'queued')
     options, detail = mapping(job.get('options')), mapping(job.get('progress_detail'))
