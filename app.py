@@ -904,7 +904,7 @@ class JobInput(BaseModel):
     template_id: str | None = Field(default=None, max_length=64)
 
 
-def serialize_job(j):
+def serialize_job(j,full=False):
     j = dict(j)
     j["refs"] = json.loads(j["refs"])
     j["options"] = json.loads(j["options"])
@@ -916,6 +916,11 @@ def serialize_job(j):
     j["references"] = [serialize_asset(a) for aid in j["refs"] if (a := query("SELECT * FROM assets WHERE id=?", (aid,), True))]
     j["progress"] = job_progress(j)
     j['has_polished_prompt']=bool(j.pop('polished_prompt',''))
+    if not full:
+        frozen=j['options'].pop('upscale_prompts',None)
+        if frozen:j['options']['upscale_prompt_summary']={key:frozen.get(key) for key in ('schema','revision','policy')}
+        for key in ('call_prompt','redraw_call_prompt','stitch_prompt','source_description','repair_scopes'):j['options'].pop(key,None)
+        j.pop('progress_detail',None)
     return j
 
 
@@ -1203,7 +1208,7 @@ def get_job(jid: str, session=Depends(require_user)):
     if request_file.is_file():
         with contextlib.suppress(OSError, ValueError):
             instruction = json.loads(request_file.read_text(encoding="utf-8")).get("worker_instruction", "")
-    value=serialize_job(j);options=value['options'];source=None
+    value=serialize_job(j,full=True);options=value['options'];source=None
     if aid:=options.get('source_asset_id'):
         source=serialize_asset(query('SELECT * FROM assets WHERE id=?',(aid,),True))
     elif options.get('stitch'):

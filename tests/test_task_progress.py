@@ -398,3 +398,50 @@ class TaskProgressTests(unittest.TestCase):
         self.assertFalse(queued['progress'].get('children'))
         self.assertFalse(queued['progress'].get('timeline'))
         self.assertEqual(queued['progress']['percent'], 0)
+
+    def test_list_jobs_are_lightweight_but_keep_progress_and_task_controls(self):
+        jid = self.studio.create_jobs(self.studio.JobInput(prompt='lightweight fixture', source_asset_id=self.asset['id'],
+            stitch=4, upscale_requirements='LIGHT-REQUIREMENT'))['ids'][0]
+        row = self.studio.query('SELECT options FROM jobs WHERE id=?', (jid,), True)
+        options = json.loads(row['options'])
+        options['upscale_prompts']['templates']['tile'] += 'LARGE-TEMPLATE-MARKER' * 1000
+        options['source_description'] = 'HISTORY-MARKER' * 500
+        options['repair_scopes'] = [{'id':'fixture','level':1,'tiles':[0],'request':'REPAIR-SECRET-MARKER'}]
+        options['redraw_call_prompt'] = 'REDRAW-PROTOCOL-MARKER' * 500
+        self.studio.write('UPDATE jobs SET options=? WHERE id=?', (json.dumps(options), jid))
+        detail = self.client.get('/api/jobs/' + jid).json()
+        snapshot = self.client.get(f'/api/upscale/jobs/{jid}/prompt-snapshot').json()
+        self.assertEqual(detail['options']['upscale_prompts'], options['upscale_prompts'])
+        self.assertEqual(snapshot['snapshot'], options['upscale_prompts'])
+        self.assertEqual(detail['options']['source_description'], options['source_description'])
+        self.assertEqual(detail['options']['repair_scopes'], options['repair_scopes'])
+        sources = [self.client.get('/api/jobs?limit=100').json()['items'],
+                   [job for batch in self.client.get('/api/batches?limit=100').json()['items'] for job in batch['jobs']],
+                   self.client.get('/api/upscale/jobs?limit=100').json()['items']]
+        for rows in sources:
+            job = next(item for item in rows if item['id'] == jid)
+            payload = json.dumps(job, ensure_ascii=False)
+            self.assertNotIn('LARGE-TEMPLATE-MARKER', payload)
+            self.assertNotIn('HISTORY-MARKER', payload)
+            self.assertNotIn('REPAIR-SECRET-MARKER', payload)
+            self.assertNotIn('REDRAW-PROTOCOL-MARKER', payload)
+            self.assertNotIn('progress_detail', job)
+            self.assertEqual(job['progress'], detail['progress'])
+            self.assertEqual(job['options']['stitch'], 4)
+            self.assertEqual(job['options']['upscale_requirements'], 'LIGHT-REQUIREMENT')
+            self.assertEqual(job['options']['upscale_prompt_summary']['revision'], options['upscale_prompts']['revision'])
+
+    def test_legacy_list_remains_light_and_detail_retains_original_fields(self):
+        jid = self.studio.create_jobs(self.studio.JobInput(prompt='legacy lightweight fixture', source_asset_id=self.asset['id'], stitch=4))['ids'][0]
+        options = json.loads(self.studio.query('SELECT options FROM jobs WHERE id=?', (jid,), True)['options'])
+        options.pop('upscale_prompts', None)
+        options['stitch_prompt'] = 'LEGACY-SYSTEM-TEMPLATE'
+        self.studio.write('UPDATE jobs SET options=? WHERE id=?', (json.dumps(options), jid))
+        detail = self.client.get('/api/jobs/' + jid).json()
+        listed = next(item for item in self.client.get('/api/jobs?limit=100').json()['items'] if item['id'] == jid)
+        snapshot = self.client.get(f'/api/upscale/jobs/{jid}/prompt-snapshot').json()
+        self.assertEqual(detail['options']['stitch_prompt'], 'LEGACY-SYSTEM-TEMPLATE')
+        self.assertNotIn('stitch_prompt', listed['options'])
+        self.assertFalse(snapshot['available'])
+        self.assertIsNone(snapshot['snapshot'])
+        self.assertEqual(listed['progress'], detail['progress'])
