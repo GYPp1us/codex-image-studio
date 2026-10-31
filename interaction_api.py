@@ -36,6 +36,8 @@ class UpscaleDefaults(BaseModel):
     auto_select: bool = True
     factor: Literal[4, 16, 64] = 4
     default_injection: str = Field(default='', max_length=12000)
+    append_system: bool = True
+    include_source_context: bool = False
 
 
 class Appearance(BaseModel):
@@ -83,7 +85,8 @@ def enqueue_after_upscale(studio, connection, parent, asset):
         return
     jid = studio.uid()
     child = {**options, 'after_upscale': 0, 'stitch': factor, 'source_asset_id': asset['id'],
-             'parent_job_id': parent['id'], 'polish': False, 'ratio': 'auto', 'size': 'auto'}
+             'parent_job_id': parent['id'], 'polish': False, 'ratio': 'auto', 'size': 'auto',
+             'source_description': parent.get('polished_prompt') or parent['prompt']}
     for key in ('regions', 'region', 'quick_edit', 'requested_size'):
         child.pop(key, None)
     connection.execute("INSERT INTO jobs(id,batch_id,prompt,refs,options,status,max_attempts,created,collection_id,template_id) "

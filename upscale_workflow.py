@@ -13,10 +13,13 @@ from pathlib import Path
 from call_errors import authentication_status_error
 
 import image_runtime as imaging
+import upscale_prompts
 from stitch_engine import REGISTRATION_VERSION, save_json,alignment_current
 from stitch_planner import Policy, execution_plan, progressive_plan, public_plan, split_tile
 from stitch_workflow import (DEFAULT_STITCH_PROMPT, WorkflowError, cli_call, engine,
                              ensure_active, normalize_redraw_prompt, progress, tile_instruction,apply_local_repairs)
+from task_progress import call_stage
+from stitch_workflow import finish_progress
 
 
 def link_or_copy(source,destination):
@@ -37,6 +40,10 @@ class LevelStudio:
         calls=self.stage.setdefault('calls',{'images':0,'reviews':0})
         key='images' if image else 'reviews';calls[key]+=1
         refresh_totals(self.manifest)
+        save_json(self.path,self.manifest)
+
+    def record_level_progress(self,value):
+        self.stage['progress']=value
         save_json(self.path,self.manifest)
 
 
@@ -81,44 +88,60 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
 
     async def redraw(tile):
         index=tile['index'];output=folder/'redraw'/f'{index}.png'
-        states[index]={'index':index+1,'state':'queued','label':'等待并发名额'}
+        provenance=folder/'redraw'/f'{index}.prompt.json'
+        modern=upscale_prompts.is_versioned(options)
+        repair=upscale_prompts.repair_for(options,stage['index'],index)
+        identity={'execution':upscale_prompts.execution_identity(options),'tile':tile,'repair_id':repair.get('id') if repair else None} if modern else None
+        states[index]={'index':index+1,'state':'queued','stage':'queued','label':'等待并发名额'}
         def changed(label,active,source):
-            states[index].update(state='running' if active else 'queued',label=label);publish()
+            states[index].update(state='running' if active else 'queued',stage=call_stage(label,active,states[index].get('stage')),label=label,source=source);publish()
         if selected is not None and index not in selected:
-            states[index].update(state='done' if output.exists() else 'missing',label='保留未选中的块' if output.exists() else '未选择重绘');publish();return None
+            states[index].update(state='done' if output.exists() else 'missing',stage='receiving' if output.exists() else 'queued',checkpoint=output.exists(),label='保留未选中的块' if output.exists() else '未选择重绘');publish();return None
         if output.exists():
             try:
+                if modern and (not provenance.is_file() or json.loads(provenance.read_text(encoding='utf-8')).get('identity')!=identity):
+                    raise ValueError('图块指令版本与检查点不一致')
                 measured=imaging.assess_return(output,tile['size'])
-                if measured.decision=='accept':states[index].update(state='done',label='已复用');publish();return None
+                if measured.decision=='accept':states[index].update(state='done',stage='receiving',checkpoint=True,label='已复用');publish();return None
             except (ValueError,OSError):output.unlink(missing_ok=True)
         error=feedback.get(str(index),'')
         for attempt in range(attempts.get(index,0),maximum):
             attempts[index]=attempt+1
             ensure_active(studio,jid)
             studio.STORAGE.require(sum((folder/name).stat().st_size for name in (f'crops/{index}.png','reference-full.png'))+16*1024*1024,'执行补绘')
-            brief=tile_instruction(options,plan,tile,job['prompt'])+'\n修复参考图中不自然的断线、重影和拼接痕迹，保持其它画面结构。'
-            if error:brief+='\n上次返回不符合要求：'+error+'。请保持完整画幅，不裁剪、不添加边框。'
-            call_options={**options,'polish':False,'size':'auto','ratio':'auto',
-                          'call_prompt':options.get('redraw_call_prompt',studio.DEFAULT_CALL_PROMPT)}
-            instruction=studio.make_instruction({'prompt':brief,'refs':'["crop","full"]','options':json.dumps(call_options)},folder)
+            compiled=None
+            if modern:
+                compiled=upscale_prompts.compile_image(options,plan,tile,options.get('source_description',''),stage['index'],error)
+                instruction=compiled['worker_instruction']
+            else:
+                brief=tile_instruction(options,plan,tile,job['prompt'])+'\n修复参考图中不自然的断线、重影和拼接痕迹，保持其它画面结构。'
+                if repair and repair.get('request'):brief+='\n'+upscale_prompts.render(repair['template'],{'repair_request':repair['request'],'level':stage['index'],'tile_index':index+1,'bounds':str(tile['box'])})
+                if error:brief+='\n上次返回不符合要求：'+error+'。请保持完整画幅，不裁剪、不添加边框。'
+                call_options={**options,'polish':False,'size':'auto','ratio':'auto',
+                              'call_prompt':options.get('redraw_call_prompt',studio.DEFAULT_CALL_PROMPT)}
+                instruction=studio.make_instruction({'prompt':brief,'refs':'["crop","full"]','options':json.dumps(call_options)},folder)
             try:
                 result=await cli_call(proxy,jid,folder,f'tile-{index}-{token}-{attempt+1}',instruction,
                                       [folder/'crops'/f'{index}.png',folder/'reference-full.png'],model,effort,
-                                      'redraw',0,len(plan['tiles']),on_progress=changed,expected_size=tile['size'])
+                                      'redraw',0,len(plan['tiles']),on_progress=changed,expected_size=tile['size'],prompt_metadata=compiled)
                 measured=imaging.assess_return(result,tile['size'])
                 save_json(folder/'diagnostics'/f'return-{index}.json',measured.json())
                 if measured.decision=='retry':error=measured.reason;continue
                 studio.STORAGE.require(Path(result).stat().st_size,'保存补绘检查点')
                 destination=output if measured.decision=='accept' else folder/'redraw'/f'rejected-{index}.png'
                 shutil.copyfile(result,destination)
+                if modern and destination==output:save_json(provenance,{'identity':identity,'call':f'tile-{index}-{token}-{attempt+1}','snapshot_revision':compiled['snapshot_revision'],'scope':compiled['scope']})
                 if Path(result).resolve().is_relative_to(studio.CODEX_HOME.resolve()/'generated_images'):
                     Path(result).unlink(missing_ok=True)
                 if measured.decision=='split':
                     states[index].update(state='split',label='原生尺寸不足，细分');publish();return index
-                states[index].update(state='done',label=f'{measured.actual[0]}×{measured.actual[1]} 已返回');publish();return None
+                states[index].update(state='done',stage='receiving',checkpoint=True,label=f'{measured.actual[0]}×{measured.actual[1]} 已返回');publish();return None
+            except asyncio.CancelledError:
+                states[index].update(state='cancelled',label='本次调用已停止');publish();raise
             except (WorkflowError,ValueError,OSError) as exc:
                 error=str(exc)
-                if authentication_status_error(error) or re.search(r'unauthorized|authentication|quota|usage limit|policy|moderation|unavailable|not supported',error,re.I):raise
+                if authentication_status_error(error) or re.search(r'unauthorized|authentication|quota|usage limit|policy|moderation|unavailable|not supported',error,re.I):
+                    states[index].update(state='failed',error=error,label=error[:160]);publish();raise
         states[index].update(state='failed',label='返回不符合要求');publish()
         raise WorkflowError(f'第 {index+1} 块达到尝试上限：{error}')
 
@@ -135,7 +158,10 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             for index in failed:
                 children=split_tile(plan,index)
                 if selected is not None:selected.discard(index);selected.update(t["index"] for t in children)
+                for scope in options.get('repair_scopes',[]):
+                    if scope.get('level')==stage['index'] and index in scope.get('tiles',[]):scope['tiles']=[i for i in scope['tiles'] if i!=index]+[t['index'] for t in children]
                 plan['adaptive_splits'][-1]['calls']=attempts.get(index,1)
+            studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
             sync_stage(stage,plan,maximum);refresh_totals(manifest)
             save_json(plan_file,plan);save_json(manifest_file,manifest)
             await engine(proxy,jid,folder,'prepare')
@@ -166,7 +192,8 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
         review_file=folder/'diagnostics'/'visual-review.json'
         review=json.loads(review_file.read_text(encoding='utf-8')) if review_file.exists() else None
         if not review or not review.get('pass'):
-            prompt='''STUDIO_STITCH_REVIEW
+            compiled_review=upscale_prompts.compile_review(options,plan,options.get('source_description',''),stage['index']) if upscale_prompts.is_versioned(options) else None
+            prompt=compiled_review['worker_instruction'] if compiled_review else '''STUDIO_STITCH_REVIEW
 执行局部视觉验收，不调用生图或任何工具。reference-1 为本级输入缩略图，reference-2 为结果缩略图，reference-3 是原生像素检查局部。
 检查主体姿态、相对位置和结构、断线、硬接缝、重影、空白、画布外沿异常镜像及光照不一致。允许超分增强纹理及细节，但不允许明显结构改变。
 这是整图超分与细节增强验收。先按相同画幅、归一化相对坐标比较，不能把分辨率或裁切差当作位移。原始要求明确删除的水印和文字应完整移除，残留水印和符号仍应指出；其余内容保留。
@@ -174,7 +201,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
 '''+json.dumps({'original_brief':job['prompt'],'upscale_injection':options.get('upscale_injection','')},ensure_ascii=False)
             text=await cli_call(proxy,jid,folder,f'inspection-{token}',prompt,
                                 [folder/'reference-full.png',folder/'overview.png',folder/'inspection.png'],
-                                model,effort,'inspection',0,1,image=False)
+                                model,effort,'inspection',0,1,image=False,prompt_metadata=compiled_review)
             match=re.search(r'\{[\s\S]*\}',text)
             try:review=json.loads(match.group()) if match else None
             except ValueError:review=None
@@ -184,6 +211,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
         quality=json.loads((folder/'diagnostics'/'quality.json').read_text(encoding='utf-8'));quality['visual_review']=review
         save_json(folder/'diagnostics'/'quality.json',quality)
         if not review['pass']:raise WorkflowError('本级验收未通过：'+'；'.join(map(str,review['issues']))[:1600])
+        progress(proxy,jid,'receiving',1,1)
         returns=[json.loads(path.read_text(encoding='utf-8')) for path in (folder/'diagnostics').glob('return-*.json')]
         stage['return_stats']={'count':len(returns),'actual_sizes':[r['actual'] for r in returns],
                                'min_pixels':min((math.prod(r['actual']) for r in returns),default=0)}
@@ -205,7 +233,8 @@ async def run(studio,jid):
     (root/'calls').mkdir(exist_ok=True);manifest_file=root/'progressive.json';manifest=None
     studio.write("UPDATE jobs SET attempt=1,error='' WHERE id=? AND status='running'",(jid,))
     studio.write("INSERT INTO attempts(job_id,number,status,started) VALUES (?,1,'running',?)",(jid,time.time()))
-    save_json(root.parent/'request.json',{'options':options,'prompt':job['prompt'],'worker_instruction':normalize_redraw_prompt(options.get('stitch_prompt',DEFAULT_STITCH_PROMPT))})
+    save_json(root.parent/'request.json',{'options':options,'prompt':job['prompt'],'prompt_snapshot':options.get('upscale_prompts'),
+              'worker_instruction':None if upscale_prompts.is_versioned(options) else normalize_redraw_prompt(options.get('stitch_prompt',DEFAULT_STITCH_PROMPT))})
     try:
         progress(studio,jid,'base')
         base=root/'base.png';source_id=options.get('source_asset_id')
@@ -236,7 +265,8 @@ async def run(studio,jid):
         for stage in manifest['stages']:
             ensure_active(studio,jid)
             digest=await asyncio.to_thread(imaging.file_sha,source)
-            relative=f"stages/{stage['index']:02d}-{digest[:16]}"
+            cache_id=upscale_prompts.digest({'input':digest,'execution':upscale_prompts.execution_identity(options)}) if upscale_prompts.is_versioned(options) else digest
+            relative=f"stages/{stage['index']:02d}-{cache_id[:16]}"
             folder=root/relative;folder.mkdir(parents=True,exist_ok=True)
             stage.update(folder=relative,input_sha256=digest,status='running')
             manifest['active_folder']=relative;save_json(manifest_file,manifest)
@@ -250,12 +280,18 @@ async def run(studio,jid):
         studio.write("UPDATE jobs SET status='succeeded',outputs=?,finished=?,error='' WHERE id=? AND status='running'",(json.dumps([result['id']]),time.time(),jid))
         studio.write("UPDATE attempts SET status='succeeded',finished=? WHERE job_id=? AND status='running'",(time.time(),jid))
     except asyncio.CancelledError:
+        states=finish_progress(studio,jid,'cancelled')
+        if manifest:
+            for stage in manifest['stages']:
+                if str(stage['index']) in states:stage['progress']=states[str(stage['index'])]
         if manifest:manifest['status']='cancelled';save_json(manifest_file,manifest)
         if not studio.job_cancelled(jid):raise
     except Exception as error:
+        states=finish_progress(studio,jid,'failed',str(error))
         if manifest:
             manifest['status']='failed';manifest['error']=str(error)
             for stage in manifest['stages']:
+                if str(stage['index']) in states:stage['progress']=states[str(stage['index'])]
                 if stage['status']=='running':stage['status']='failed'
             refresh_totals(manifest);save_json(manifest_file,manifest)
         studio.write("UPDATE jobs SET status='failed',finished=?,error=? WHERE id=? AND status!='cancelled'",(time.time(),str(error)[:2400],jid))

@@ -11,6 +11,7 @@ from call_errors import authentication_status_error
 from local_edit import prepare, compose
 from stitch_engine import save_json
 from stitch_workflow import cli_call, ensure_active, WorkflowError
+from task_progress import call_stage
 
 
 async def run(studio, jid):
@@ -21,17 +22,18 @@ async def run(studio, jid):
     folder = studio.DATA / 'jobs' / jid
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_file = folder / 'regions.json'
-    state = {'regions': [{'index': i, 'status': 'queued', 'label': '等待处理'} for i in range(len(regions))]}
+    state = {'kind': 'regions', 'regions': [{'index': i, 'status': 'queued', 'stage': 'queued', 'label': '等待处理'} for i in range(len(regions))]}
     if state_file.exists():
         previous = json.loads(state_file.read_text(encoding='utf-8'))
         for index, item in enumerate(previous.get('regions', [])):
             if index < len(regions) and item.get('status') == 'succeeded' and (folder / 'regions' / str(index) / 'return.png').is_file():
-                state['regions'][index] = item
+                state['regions'][index] = {**item, 'stage': 'receiving', 'checkpoint': True}
     tasks = []
 
     def update(index=None, **changes):
         if index is not None:
             state['regions'][index].update(changes)
+        state.update(source='server', updated=time.time())
         save_json(state_file, state)
         studio.write("UPDATE jobs SET progress_detail=? WHERE id=? AND status!='cancelled'", (json.dumps(state), jid))
 
@@ -45,9 +47,9 @@ async def run(studio, jid):
         instruction = studio.make_instruction(request, work)
         for attempt in range(1, job['max_attempts'] + 1):
             ensure_active(studio, jid)
-            update(index, status='queued', attempt=attempt, error='', label='等待并发名额')
+            update(index, status='queued', stage='queued', checkpoint=False, attempt=attempt, error='', label='等待并发名额')
             def report(label, active, source):
-                update(index, status='running' if active else 'queued', label=label)
+                update(index, status='running' if active else 'queued', stage=call_stage(label, active, state['regions'][index].get('stage')), label=label, source=source)
             try:
                 studio.STORAGE.require(size[0] * size[1] * 4, '重绘区域')
                 result = await cli_call(studio, jid, work, f'region-{index}-{time.time_ns()}-try-{attempt}',
@@ -57,7 +59,7 @@ async def run(studio, jid):
                 temporary = work / 'return.tmp'
                 await asyncio.to_thread(shutil.copyfile, result, temporary)
                 temporary.replace(work / 'return.png')
-                update(index, status='succeeded', label='已完成')
+                update(index, status='succeeded', stage='receiving', checkpoint=True, label='已完成')
                 return
             except asyncio.CancelledError:
                 raise
@@ -82,6 +84,7 @@ async def run(studio, jid):
         if errors:
             raise WorkflowError(str(errors[0]))
         state['composing'] = True
+        state['composition'] = {'status': 'running', 'done': 0, 'units': len(regions)}
         update()
         source = Path(original['path'])
         for index, region in enumerate(regions):
@@ -93,11 +96,17 @@ async def run(studio, jid):
             if source.parent == folder and source.name.startswith('composed-'):
                 source.unlink(missing_ok=True)
             source = destination
+            state['composition']['done'] = index + 1
+            update()
         ensure_active(studio, jid)
         await asyncio.to_thread(studio.record_generated_image, jid, source)
         state['composing'] = False
+        state['composition']['status'] = 'succeeded'
         update()
     except asyncio.CancelledError:
+        if state.get('composing'):
+            state['composition']['status']='cancelled'
+            state['composing']=False
         for item in state['regions']:
             if item['status'] in ('queued', 'running'):
                 item.update(status='cancelled', label='已取消')
@@ -105,6 +114,10 @@ async def run(studio, jid):
         raise
     except Exception as error:
         detail = str(getattr(error, 'detail', error))[:2000]
+        if state.get('composing'):
+            state['composition'].update(status='failed',error=detail)
+            state['composing']=False
+            update()
         studio.write("UPDATE jobs SET status='failed',error=?,finished=? WHERE id=? AND status!='cancelled'", (detail, time.time(), jid))
         studio.write("UPDATE attempts SET status='failed',error=?,finished=? WHERE job_id=? AND status='running'", (detail, time.time(), jid))
     finally:

@@ -37,6 +37,7 @@ from storage_manager import Storage, StorageFull, tree_bytes
 from prompt_capture import extract as extract_polished_prompt,REPORT_INSTRUCTION
 from interaction_api import Appearance, GenerationDefaults, QuickDefaults, UpscaleDefaults, preferences, validate_regions, quick_model, enqueue_after_upscale
 import account_profile
+import upscale_prompts
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -478,7 +479,7 @@ def revoke_sessions(session=Depends(require_user)):
 
 @app.get("/api/call-settings")
 def call_settings(session=Depends(require_user)):
-    return {"call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "default_call_prompt": DEFAULT_CALL_PROMPT, "polish_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT), "default_polish_prompt": DEFAULT_POLISH_PROMPT, "stitch_prompt": setting("stitch_prompt", DEFAULT_STITCH_PROMPT), "default_stitch_prompt": DEFAULT_STITCH_PROMPT, "variables": ["{prompt}", "{ratio}", "{size}", "{transparent}", "{references}"]}
+    return {"call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "default_call_prompt": DEFAULT_CALL_PROMPT, "polish_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT), "default_polish_prompt": DEFAULT_POLISH_PROMPT, "stitch_prompt": setting("stitch_prompt", DEFAULT_STITCH_PROMPT), "default_stitch_prompt": DEFAULT_STITCH_PROMPT, "variables": ["{prompt}", "{ratio}", "{size}", "{transparent}", "{references}"]} | upscale_prompts.settings_payload(sys.modules[__name__])
 
 
 def model_catalog():
@@ -534,6 +535,7 @@ class Settings(BaseModel):
     quick: QuickDefaults | None = None
     upscale: UpscaleDefaults | None = None
     appearance: Appearance | None = None
+    upscale_system_prompts: upscale_prompts.PromptPatch | None = None
     motion: bool | None = None
     motion_mode: Literal['system', 'reduce', 'full'] | None = None
     notify: bool | None = None
@@ -547,8 +549,14 @@ def settings(body: Settings, session=Depends(require_user)):
     for template in (body.call_prompt, body.polish_prompt, body.stitch_prompt):
         if template is not None and "{prompt}" not in template:
             raise HTTPException(400, "调用提示词必须包含 {prompt} 变量")
+    updated_prompts=None
+    if body.upscale_system_prompts is not None:
+        updated_prompts=upscale_prompts.load_templates(sys.modules[__name__]) | body.upscale_system_prompts.model_dump(exclude_none=True,exclude_unset=True)
+        try:upscale_prompts.validate_templates(updated_prompts)
+        except ValueError as error:raise HTTPException(400,str(error)) from error
     for key, value in body.model_dump(exclude_none=True,exclude_unset=True).items():
         if key=='stitch_prompt':value=normalize_redraw_prompt(value)
+        if key=='upscale_system_prompts':value=updated_prompts
         set_setting(key, value)
     STORAGE.invalidate()
     WAKE.set()
@@ -879,6 +887,10 @@ class JobInput(BaseModel):
     stitch: Literal[0,4,16,64] = 0
     after_upscale: Literal[0,4,16,64] = 0
     upscale_injection: str = Field(default='',max_length=12000)
+    upscale_requirements: str | None = Field(default=None,max_length=12000)
+    source_description: str | None = Field(default=None,max_length=24000)
+    upscale_policy: upscale_prompts.PromptPolicy | None = None
+    expected_prompt_revision: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
     source_asset_id: str | None = Field(default=None, max_length=64)
     region: Rectangle | None = None
     regions: list[EditRegion] | None = Field(default=None,min_length=1,max_length=6)
@@ -911,35 +923,9 @@ STAGES = {"sending": "正在传递", "thinking": "主模型正在思考", "gener
 
 
 def job_progress(job):
-    status = job["status"]
-    options=job.get("options",{})
-    if isinstance(options,str):options=json.loads(options)
-    if options.get('regions'):
-        detail=json.loads(job.get('progress_detail') or '{}')
-        items=detail.get('regions') or [{'index':i,'status':'queued','label':'等待处理'} for i in range(len(options['regions']))]
-        done=sum(item['status']=='succeeded' for item in items)
-        label='正在合成结果' if detail.get('composing') else f'{done} / {len(items)} 个区域已完成'
-        if status in ('failed','cancelled','succeeded'):label={'failed':'部分区域失败，已保留完成的区域','cancelled':'已取消','succeeded':'区域重绘完成'}[status]
-        return {'regions':items,'stage':status,'label':label,'step':done,'total':len(items),'percent':round(done/len(items)*100),'indeterminate':status=='running','source':'server'}
-    if options.get("stitch"):
-        from stitch_engine import PHASES, LABELS
-        value=json.loads(job.get("progress_detail") or '{}')
-        value={"stage":"base","label":LABELS[0],"fraction":0,"step":1,"total":len(PHASES),"source":"server",**value}
-        value["indeterminate"]=bool(value.get("waiting"));value["factor"]=options['stitch'];value["stitch"]=True
-        if status=='succeeded':value.update(fraction=1,label='超分已完成',step=len(PHASES),waiting=False,indeterminate=False)
-        elif status in ('failed','cancelled','queued','retrying'):
-            value['label']={'failed':'超分失败，可从检查点重试','cancelled':'已取消','queued':'超分等待调度','retrying':'等待重试'}[status]
-            value.update(waiting=False,indeterminate=False)
-        value['percent']=max(0,min(100,round(value['fraction']*100)))
-        return value
-    terminal = {"queued": "等待调度", "retrying": "等待重试", "succeeded": "已完成", "failed": "生成失败", "cancelled": "已取消"}
-    if status != "running":
-        return {"stage": status, "label": terminal.get(status, status), "step": 4 if status == "succeeded" else 0, "total": 4, "indeterminate": False, "source": "server", "updated": job.get("stage_updated") or job.get("created",0)}
-    stage = job.get("stage") or "sending"
-    if stage=='call_wait':
-        return {"stage":stage,"label":"调度已暂停" if setting('paused',False) else "等待并发名额","step":0,"total":4,"indeterminate":False,"source":"server","updated":job.get('stage_updated',0)}
-    if stage not in STAGES: stage = "sending"
-    return {"stage": stage, "label": STAGES[stage], "step": list(STAGES).index(stage)+1, "total": 4, "indeterminate": True, "source": job.get("stage_source") or "server", "updated": job.get("stage_updated") or job.get("started",0)}
+    from task_progress import project
+    row=dict(job)
+    return project(row, paused=setting('paused', False) if row.get('stage')=='call_wait' else False)
 
 
 def set_job_stage(jid, stage, source="server"):
@@ -1011,6 +997,13 @@ def _create_jobs(body):
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
     options.update(stitch=body.stitch,after_upscale=body.after_upscale,source_asset_id=body.source_asset_id,upscale_injection=body.upscale_injection,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch or body.after_upscale else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch or body.after_upscale else '')
+    if body.stitch or body.after_upscale:
+        frozen=upscale_prompts.snapshot(sys.modules[__name__],body.upscale_policy)
+        if body.expected_prompt_revision and body.expected_prompt_revision!=frozen['revision']:
+            raise HTTPException(409,'超分系统提示已更新，请重新预览后提交')
+        requirements=body.upscale_requirements if body.upscale_requirements is not None else body.upscale_injection
+        options.update(upscale_prompts=frozen,upscale_requirements=requirements.strip(),upscale_injection=requirements.strip(),
+                       source_description=body.source_description if body.source_description is not None else body.prompt.strip())
     if body.region:
         options.update(region=body.region.model_dump(),polish=False,ratio='auto',size='auto',call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT))
     if body.regions:
@@ -1051,6 +1044,10 @@ async def add_jobs(body: JobInput, session=Depends(require_user)):
 class UpscaleInput(BaseModel):
     factor: Literal[4,16,64] = 4
     upscale_injection: str = Field(default='',max_length=12000)
+    upscale_requirements: str | None = Field(default=None,max_length=12000)
+    source_description: str | None = Field(default=None,max_length=24000)
+    upscale_policy: upscale_prompts.PromptPolicy | None = None
+    expected_prompt_revision: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
     model: str | None = Field(default=None,max_length=100)
     effort: str | None = Field(default=None,max_length=20)
 
@@ -1083,7 +1080,9 @@ async def upscale_asset(aid: str, body: UpscaleInput, session=Depends(require_us
     options=json.loads(origin['options']) if origin else {}
     template=origin.get('template_id') if origin else None
     if template and not query('SELECT id FROM templates WHERE id=?',(template,),True):template=None
-    request=JobInput(prompt=origin['prompt'] if origin else f"严格保留参考图的构图和内容，增强原有细节。{asset['name']}",refs=[aid],stitch=body.factor,upscale_injection=body.upscale_injection,source_asset_id=aid,model=body.model or options.get('model') or setting('model',MODEL),effort=body.effort or options.get('effort') or setting('effort',EFFORT),template_id=template,transparent=options.get('transparent',False))
+    request=JobInput(prompt=f"保真超分 · {asset['name']}",source_description=body.source_description if body.source_description is not None else ((origin.get('polished_prompt') or origin['prompt']) if origin else ''),refs=[aid],stitch=body.factor,
+        upscale_injection=body.upscale_injection,upscale_requirements=body.upscale_requirements,upscale_policy=body.upscale_policy,expected_prompt_revision=body.expected_prompt_revision,
+        source_asset_id=aid,model=body.model or options.get('model') or setting('model',MODEL),effort=body.effort or options.get('effort') or setting('effort',EFFORT),template_id=template,transparent=options.get('transparent',False))
     return await add_jobs(request,session)
 
 

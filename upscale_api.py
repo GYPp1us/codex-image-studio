@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel,Field,StrictInt
 
 import image_runtime as imaging
+import upscale_prompts
 from stitch_engine import save_json
 from stitch_planner import Policy, PlanError, progressive_plan, public_plan
 from storage_manager import StorageFull, tree_bytes
@@ -30,11 +31,23 @@ class RepairTiles(BaseModel):
     level: int = Field(ge=1,le=3)
     tiles: list[StrictInt] = Field(min_length=1,max_length=100000)
     upscale_injection: str = Field(default='',max_length=12000)
-    use_current_prompt: bool = True
+    repair_request: str | None = Field(default=None,max_length=12000)
+    repair_template_source: Literal['task','current'] = 'task'
+    append_system: bool = True
+    use_current_prompt: bool = False
 
 
 class TaskInjection(BaseModel):
     upscale_injection: str = Field(max_length=12000)
+
+
+class PromptPreview(BaseModel):
+    factor: Literal[4,16,64] = 4
+    level: int = Field(default=1,ge=1,le=3)
+    tile: int = Field(default=0,ge=0)
+    upscale_requirements: str = Field(default='',max_length=12000)
+    source_description: str = Field(default='',max_length=24000)
+    upscale_policy: upscale_prompts.PromptPolicy | None = None
 
 
 def root_for(studio,jid):
@@ -140,14 +153,15 @@ def register(app,studio):
     @app.patch('/api/upscale/jobs/{jid}/injection')
     def update_injection(jid:str,body:TaskInjection,session=auth):
         with studio.STORAGE.lock:
-            job=stopped(jid);options=json.loads(job['options']);options['upscale_injection']=body.upscale_injection
+            job=stopped(jid);options=json.loads(job['options'])
+            if upscale_prompts.is_versioned(options):raise HTTPException(409,'任务统一要求已随任务冻结。请复制为新任务；选块修复请在失败处理中填写本次修复要求。')
+            options['upscale_injection']=body.upscale_injection
             studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
         return {'ok':True}
 
     @app.post('/api/upscale/jobs/{jid}/redraw')
     def redraw_tiles(jid:str,body:RepairTiles,session=auth):
         from upscale_diagnostics import invalidate
-        from stitch_workflow import DEFAULT_STITCH_PROMPT,normalize_redraw_prompt
         from upscale_workflow import sync_stage,refresh_totals
         with studio.STORAGE.lock:
             job=stopped(jid)
@@ -157,16 +171,19 @@ def register(app,studio):
             plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'));indices=sorted(set(body.tiles))
             if not set(indices).issubset({t['index'] for t in plan['tiles']}):raise HTTPException(400,'所选块已变化，请重新打开诊断窗口')
             studio.STORAGE.require(0,'提交选块重绘');repair_id=studio.uid();options=json.loads(job['options'])
-            options['upscale_injection']=body.upscale_injection
             options['repair_selection']={'level':body.level,'tiles':indices}
-            if body.use_current_prompt:options['stitch_prompt']=normalize_redraw_prompt(studio.setting('stitch_prompt',DEFAULT_STITCH_PROMPT))
+            source='current' if body.use_current_prompt else body.repair_template_source
+            templates=options.get('upscale_prompts',{}).get('templates',{}) if source=='task' else upscale_prompts.load_templates(studio)
+            scope={'id':repair_id,'level':body.level,'tiles':indices,'request':(body.repair_request if body.repair_request is not None else body.upscale_injection).strip(),
+                   'template':templates.get('repair',upscale_prompts.DEFAULTS['repair']),'source':source,'append_system':body.append_system,'created':time.time()}
+            options.setdefault('repair_scopes',[]).append(scope)
             report_path=folder/'diagnostics'/'repair-feedback.json';feedback=json.loads(report_path.read_text(encoding='utf-8')) if report_path.exists() else {}
             # The failure report is computed before removing a checkpoint.
             report=diagnostic(jid,body.level)
             for tile in report['tiles']:
                 if tile['index'] in indices:feedback[str(tile['index'])]=tile['reason']
             invalidate(folder,indices,repair_id);save_json(report_path,feedback)
-            save_json(folder/'repairs'/repair_id/'request.json',body.model_dump()|{'created':time.time()})
+            save_json(folder/'repairs'/repair_id/'request.json',scope)
             def repair_budget(current,current_plan,count):
                 adaptive=sum(s.get('calls',1) for s in current_plan.get('adaptive_splits',[]))
                 prior=current.get('calls',{})
@@ -187,6 +204,67 @@ def register(app,studio):
             studio.write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',finished=NULL,started=NULL,stage='',progress_detail='{}' WHERE id=?",(json.dumps(options),jid))
             studio.STORAGE.invalidate();studio.WAKE.set()
         return {'ok':True,'tiles':indices,'expected_images':len(indices),'expected_reviews':1}
+
+    @app.post('/api/assets/{aid}/upscale-prompt-preview')
+    def preview_prompt(aid:str,body:PromptPreview,session=auth):
+        source=studio.query('SELECT * FROM assets WHERE id=? AND deleted=0',(aid,),True)
+        if not source:raise HTTPException(404,'原图不存在')
+        plan=progressive_plan(source['width'],source['height'],body.factor,policy=Policy(max_attempts=studio.setting('max_attempts',3)))
+        stage=next((s for s in plan['stages'] if s['index']==body.level),None)
+        if not stage:raise HTTPException(400,'所选倍率不包含本级')
+        from stitch_planner import execution_plan
+        current=execution_plan(stage)
+        tile=next((t for t in current['tiles'] if t['index']==body.tile),None)
+        if tile is None:raise HTTPException(400,'图块不存在')
+        origin=studio.query('SELECT prompt,polished_prompt FROM jobs WHERE id=?',(source.get('job_id'),),True) if source.get('job_id') else None
+        context=body.source_description or ((origin.get('polished_prompt') or origin['prompt']) if origin else '')
+        options={'upscale_prompts':upscale_prompts.snapshot(studio,body.upscale_policy),'upscale_requirements':body.upscale_requirements,
+                 'stitch':body.factor,'source_description':context,'model':studio.setting('model',studio.MODEL),'effort':studio.setting('effort',studio.EFFORT)}
+        return upscale_prompts.compile_image(options,current,tile,context,body.level)|{'review':upscale_prompts.compile_review(options,current,context,body.level)}
+
+    def upscale_job(jid):
+        job=studio.query('SELECT * FROM jobs WHERE id=?',(jid,),True)
+        if not job:raise HTTPException(404,'任务不存在')
+        options=json.loads(job['options'])
+        if not options.get('stitch'):raise HTTPException(400,'该任务不是超分任务')
+        return job,options
+
+    def call_records(jid):
+        # Only generated call request records, never arbitrary paths from the client.
+        root=root_for(studio,jid)
+        paths=list((root/'calls').glob('*/request.json'))
+        paths.extend(root.glob('stages/*/calls/*/request.json'))
+        records=[]
+        for path in paths:
+            if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):continue
+            with contextlib.suppress(OSError,ValueError):
+                value=json.loads(path.read_text(encoding='utf-8'))
+                if not isinstance(value,dict) or not isinstance(value.get('worker_instruction'),str):continue
+                relative=path.relative_to(root).as_posix();identifier=upscale_prompts.digest(relative)[:24]
+                records.append((identifier,path,value))
+        return sorted(records,key=lambda r:(r[2].get('created',0),r[0]),reverse=True)
+
+    @app.get('/api/upscale/jobs/{jid}/prompt-snapshot')
+    def prompt_snapshot(jid:str,session=auth):
+        job,options=upscale_job(jid)
+        return {'available':upscale_prompts.is_versioned(options),'snapshot':options.get('upscale_prompts'),
+                'requirements':upscale_prompts.task_requirements(options),'source_description':options.get('source_description',''),
+                'repair_scopes':options.get('repair_scopes',[]),'legacy_message':'旧任务未保存完整拼接快照，可查看留存的实际调用记录。' if not upscale_prompts.is_versioned(options) else None}
+
+    @app.get('/api/upscale/jobs/{jid}/calls')
+    def prompt_calls(jid:str,limit:int=30,offset:int=0,session=auth):
+        upscale_job(jid);records=call_records(jid);start=max(0,offset)
+        return {'total':len(records),'items':[{'id':identifier,'kind':value.get('kind'),'created':value.get('created'),
+                'expected_size':value.get('expected_size'),'scope':(value.get('prompt_metadata') or {}).get('scope'),
+                'snapshot_revision':(value.get('prompt_metadata') or {}).get('snapshot_revision')} for identifier,path,value in records[start:start+min(100,max(1,limit))]]}
+
+    @app.get('/api/upscale/jobs/{jid}/calls/{identifier}')
+    def prompt_call(jid:str,identifier:str,session=auth):
+        upscale_job(jid)
+        if not re.fullmatch('[a-f0-9]{24}',identifier):raise HTTPException(404,'调用记录不存在')
+        record=next((value for key,path,value in call_records(jid) if key==identifier),None)
+        if record is None:raise HTTPException(404,'调用记录不存在或缓存已清理')
+        return {'id':identifier,**{key:record.get(key) for key in ('kind','expected_size','worker_instruction','model','effort','created','prompt_metadata')}}
 
     @app.exception_handler(StorageFull)
     async def storage_full(request,error):return JSONResponse({'detail':str(error)},status_code=507)
