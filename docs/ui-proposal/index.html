@@ -1,0 +1,1889 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Image Studio · 竖屏范式提案</title>
+<style>
+:root{
+  --bg:#f5f4ef;--surface:#fffefa;--surface-2:#efeee7;--ink:#1e1f1b;--ink-2:#55574f;--ink-3:#8b8d84;--line:#e4e2d9;
+  --sage:#e6ecdf;--sage-2:#d3ddc6;--sage-ink:#3f5034;--amber:#f6ead2;--amber-ink:#7a5615;--red:#b03f2b;--red-bg:#f8e4de;
+  --e-std:cubic-bezier(.2,.8,.2,1);--e-emph:cubic-bezier(.32,.72,0,1);--e-exit:cubic-bezier(.4,0,1,1);
+  --d1:120ms;--d2:200ms;--d3:280ms;--d4:360ms;
+  --safe-top:44px;--tab-h:82px;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  view-transition-name:none;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{background:#e8e6de;color:var(--ink);display:grid;grid-template-columns:minmax(420px,720px) auto;justify-content:center;gap:48px;padding:0 40px;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:inherit}
+svg{flex:none}
+.grow{flex:1}
+.muted{color:var(--ink-3)} .small{font-size:12.5px}
+
+/* ---------- spec column ---------- */
+.spec{height:100vh;overflow-y:auto;padding:44px 8px 120px 0;font-size:14.5px;line-height:1.65;color:#2b2c27}
+.spec::-webkit-scrollbar{width:8px}.spec::-webkit-scrollbar-thumb{background:#d3d0c5;border-radius:4px}
+.spec .eyebrow{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+.spec h1{font-size:28px;line-height:1.25;margin:6px 0 10px;letter-spacing:-.01em}
+.spec h2{font-size:18px;margin:40px 0 10px;padding-top:18px;border-top:1px solid #d9d6cc}
+.spec h3{font-size:15px;margin:22px 0 6px}
+.spec p{margin:8px 0}
+.spec code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:#f2f0e9;padding:1px 5px;border-radius:5px}
+.spec table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0;background:#faf9f5;border-radius:12px;overflow:hidden}
+.spec th,.spec td{text-align:left;padding:8px 10px;border-bottom:1px solid #e6e3da;vertical-align:top}
+.spec th{font-weight:600;background:#f0eee7;font-size:12px;color:#55574f}
+.spec ol,.spec ul{padding-left:20px;margin:8px 0}.spec li{margin:4px 0}
+.spec .lede{font-size:15.5px;color:#45473f}
+.try{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 6px}
+.try button{height:34px;padding:0 14px;border-radius:17px;background:#1e1f1b;color:#fff;font-size:13px}
+.try button.alt{background:#fffefa;color:#1e1f1b;border:1px solid #d9d6cc}
+.callout{background:#fffefa;border:1px solid #e0ddd3;border-radius:14px;padding:12px 14px;margin:12px 0}
+.callout b{display:block;margin-bottom:2px}
+.obj{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
+.obj span{padding:6px 12px;border-radius:10px;background:#fffefa;border:1px solid #dcd9cf;font-size:13px}
+.obj i{font-style:normal;color:var(--ink-3)}
+.tag{display:inline-block;font-size:11px;padding:0 6px;border-radius:6px;background:var(--sage);color:var(--sage-ink);margin-left:4px}
+.tag.rm{background:var(--red-bg);color:var(--red)}
+
+/* ---------- device ---------- */
+.device-slot{height:100vh;display:grid;place-items:center;overflow:hidden}
+.device{width:414px;height:868px;padding:12px;border-radius:58px;background:#1a1b18;box-shadow:0 30px 80px rgba(0,0,0,.25),inset 0 0 0 2px #34352f;transform-origin:center}
+.app{position:relative;width:390px;height:844px;border-radius:46px;overflow:hidden;overflow:clip;background:var(--bg);isolation:isolate;user-select:none;-webkit-user-select:none}
+.sb{position:absolute;top:0;left:0;right:0;height:44px;z-index:95;display:flex;justify-content:space-between;align-items:center;padding:4px 32px 0 40px;font-size:15px;font-weight:600;pointer-events:none;transition:color var(--d2)}
+.sb .isl{position:absolute;left:50%;top:10px;width:110px;height:30px;margin-left:-55px;border-radius:16px;background:#000}
+.app.dark-sb .sb{color:#fff}
+@media(max-width:900px){
+  body{display:block;padding:0;overflow:auto}
+  .spec{display:none}
+  .device-slot{height:100dvh}
+  .device{width:100vw;height:100dvh;padding:0;border-radius:0;box-shadow:none;transform:none!important}
+  .app{width:100%;height:100%;border-radius:0;--safe-top:env(safe-area-inset-top,0px);--tab-h:calc(62px + env(safe-area-inset-bottom,0px))}
+  .sb{display:none}
+}
+
+/* ---------- page chrome ---------- */
+#page{position:absolute;inset:0;view-transition-name:page;display:flex;flex-direction:column}
+.top{flex:none;height:56px;margin-top:var(--safe-top);padding:0 16px;display:flex;align-items:center;gap:12px}
+.top h1{font-size:21px;font-weight:650;margin:0;letter-spacing:.01em}
+.avatar{width:34px;height:34px;border-radius:50%;background:var(--sage);color:var(--sage-ink);font-weight:650;display:grid;place-items:center;font-size:14px}
+.scroll{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:4px 16px calc(var(--tab-h) + 28px);scrollbar-width:none}
+.scroll::-webkit-scrollbar{display:none}
+.banner-slot:empty{display:none}
+.banner{margin:0 16px 8px;padding:10px 12px;border-radius:14px;background:var(--amber);color:var(--amber-ink);font-size:13px;display:flex;gap:8px;align-items:center;animation:drop var(--d3) var(--e-emph)}
+.banner button{margin-left:auto;font-weight:600;padding:4px 8px}
+@keyframes drop{from{opacity:0;transform:translateY(-8px)}}
+
+.tabbar{position:absolute;left:0;right:0;bottom:0;height:var(--tab-h);background:rgba(248,247,242,.9);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(4,1fr);padding:7px 10px 0;z-index:20;transition:transform var(--d3) var(--e-emph)}
+.tab{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--ink-3);position:relative;z-index:1;transition:color var(--d2)}
+.tab .ti{width:58px;height:30px;display:grid;place-items:center}
+.tab.active{color:var(--ink);font-weight:600}
+.tab-ind{position:absolute;top:7px;left:10px;height:30px;width:calc((100% - 20px)/4);display:grid;place-items:center;transition:transform var(--d4) var(--e-emph);pointer-events:none}
+.tab-ind::before{content:"";width:58px;height:30px;border-radius:15px;background:var(--sage-2)}
+.badge{position:absolute;top:-2px;left:calc(50% + 9px);min-width:18px;height:18px;border-radius:9px;background:var(--ink);color:#fff;font-size:10.5px;font-weight:600;display:grid;place-items:center;padding:0 5px;transition:transform var(--d2) var(--e-emph),opacity var(--d2)}
+.badge.zero{transform:scale(.4);opacity:0}
+.badge.bump{animation:bump .45s var(--e-std)}
+@keyframes bump{40%{transform:scale(1.4)}}
+.app.typing .tabbar{transform:translateY(100%)}
+
+.icon-btn{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;color:var(--ink-2);transition:background var(--d1)}
+.icon-btn:active{background:var(--surface-2)}
+.ghost-btn{display:inline-flex;align-items:center;gap:4px;height:32px;padding:0 10px 0 12px;border-radius:16px;font-size:13px;color:var(--ink-2);background:var(--surface-2);transition:background var(--d1)}
+.ghost-btn:active{background:var(--sage-2)}
+.section-h{display:flex;align-items:baseline;justify-content:space-between;margin:10px 2px 10px}
+.section-h h2{font-size:15px;margin:0;font-weight:620}
+
+/* ---------- create ---------- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:14px 16px;margin-bottom:12px}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;min-height:32px}
+.label{font-size:13px;color:var(--ink-2);font-weight:560}
+#prompt{display:block;width:100%;min-height:168px;border:0;outline:0;resize:none;background:transparent;font:inherit;font-size:16px;line-height:1.65;color:var(--ink);padding:0;user-select:text;-webkit-user-select:text}
+#prompt::placeholder{color:#b3b4ab}
+.file-into{display:flex;align-items:center;gap:8px;padding-top:12px;margin-top:6px;border-top:1px dashed var(--line);font-size:12.5px;color:var(--ink-3)}
+.file-into>span:first-child{display:inline-flex;align-items:center;gap:4px}
+.into-chip{display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 4px 0 10px;border-radius:14px;background:var(--sage);color:var(--sage-ink);font-size:12.5px;font-weight:560;max-width:230px}
+.into-chip .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.into-chip button{width:22px;height:22px;border-radius:50%;display:grid;place-items:center}
+.into-chip.none{background:var(--surface-2);color:var(--ink-2);padding-right:10px}
+.into-chip.flash{animation:flash 1s var(--e-std)}
+@keyframes flash{0%{box-shadow:0 0 0 0 rgba(63,80,52,.45)}30%{transform:scale(1.06)}100%{box-shadow:0 0 0 10px rgba(63,80,52,0)}}
+.diverge{margin-top:10px;padding:10px 12px;border-radius:12px;background:var(--amber);color:var(--amber-ink);font-size:12.5px;line-height:1.5;display:flex;gap:8px;animation:drop var(--d3) var(--e-emph)}
+.dv-actions{display:flex;gap:6px;margin-top:6px}
+.dv-actions button{height:28px;padding:0 10px;border-radius:14px;background:rgba(255,255,255,.65);font-weight:600;font-size:12px}
+.ref-strip{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:2px 16px}
+.ref{position:relative;flex:none;width:68px;height:68px;border-radius:12px;overflow:hidden;background:var(--surface-2)}
+.ref img{width:100%;height:100%;object-fit:cover;display:block}
+.ref .rm{position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;display:grid;place-items:center}
+.ref.enter{animation:tileIn var(--d4) var(--e-emph) both}
+.ref-add{flex:none;width:68px;height:68px;border-radius:12px;border:1.5px dashed var(--sage-2);display:grid;place-items:center;color:var(--ink-3);transition:background var(--d1)}
+.ref-add:active{background:var(--sage)}
+.gen-bar{position:absolute;left:0;right:0;bottom:var(--tab-h);padding:12px 16px 12px;background:linear-gradient(to top,var(--bg) 72%,rgba(245,244,239,0));display:flex;gap:10px;align-items:center;z-index:10;transition:bottom var(--d3) var(--e-emph)}
+.app.typing .gen-bar{bottom:0}
+.sum{flex:1;min-width:0;padding:7px 12px;border-radius:15px;background:var(--surface);border:1px solid var(--line);display:flex;align-items:center;gap:8px;height:52px;transition:background var(--d1)}
+.sum:active{background:var(--surface-2)}
+.sum .st{min-width:0;flex:1}
+.sum b{display:block;font-size:13.5px;font-weight:620}
+.sum span{display:block;font-size:11.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gen-btn{flex:none;width:132px;height:52px;border-radius:16px;background:var(--ink);color:#fff;position:relative;overflow:hidden;font-size:16px;font-weight:620;transition:transform var(--d1) var(--e-std),background var(--d3)}
+.gen-btn:active{transform:scale(.96)}
+.gen-btn .lab{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:6px;transition:transform var(--d3) var(--e-emph),opacity var(--d2)}
+.gen-btn .lab.b{transform:translateY(110%);opacity:0;font-size:14.5px}
+.gen-btn.done{background:var(--sage-ink)}
+.gen-btn.done .lab.a{transform:translateY(-110%);opacity:0}
+.gen-btn.done .lab.b{transform:none;opacity:1}
+.bp{position:absolute;left:16px;right:16px;top:-34px;height:36px;border-radius:18px;background:var(--surface);border:1px solid var(--line);box-shadow:0 6px 18px rgba(30,31,27,.08);display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;font-size:12.5px;transform-origin:50% 100%;transition:opacity var(--d2),transform var(--d3) var(--e-emph)}
+.bp.hide{opacity:0;transform:translateY(10px) scale(.96);pointer-events:none}
+.bp b{font-weight:620}
+.bp .to{margin-left:auto;display:flex;align-items:center;color:var(--ink-3);white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis}
+.shake{animation:shake .4s var(--e-std)}
+@keyframes shake{20%{transform:translateX(-6px)}40%{transform:translateX(5px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
+.fly-dot{position:absolute;left:0;top:0;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:var(--sage-ink);box-shadow:0 0 0 3px #fff,0 4px 10px rgba(0,0,0,.2);z-index:90;pointer-events:none}
+
+/* ---------- stage bars ---------- */
+.stages{display:inline-grid;grid-template-columns:repeat(4,1fr);gap:2px;width:36px;height:4px;flex:none}
+.stages i{border-radius:2px;background:var(--line)}
+.stages[data-s="1"] i:nth-child(-n+1),.stages[data-s="2"] i:nth-child(-n+2),.stages[data-s="3"] i:nth-child(-n+3),.stages[data-st="done"] i{background:var(--sage-ink)}
+.stages[data-st="running"][data-s="0"] i:nth-child(1),.stages[data-st="running"][data-s="1"] i:nth-child(2),.stages[data-st="running"][data-s="2"] i:nth-child(3),.stages[data-st="running"][data-s="3"] i:nth-child(4){background:linear-gradient(90deg,var(--sage-2) 0%,var(--sage-ink) 50%,var(--sage-2) 100%);background-size:200% 100%;animation:flow 1.1s linear infinite}
+.stages[data-st="failed"] i{background:#e7b9ad}
+.stages[data-st="cancelled"] i{background:var(--line);opacity:.6}
+@keyframes flow{from{background-position:100% 0}to{background-position:-100% 0}}
+.spin{width:16px;height:16px;border-radius:50%;border:2px solid var(--sage-2);border-top-color:var(--sage-ink);animation:rot .9s linear infinite;flex:none}
+@keyframes rot{to{transform:rotate(360deg)}}
+
+/* ---------- works ---------- */
+.recent{display:flex;gap:8px;overflow-x:auto;margin:0 -16px 8px;padding:0 16px 4px;scrollbar-width:none}
+.recent::-webkit-scrollbar{display:none}
+.recent .tile{flex:none;width:92px;height:92px;border-radius:12px}
+.tile{position:relative;overflow:hidden;background:var(--surface-2);display:block;touch-action:manipulation}
+.tile img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;transition:transform 480ms var(--e-std)}
+.tile.pressing img{transform:scale(.94)}
+.tile.fav::after{content:"";position:absolute;right:6px;bottom:6px;width:16px;height:16px;border-radius:50%;background:rgba(0,0,0,.45) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ffd66b'%3E%3Cpath d='M12 3l2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z'/%3E%3C/svg%3E") center/11px no-repeat}
+.tile.enter,.coll.enter,.batch.enter,.tpl.enter{animation:tileIn var(--d4) var(--e-emph) both}
+@keyframes tileIn{from{opacity:0;transform:scale(.86);filter:blur(10px)}to{opacity:1;transform:none;filter:none}}
+.colls{display:grid;grid-template-columns:1fr 1fr;gap:16px 12px}
+.coll{display:block;text-align:left}
+.cover{aspect-ratio:1;border-radius:16px;overflow:hidden;display:grid;grid-template-columns:2fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:var(--surface-2);transition:transform var(--d1) var(--e-std)}
+.coll:active .cover{transform:scale(.97)}
+.cover img{width:100%;height:100%;object-fit:cover;display:block;min-height:0}
+.cover img:first-child{grid-row:1/3}
+.cover.n1 img:first-child{grid-column:1/3}
+.cover.n2 img:nth-child(2){grid-row:1/3}
+.coll-name{font-size:14px;font-weight:620;margin:8px 2px 1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.coll-meta{font-size:12px;color:var(--ink-3);margin:0 2px;display:flex;gap:8px;align-items:center}
+.live{display:inline-flex;align-items:center;gap:5px;color:var(--sage-ink);font-weight:560}
+.live::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25}}
+.coll-top{gap:8px;padding:0 8px 0 6px}
+.hero{width:38px;height:38px;border-radius:10px;overflow:hidden;flex:none;background:var(--surface-2)}
+.hero img{width:100%;height:100%;object-fit:cover;display:block}
+.ct{min-width:0;flex:1;line-height:1.25}
+.ct h1{font-size:16px;font-weight:650;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ct span{font-size:11.5px;color:var(--ink-3)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin:0 -10px}
+.grid .tile{aspect-ratio:1;border-radius:8px}
+.live-strip{display:flex;align-items:center;gap:10px;width:100%;padding:11px 12px;border-radius:14px;background:var(--surface);border:1px solid var(--line);margin-bottom:10px;font-size:13px;animation:drop var(--d3) var(--e-emph)}
+.live-strip>span:nth-child(2){white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.live-strip .stk{display:flex;gap:3px;margin-left:auto;flex:none}
+.live-strip .stk .stages{width:26px}
+.fail-strip{background:var(--red-bg);color:var(--red);border-color:transparent}
+.fail-strip button{font-weight:620;padding:2px 6px}
+.hint{font-size:12px;color:var(--ink-3);text-align:center;margin:18px 0}
+.empty{text-align:center;color:var(--ink-3);font-size:13px;padding:48px 0}
+
+/* ---------- queue ---------- */
+.seg{display:flex;padding:3px;border-radius:12px;background:var(--surface-2);position:relative;margin:4px 0 12px}
+.seg button{flex:1;height:32px;border-radius:9px;font-size:13px;color:var(--ink-2);position:relative;z-index:1;text-align:center;transition:color var(--d2)}
+.seg button.on{color:var(--ink);font-weight:600}
+.seg button em{font-style:normal;font-size:11px;color:var(--ink-3);margin-left:3px}
+.seg .ind{position:absolute;top:3px;bottom:3px;left:3px;border-radius:9px;background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,.08);transition:transform var(--d3) var(--e-emph),width var(--d3) var(--e-emph)}
+.pause-ctl{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
+.switch{width:44px;height:26px;border-radius:13px;background:var(--line);position:relative;transition:background var(--d2);flex:none;display:inline-block}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform var(--d3) var(--e-emph)}
+.switch.on{background:var(--ink)}.switch.on::after{transform:translateX(18px)}
+.paused-note{padding:10px 12px;border-radius:12px;background:var(--amber);color:var(--amber-ink);font-size:12.5px;margin-bottom:10px;animation:drop var(--d3) var(--e-emph)}
+.batch{background:var(--surface);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;overflow:hidden}
+.batch.hl{animation:hl 1.6s var(--e-std)}
+@keyframes hl{0%,40%{box-shadow:0 0 0 3px var(--sage-2)}}
+.b-main{display:flex;gap:12px;padding:12px;width:100%;align-items:flex-start}
+.b-thumb{flex:none;width:50px;height:50px;border-radius:10px;overflow:hidden;background:var(--surface-2);display:grid;place-items:center;color:var(--ink-3)}
+.b-thumb img{width:100%;height:100%;object-fit:cover}
+.b-text{flex:1;min-width:0;display:block}
+.b-prompt{font-size:14px;font-weight:560;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.b-meta{display:block;font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.b-status{display:flex;align-items:center;gap:4px;margin-top:8px;font-size:12px;color:var(--ink-2)}
+.b-status .b-sum{margin-left:6px}
+.kind{font-size:10.5px;padding:1px 6px;border-radius:6px;background:var(--surface-2);color:var(--ink-2);margin-right:5px;vertical-align:1px;font-weight:500}
+.kind.redraw{background:#e3e8f3;color:#3a4d78}.kind.upscale{background:#efe3f1;color:#6a3d74}.kind.reroll{background:var(--sage);color:var(--sage-ink)}
+.chev{color:var(--ink-3);transition:transform var(--d3) var(--e-emph);margin-top:2px}
+.batch.open .chev{transform:rotate(180deg)}
+.b-more{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--d3) var(--e-emph)}
+.batch.open .b-more{grid-template-rows:1fr}
+.b-more>div{overflow:hidden;min-height:0}
+.trow{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid var(--line);font-size:13px}
+.trow .n{width:22px;color:var(--ink-3);font-variant-numeric:tabular-nums;font-size:12px}
+.trow .lbl{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow .lbl.err{color:var(--red)}
+.link-btn{font-size:13px;color:var(--sage-ink);font-weight:600;padding:4px 6px;border-radius:8px}
+.link-btn.danger{color:var(--red)}
+.b-actions{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--line);justify-content:flex-end}
+.pill-btn{height:32px;padding:0 12px;border-radius:16px;background:var(--surface-2);font-size:12.5px;font-weight:560}
+
+/* ---------- templates ---------- */
+.tpl{display:flex;gap:12px;width:100%;padding:12px;background:var(--surface);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;text-align:left;transition:transform var(--d1) var(--e-std)}
+.tpl:active{transform:scale(.985)}
+.tpl-cover{flex:none;width:64px;height:64px;border-radius:12px;overflow:hidden;background:var(--surface-2)}
+.tpl-cover img{width:100%;height:100%;object-fit:cover}
+.tpl-body{min-width:0;flex:1;display:block}
+.tpl-body b{display:block;font-size:14.5px;font-weight:620}
+.tpl-body .ex{display:block;font-size:12.5px;color:var(--ink-2);margin:2px 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{height:24px;padding:0 9px;border-radius:12px;background:var(--surface-2);font-size:11.5px;display:inline-flex;align-items:center;color:var(--ink-2)}
+
+/* ---------- sheets ---------- */
+#layers{position:absolute;inset:0;z-index:60;pointer-events:none}
+.sheet-layer{position:absolute;inset:0;pointer-events:auto}
+.scrim{position:absolute;inset:0;background:rgba(20,20,16,.38)}
+.sheet{position:absolute;left:0;right:0;bottom:0;max-height:88%;display:flex;flex-direction:column;background:var(--surface);border-radius:26px 26px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.12);padding-bottom:26px;will-change:transform;overflow:hidden}
+.grab{height:22px;display:grid;place-items:center;touch-action:none;cursor:grab;flex:none}
+.grab i{width:38px;height:5px;border-radius:3px;background:#d6d4cb}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;padding:0 10px 6px 20px;flex:none;touch-action:none;cursor:grab}
+.sheet-head h2{font-size:17px;margin:0;font-weight:640}
+.sheet-body{overflow-y:auto;padding:4px 20px 6px;overscroll-behavior:contain;scrollbar-width:none}
+.field-label{font-size:12.5px;color:var(--ink-3);margin:16px 0 8px;font-weight:560}
+.field-label:first-child{margin-top:4px}
+.opts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.opts.c4{grid-template-columns:repeat(4,1fr)}
+.opts.c5{grid-template-columns:repeat(5,1fr)}
+.opt{height:44px;border-radius:12px;border:1px solid var(--line);background:var(--surface);font-size:14px;text-align:center;transition:background var(--d2) var(--e-std),border-color var(--d2),box-shadow var(--d2),transform var(--d1)}
+.opt:active{transform:scale(.96)}
+.opt small{display:block;font-size:10.5px;color:var(--ink-3);margin-top:-2px}
+.opt.tall{height:54px}
+.opt.on{border-color:var(--ink);background:var(--sage);box-shadow:inset 0 0 0 1px var(--ink)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:50px}
+.row .rl{font-size:15px}
+.row .rl small{display:block;font-size:12px;color:var(--ink-3)}
+.stepper{display:flex;align-items:center;border:1px solid var(--line);border-radius:12px;height:40px}
+.stepper button{width:42px;height:100%;display:grid;place-items:center;color:var(--ink-2)}
+.stepper output{width:30px;text-align:center;font-variant-numeric:tabular-nums;font-weight:600}
+.note{font-size:12px;color:var(--ink-3);line-height:1.55;margin:8px 0 0}
+.primary{width:100%;height:50px;border-radius:15px;background:var(--ink);color:#fff;font-size:15.5px;font-weight:620;display:flex;align-items:center;justify-content:center;gap:6px;margin-top:18px;transition:transform var(--d1),opacity var(--d2)}
+.primary:active{transform:scale(.98)}
+.primary:disabled{opacity:.3}
+.secondary{height:40px;padding:0 14px;border-radius:12px;background:var(--surface-2);font-size:13.5px;font-weight:560;display:inline-flex;align-items:center;gap:6px}
+.btn-row{display:flex;gap:8px;margin-top:10px}
+.menu-row{display:flex;align-items:center;gap:14px;width:100%;height:52px;font-size:15px;border-radius:12px;padding:0 6px;margin:0 -6px;width:calc(100% + 12px);transition:background var(--d1)}
+.menu-row:active{background:var(--surface-2)}
+.menu-row svg{color:var(--ink-2)}
+.menu-row .rt{margin-left:auto;color:var(--ink-3);font-size:12.5px}
+.menu-row.danger,.menu-row.danger svg{color:var(--red)}
+.menu-sep{height:1px;background:var(--line);margin:6px 0}
+.sheet-hd{display:flex;gap:12px;align-items:center;padding:2px 0 10px}
+.sheet-hd img{width:52px;height:52px;border-radius:10px;object-fit:cover}
+.sheet-hd b{display:block;font-size:14.5px}
+.sheet-hd span{font-size:12px;color:var(--ink-3)}
+.input{width:100%;height:46px;border-radius:12px;border:1px solid var(--line);padding:0 12px;font:inherit;font-size:16px;background:var(--bg);outline:none;color:var(--ink);user-select:text;-webkit-user-select:text;transition:border-color var(--d2)}
+.input:focus{border-color:var(--ink-2)}
+textarea.input{height:auto;min-height:96px;padding:10px 12px;line-height:1.55;resize:none}
+.prompt-box{background:var(--bg);border-radius:14px;padding:12px 14px;font-size:15px;line-height:1.65;user-select:text;-webkit-user-select:text}
+.kv{display:grid;grid-template-columns:64px 1fr;gap:8px 12px;font-size:13.5px;margin:16px 0 0}
+.kv dt{color:var(--ink-3)}.kv dd{margin:0}
+.pick-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px}
+.pick{position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;background:var(--surface-2)}
+.pick img{width:100%;height:100%;object-fit:cover;transition:transform var(--d2) var(--e-emph),border-radius var(--d2)}
+.pick .ck{position:absolute;top:5px;right:5px;width:22px;height:22px;border-radius:50%;border:2px solid #fff;background:rgba(0,0,0,.18);display:grid;place-items:center;color:#fff;transition:background var(--d2),transform var(--d2) var(--e-emph)}
+.pick .ck svg{opacity:0;transition:opacity var(--d1)}
+.pick.on .ck{background:var(--ink);border-color:#fff;transform:scale(1.08)}
+.pick.on .ck svg{opacity:1}
+.pick.on img{transform:scale(.88);border-radius:8px}
+.up-src{display:flex;gap:12px;align-items:center}
+.up-src img{width:60px;height:60px;border-radius:12px;object-fit:cover}
+.up-src b{display:block;font-size:14px}.up-src span{font-size:12px;color:var(--ink-3)}
+
+/* ---------- viewer ---------- */
+.viewer{position:absolute;inset:0;z-index:50;display:none;color:#fff;touch-action:none;overflow:clip}
+.viewer.open{display:block}
+.v-bg{position:absolute;inset:0;background:#0c0c0a;opacity:0}
+.v-stage{position:absolute;inset:0;overflow:hidden}
+.v-track{position:absolute;inset:0;will-change:transform}
+.slide{position:absolute;inset:0}
+.slide img{position:absolute;user-select:none;-webkit-user-drag:none;pointer-events:none;border-radius:3px}
+.v-fly{position:absolute;z-index:3;background-size:cover;background-position:center;pointer-events:none}
+.v-top{position:absolute;left:0;right:0;top:0;padding:var(--safe-top) 6px 0;height:calc(58px + var(--safe-top));display:flex;align-items:center;gap:2px;background:linear-gradient(rgba(0,0,0,.55),rgba(0,0,0,0));z-index:4;transition:opacity var(--d2),transform var(--d3) var(--e-emph)}
+.v-title{flex:1;text-align:center;line-height:1.25;min-width:0}
+.v-title b{display:block;font-size:14px;font-weight:620;font-variant-numeric:tabular-nums}
+.v-title span{display:block;font-size:11.5px;opacity:.65;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.viewer .icon-btn{color:#fff}
+.viewer .icon-btn:active{background:rgba(255,255,255,.14)}
+.v-actions{position:absolute;left:0;right:0;bottom:0;padding:18px 6px 28px;display:grid;grid-template-columns:repeat(5,1fr);background:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,.65) 45%);z-index:4;transition:opacity var(--d2),transform var(--d3) var(--e-emph)}
+.v-act{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.9);text-align:center}
+.v-act .ic{width:46px;height:46px;border-radius:50%;background:rgba(255,255,255,.13);display:grid;place-items:center;transition:background var(--d1),transform var(--d1)}
+.v-act:active .ic{background:rgba(255,255,255,.26);transform:scale(.94)}
+.viewer.chrome-off .v-top{opacity:0;transform:translateY(-14px);pointer-events:none}
+.viewer.chrome-off .v-actions,.viewer.redraw .v-actions{opacity:0;transform:translateY(20px);pointer-events:none}
+.viewer.redraw .v-top .v-info,.viewer.redraw .v-top .v-more{opacity:0;pointer-events:none}
+.v-redraw{position:absolute;left:8px;right:8px;bottom:14px;padding:14px;border-radius:24px;background:rgba(34,35,31,.94);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:5;transform:translateY(calc(100% + 24px));transition:transform var(--d4) var(--e-emph)}
+.viewer.redraw .v-redraw{transform:none}
+.v-hint{font-size:12.5px;color:rgba(255,255,255,.75);margin:0 2px 10px;display:flex;justify-content:space-between;align-items:center}
+.v-hint button{color:#cfe0bf;font-weight:600;font-size:13px}
+#rd-text{display:block;width:100%;min-height:64px;border-radius:14px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:#fff;padding:10px 12px;font:inherit;font-size:16px;resize:none;outline:none;user-select:text;-webkit-user-select:text}
+#rd-text::placeholder{color:rgba(255,255,255,.45)}
+.rd-row{display:flex;align-items:center;gap:10px;margin-top:10px}
+.rd-note{flex:1;font-size:11.5px;color:rgba(255,255,255,.55)}
+.rd-submit{height:40px;padding:0 16px;border-radius:13px;background:#e9f0e0;color:#1e1f1b;font-weight:640;font-size:14px;transition:opacity var(--d2)}
+.rd-submit:disabled{opacity:.3}
+.sel-old{position:absolute;border:2px solid #fff;box-shadow:0 0 0 9999px rgba(0,0,0,.5);border-radius:4px;pointer-events:none;z-index:2}
+.sel-old span{position:absolute;left:-2px;top:-26px;font-size:11px;background:#fff;color:#111;padding:2px 6px;border-radius:6px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.viewer.redraw .v-stage{cursor:crosshair}
+
+/* ---------- toast ---------- */
+#toast{position:absolute;left:16px;right:16px;z-index:85;display:flex;justify-content:center;pointer-events:none;transition:bottom var(--d3) var(--e-emph)}
+.toast{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:100%;padding:8px 8px 8px 16px;min-height:44px;border-radius:14px;background:#262722;color:#fff;font-size:13.5px;box-shadow:0 10px 28px rgba(0,0,0,.22)}
+.toast button{color:#cfe0bf;font-weight:650;padding:6px 10px;border-radius:10px;white-space:nowrap}
+.toast:not(:has(button)){padding-right:16px}
+
+/* ---------- view transitions ---------- */
+::view-transition-group(*){animation-duration:.32s;animation-timing-function:cubic-bezier(.32,.72,0,1)}
+html[data-vt=tab]::view-transition-old(page){animation:vt-out .09s ease-in both}
+html[data-vt=tab]::view-transition-new(page){animation:vt-in .22s .08s cubic-bezier(.2,.8,.2,1) both}
+html[data-vt=push]::view-transition-old(page){animation:vt-push-out .3s cubic-bezier(.32,.72,0,1) both}
+html[data-vt=push]::view-transition-new(page){animation:vt-push-in .36s cubic-bezier(.32,.72,0,1) both}
+html[data-vt=pop]::view-transition-old(page){animation:vt-pop-out .26s cubic-bezier(.32,.72,0,1) both}
+html[data-vt=pop]::view-transition-new(page){animation:vt-pop-in .32s cubic-bezier(.32,.72,0,1) both}
+::view-transition-group(hero){animation-duration:.4s}
+::view-transition-old(hero),::view-transition-new(hero){height:100%;width:100%;object-fit:cover;animation-duration:.4s}
+@keyframes vt-in{from{opacity:0;transform:translateY(8px)}}
+@keyframes vt-out{to{opacity:0}}
+@keyframes vt-push-in{from{opacity:0;transform:translateX(32px)}}
+@keyframes vt-push-out{to{opacity:0;transform:translateX(-14px)}}
+@keyframes vt-pop-in{from{opacity:0;transform:translateX(-14px)}}
+@keyframes vt-pop-out{to{opacity:0;transform:translateX(32px)}}
+
+
+/* ================= v0.3 ================= */
+.b-status.col{flex-direction:column;align-items:stretch;gap:6px}
+.b-status.col .b-sum{margin-left:0}
+.b-status.col.up .tg{align-self:flex-start;width:56px}
+.bbar{display:flex;gap:2px;height:5px;width:100%;flex:none}
+.bbar.dense{gap:1px}
+.bbar i{flex:1;min-width:2px;border-radius:2px;background:var(--line);position:relative;overflow:hidden}
+.bbar i::after{content:"";position:absolute;inset:0 auto 0 0;width:var(--p);background:var(--sage-ink);border-radius:inherit}
+.bbar i[data-st="running"]::after{background:linear-gradient(90deg,var(--sage-2),var(--sage-ink),var(--sage-2));background-size:200% 100%;animation:flow 1.1s linear infinite}
+.bbar i[data-st="failed"]::after,.bbar i[data-st="missing"]::after{background:#d4583f}
+.bbar i[data-st="offset"]::after,.bbar i[data-st="untrusted"]::after{background:#e3a64a}
+.bbar i[data-st="cancelled"]{opacity:.45}
+.live-strip .stk .bbar,.bp .bbar{height:4px}
+.mode-seg{position:relative;display:flex;padding:3px;border-radius:12px;background:var(--surface-2)}
+.mode-seg button{position:relative;z-index:1;height:30px;padding:0 14px;border-radius:9px;font-size:13.5px;color:var(--ink-2);transition:color var(--d2)}
+.mode-seg button.on{color:var(--ink);font-weight:620}
+.mode-seg .ind{position:absolute;top:3px;bottom:3px;left:0;border-radius:9px;background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,.08);transition:transform var(--d3) var(--e-emph),width var(--d3) var(--e-emph)}
+.cu-empty{display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;padding:22px 12px;border:1.5px dashed var(--sage-2);border-radius:14px;color:var(--ink-3);font-size:12.5px;transition:background var(--d1)}
+.cu-empty:active{background:var(--sage)}
+.cu-empty b{color:var(--ink);font-size:14.5px;font-weight:600}
+.cu-recent-h{font-size:12px;color:var(--ink-3);margin:12px 2px 6px}
+.cu-recent{display:flex;gap:6px;overflow-x:auto;margin:0 -16px;padding:0 16px 2px;scrollbar-width:none}
+.cu-recent::-webkit-scrollbar{display:none}
+.cu-recent button{flex:none;width:58px;height:58px;border-radius:10px;overflow:hidden;transition:transform var(--d1)}
+.cu-recent button:active{transform:scale(.94)}
+.cu-recent img{width:100%;height:100%;object-fit:cover;display:block}
+.cu-hero{display:flex;flex-direction:column;gap:8px;animation:drop var(--d3) var(--e-emph)}
+.cu-hero img{width:100%;max-height:220px;object-fit:contain;border-radius:12px;background:var(--surface-2);display:block}
+.cu-hero b{font-size:14px;display:block;font-weight:600}.cu-hero span{font-size:12px;color:var(--ink-3)}
+.sum.static{cursor:default}
+/* multi-region redraw */
+.rd-dim{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+.sel{position:absolute;border:2px solid #fff;border-radius:4px;pointer-events:none;z-index:2;background:rgba(255,255,255,.04)}
+.sel.on{border-color:#cfe0bf;box-shadow:0 0 0 3px rgba(207,224,191,.35)}
+.sel.bad{border-color:#ff8a73;border-style:dashed}
+.sel .no{position:absolute;left:-2px;top:-24px;font-size:11px;background:#fff;color:#111;padding:2px 7px;border-radius:6px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sel.on .no{background:#cfe0bf}
+.sel.bad .no{background:#ff8a73;color:#fff}
+.sel .sz{position:absolute;right:4px;bottom:4px;font-size:10.5px;color:#fff;background:rgba(0,0,0,.5);padding:1px 5px;border-radius:5px;font-variant-numeric:tabular-nums}
+.sel .rm{position:absolute;right:-11px;top:-11px;width:24px;height:24px;border-radius:50%;background:#fff;color:#111;display:grid;place-items:center;pointer-events:auto;box-shadow:0 2px 6px rgba(0,0,0,.3)}
+.sel.enter{animation:selIn .32s var(--e-emph)}
+@keyframes selIn{from{transform:scale(.9);opacity:0}}
+.rd-chips{display:flex;gap:6px;overflow-x:auto;margin:0 0 10px;scrollbar-width:none}
+.rd-chip{flex:none;height:30px;padding:0 12px;border-radius:15px;background:rgba(255,255,255,.1);color:#fff;font-size:13px;display:inline-flex;align-items:center;gap:4px;font-weight:600;transition:background var(--d2),color var(--d2)}
+.rd-chip.on{background:#e9f0e0;color:#1e1f1b}
+.rd-chip svg{color:#9fd18b}.rd-chip.on svg{color:var(--sage-ink)}
+.rd-shared{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;color:rgba(255,255,255,.78);margin-top:10px;width:100%}
+.rd-shared .switch{transform:scale(.85);transform-origin:right center}
+.rd-shared .switch:not(.on){background:rgba(255,255,255,.22)}
+/* ================= v0.2 ================= */
+html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;animation-delay:0s!important;transition-duration:1ms!important}
+.card-head .grow{flex:1}
+.card-head{gap:8px}
+.clear-btn{height:32px;padding:0 10px;border-radius:16px;font-size:13px;color:var(--ink-3);display:inline-flex;align-items:center;gap:3px;transition:opacity var(--d2),transform var(--d2) var(--e-emph),background var(--d1)}
+.clear-btn:active{background:var(--surface-2)}
+.clear-btn.off{opacity:0;transform:scale(.85);pointer-events:none}
+.kind.quick{background:#f3e7d6;color:#7a5615}
+.tile[data-badge]::before{content:attr(data-badge);position:absolute;left:5px;top:5px;z-index:1;font-size:10px;line-height:16px;padding:0 5px;border-radius:6px;background:rgba(20,20,16,.55);color:#fff;font-weight:600;backdrop-filter:blur(4px)}
+/* quick edit in viewer */
+.v-quick{position:absolute;left:12px;right:12px;bottom:126px;z-index:4;transition:opacity var(--d2),transform var(--d3) var(--e-emph),bottom var(--d3) var(--e-emph)}
+.qe-bar{display:flex;align-items:center;gap:6px;height:46px;padding:0 5px 0 14px;border-radius:23px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);transition:background var(--d2),border-color var(--d2)}
+.qe-bar input{flex:1;min-width:0;background:none;border:0;outline:0;color:#fff;font:inherit;font-size:16px;user-select:text;-webkit-user-select:text}
+.qe-bar input::placeholder{color:rgba(255,255,255,.6)}
+.qe-send{width:36px;height:36px;border-radius:50%;background:#fff;color:#1e1f1b;display:grid;place-items:center;transition:transform var(--d2) var(--e-emph),opacity var(--d2)}
+.qe-send:disabled{opacity:.35;transform:scale(.88)}
+.qe-meta{display:flex;align-items:center;justify-content:center;gap:6px;margin:6px auto 0;font-size:11.5px;color:rgba(255,255,255,.6);padding:2px 8px;border-radius:10px}
+.qe-chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin:0 -12px 8px;padding:0 12px;max-height:0;opacity:0;transition:max-height var(--d3) var(--e-emph),opacity var(--d2)}
+.qe-chips button{flex:none;height:30px;padding:0 12px;border-radius:15px;background:rgba(255,255,255,.12);color:#fff;font-size:12.5px;white-space:nowrap}
+.viewer.qe-on .qe-chips{max-height:40px;opacity:1}
+.viewer.qe-on .v-quick{bottom:28px}
+.viewer.qe-on .qe-bar{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.35)}
+.viewer.qe-on .v-actions{opacity:0;transform:translateY(20px);pointer-events:none}
+.viewer.chrome-off .v-quick,.viewer.redraw .v-quick{opacity:0;transform:translateY(16px);pointer-events:none}
+.qe-sheet .qe-bar{background:var(--bg);border-color:var(--line)}
+.qe-sheet .qe-bar input{color:var(--ink)}.qe-sheet .qe-bar input::placeholder{color:#b3b4ab}
+.qe-sheet .qe-send{background:var(--ink);color:#fff}
+.qe-sheet .qe-chips{max-height:none;opacity:1;margin:12px 0 0;padding:0;flex-wrap:wrap;overflow:visible}
+.qe-sheet .qe-chips button{background:var(--surface-2);color:var(--ink-2)}
+.qe-sheet .qe-meta{color:var(--ink-3);margin-top:10px}
+/* upscale tile grids */
+.tg{display:inline-grid;gap:2px;width:38px;flex:none}
+.tg i{height:6px;border-radius:1.5px;background:var(--line)}
+.tg.big{width:132px;gap:3px}.tg.big i{height:18px;border-radius:3px}
+.tg i[data-s="done"]{background:var(--sage-ink)}
+.tg i[data-s="running"]{background:linear-gradient(90deg,var(--sage-2) 0%,var(--sage-ink) 50%,var(--sage-2) 100%);background-size:200% 100%;animation:flow 1.1s linear infinite}
+.tg i[data-s="offset"],.tg i[data-s="untrusted"]{background:#e3a64a}
+.tg i[data-s="missing"]{background:repeating-linear-gradient(45deg,#d4583f 0 3px,#f0b3a5 3px 6px)}
+.up-detail{display:flex;gap:14px;align-items:flex-start;padding:12px;border-top:1px solid var(--line)}
+.up-levels{display:flex;flex-direction:column;gap:6px;flex:1;min-width:0}
+.lvl{font-size:12px;color:var(--ink-3);display:flex;align-items:center;gap:6px}
+.lvl::before{content:"";width:8px;height:8px;border-radius:50%;border:1.5px solid var(--line)}
+.lvl.done{color:var(--ink-2)}.lvl.done::before{background:var(--sage-ink);border-color:var(--sage-ink)}
+.lvl.cur{color:var(--ink);font-weight:600}.lvl.cur::before{border-color:var(--ink);background:var(--surface)}
+.lvl.bad{color:var(--red)}.lvl.bad::before{border-color:var(--red);background:var(--red-bg)}
+.err-sum{margin:0 12px 2px;padding:9px 11px;border-radius:12px;background:var(--red-bg);color:var(--red);font-size:12.5px;line-height:1.5}
+.pill-btn.strong{background:var(--ink);color:#fff}
+/* full-screen screens */
+#screens{position:absolute;inset:0;z-index:55;pointer-events:none}
+.screen{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;pointer-events:auto;box-shadow:-12px 0 32px rgba(0,0,0,.1)}
+.scr-top{gap:6px;padding:0 12px 0 6px}
+.scr-top h1{font-size:18px}
+.saved{font-size:12px;color:var(--sage-ink);display:inline-flex;align-items:center;gap:3px;opacity:0;transition:opacity var(--d3)}
+.saved.on{opacity:1}
+.set-scroll{padding-bottom:40px}
+.group{margin:6px 0 22px}
+.g-title{font-size:12.5px;color:var(--ink-3);font-weight:600;margin:0 4px 8px;display:flex;justify-content:space-between}
+.g-card{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.g-card.flash{animation:hl 1.6s var(--e-std)}
+.g-foot{font-size:12px;color:var(--ink-3);margin:8px 4px 0;line-height:1.5}
+.s-row{display:flex;align-items:center;gap:12px;width:100%;min-height:52px;padding:10px 14px;text-align:left;border-top:1px solid var(--line);transition:background var(--d1)}
+.s-row:first-child{border-top:0}
+button.s-row:active{background:var(--surface-2)}
+.s-row.col{flex-direction:column;align-items:stretch;gap:10px}
+.s-l{flex:1;min-width:0;font-size:15px}
+.s-l small{display:block;font-size:12px;color:var(--ink-3);margin-top:1px;line-height:1.4}
+.s-r{display:flex;align-items:center;gap:4px;color:var(--ink-3);font-size:13px;max-width:55%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s-row.danger{color:var(--red);justify-content:center}
+.mini-seg{display:flex;flex-wrap:wrap;gap:6px}
+.mini-seg button{flex:1 0 auto;min-width:46px;height:34px;padding:0 10px;border-radius:10px;border:1px solid var(--line);font-size:13px;text-align:center;transition:background var(--d2),border-color var(--d2),color var(--d2)}
+.mini-seg button.on{background:var(--sage);border-color:var(--ink);color:var(--ink);font-weight:600}
+.stepper.sm{height:34px}.stepper.sm button{width:34px;font-size:16px}.stepper.sm output{width:26px}
+.badge-mod{font-size:11px;padding:1px 7px;border-radius:8px;background:var(--amber);color:var(--amber-ink)}
+.pill-ok{font-size:12px;padding:2px 9px;border-radius:10px;background:var(--sage);color:var(--sage-ink);font-weight:600}
+.pill-warn{font-size:12px;padding:2px 9px;border-radius:10px;background:var(--amber);color:var(--amber-ink);font-weight:600}
+.cache-bar{height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden;margin-top:8px}
+.cache-bar i{display:block;height:100%;background:var(--ink-2);border-radius:3px;transition:width .6s var(--e-emph)}
+.danger-soft{color:var(--red)!important;background:var(--red-bg)!important}
+.prof{display:flex;align-items:center;gap:12px}
+.prof .avatar{width:44px;height:44px;font-size:17px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px!important;line-height:1.6}
+.var-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.var-chips button{height:28px;padding:0 10px;border-radius:14px;background:var(--surface-2);font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.form-err{font-size:12.5px;color:var(--red);margin:8px 2px 0;min-height:18px}
+/* failure workspace */
+.fx-scroll{padding-bottom:150px}
+.fx-err{display:flex;gap:10px;padding:12px 14px;border-radius:16px;background:var(--red-bg);color:var(--red);font-size:13px;line-height:1.5;margin-bottom:14px}
+.fx-err b{display:block;font-size:14px;margin-bottom:2px}
+.fx-err ul{margin:4px 0 0;padding-left:16px}
+.fx-err details{margin-top:6px;color:#8d4636}.fx-err summary{cursor:pointer;font-size:12px}
+.fx-err code{display:block;margin-top:4px;font-size:11.5px;white-space:pre-wrap;word-break:break-all}
+.fx-stage{position:relative;border-radius:14px;overflow:hidden;background:#d9d7cf;margin:0 -4px}
+.fx-stage img{width:100%;height:100%;object-fit:cover;display:block}
+.cell{position:absolute;background-repeat:no-repeat;transition:transform var(--d3) var(--e-emph)}
+.cell.missing{background:repeating-linear-gradient(45deg,#c9c6bc 0 6px,#d9d7cf 6px 12px)!important}
+.pane-raw .cell.offset{transform:translate(3%,-2.5%)}
+.pane-raw .cell.untrusted{transform:translate(-4%,3%) rotate(.8deg)}
+.pane-affine .cell.missing{background:repeating-linear-gradient(45deg,rgba(212,74,52,.85) 0 6px,rgba(240,170,155,.85) 6px 12px)!important}
+.pane-affine .cell.untrusted,.pane-affine .cell.offset{box-shadow:inset 0 0 0 2px #f0a33a}
+.hit{position:absolute;border:0;outline:1px solid rgba(255,255,255,.35);outline-offset:-1px;transition:background var(--d2),box-shadow var(--d2)}
+.hit .hn{position:absolute;left:5px;top:5px;font-size:10.5px;font-weight:700;color:#fff;background:rgba(0,0,0,.45);border-radius:6px;padding:0 5px;line-height:16px}
+.hit .hc{position:absolute;right:5px;top:5px;width:20px;height:20px;border-radius:50%;border:2px solid #fff;background:rgba(0,0,0,.2);display:grid;place-items:center;color:#fff;transition:background var(--d2),transform var(--d2) var(--e-emph)}
+.hit .hc svg{opacity:0;transition:opacity var(--d1)}
+.hit.on{background:rgba(63,80,52,.18);box-shadow:inset 0 0 0 3px #fff}
+.hit.on .hc{background:var(--ink);transform:scale(1.1)}.hit.on .hc svg{opacity:1}
+.hit.run::after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.35) 50%,transparent 70%);background-size:250% 100%;animation:flow 1.2s linear infinite}
+.fx-cap{font-size:12px;color:var(--ink-3);margin:8px 2px 12px}
+.fx-quick{display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap}
+.fx-quick button{height:32px;padding:0 12px;border-radius:16px;background:var(--surface);border:1px solid var(--line);font-size:12.5px}
+.fx-row{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line)}
+.fx-ck{width:24px;height:24px;border-radius:50%;border:1.5px solid var(--ink-3);display:grid;place-items:center;color:#fff;flex:none;transition:background var(--d2),border-color var(--d2),transform var(--d2) var(--e-emph)}
+.fx-ck svg{opacity:0;transition:opacity var(--d1)}
+.fx-row.on .fx-ck{background:var(--ink);border-color:var(--ink);transform:scale(1.05)}.fx-row.on .fx-ck svg{opacity:1}
+.fx-n{width:28px;font-size:12.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.fx-t{flex:1;min-width:0}.fx-t b{font-size:13.5px;font-weight:600}.fx-t small{display:block;font-size:12px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-offset,.st-untrusted{color:#a7651a}.st-missing{color:var(--red)}.st-done{color:var(--sage-ink)}
+.fx-more{display:flex;align-items:center;gap:4px;width:100%;padding:12px 4px;font-size:13px;color:var(--ink-2)}
+.fx-more svg{transition:transform var(--d3) var(--e-emph)}.fx-more.open svg{transform:rotate(180deg)}
+.fx-warn{font-size:12.5px;color:var(--amber-ink);background:var(--amber);padding:9px 11px;border-radius:12px;margin:10px 0 0;animation:drop var(--d3) var(--e-emph)}
+.fx-bar{position:absolute;left:0;right:0;bottom:0;padding:22px 16px 26px;background:linear-gradient(to top,var(--bg) 86%,rgba(245,244,239,0));z-index:2}
+.fx-sum{font-size:12.5px;color:var(--ink-2);text-align:center;margin-bottom:-6px;min-height:18px}
+.fx-sum button{color:var(--sage-ink);font-weight:600;margin-left:2px}
+.cmp-bar{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px}
+.cmp-bar .grow{flex:1}
+.cmp{position:relative;border-radius:14px;overflow:hidden;background:#d9d7cf}
+.cmp-l{position:absolute;inset:0;background-repeat:no-repeat;display:grid;place-items:center;transition:opacity var(--d3) var(--e-std)}
+.cmp-l span{font-size:13px;color:var(--ink-2);background:rgba(255,255,255,.8);padding:4px 10px;border-radius:10px}
+.cmp-l.out.done{filter:contrast(1.08) saturate(1.12)}
+.cmp-l.out.offset{transform:translate(5%,-4%) scale(1.06)}
+.cmp-l.out.untrusted{filter:hue-rotate(28deg) saturate(1.3);transform:translate(-6%,4%) rotate(1.5deg) scale(1.08)}
+.cmp-l.out.missing{background:repeating-linear-gradient(45deg,#c9c6bc 0 6px,#d9d7cf 6px 12px)!important}
+.cmp.side-input .cmp-l.out{opacity:0}
+.cmp-tag{position:absolute;left:8px;bottom:8px;z-index:2;font-size:11px;font-weight:600;color:#fff;background:rgba(0,0,0,.5);padding:2px 8px;border-radius:8px}
+.up-plan{margin:10px 0 0;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.up-plan div{display:flex;justify-content:space-between;gap:8px;padding:9px 12px;font-size:12.5px;border-top:1px solid var(--line)}
+.up-plan div:first-child{border-top:0}
+.up-plan b{font-weight:600}
+.up-plan .tot{background:var(--surface-2);color:var(--ink-2)}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:1ms!important;animation-delay:0s!important;transition-duration:1ms!important}
+  ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}
+}
+</style>
+</head>
+<body>
+
+<article class="spec" id="spec">
+  <div class="eyebrow">codex-image-studio · 竖屏交互范式 · 提案 v0.3</div>
+  <h1>One object per surface, one home per action</h1>
+  <p class="lede">This proposal targets two structural problems: what an image tap means (C), and Queue and Works showing the same thing (D). The phone on the right is a working prototype that runs on simulated data and doesn't call the backend. Tasks progress on their own, so leave it running for a few seconds and the results will start arriving.</p>
+  <div class="try">
+    <button data-demo="generate">① 生成一批</button>
+    <button data-demo="viewer">② 点图 → 查看器</button>
+    <button data-demo="redraw">③ 局部重绘</button>
+    <button data-demo="longpress" class="alt">长按菜单</button>
+    <button data-demo="queue" class="alt">任务页</button>
+    <button data-demo="diverge" class="alt">模板归入提示</button>
+    <button data-demo="offline" class="alt">模拟断开</button>
+    <button data-demo="quick">④ 速改</button>
+    <button data-demo="failure">⑤ 超分失败 · 选块重绘</button>
+    <button data-demo="settings">⑥ 设置页</button>
+    <button data-demo="clear" class="alt">清空提示词</button>
+    <button data-demo="upmode">⑦ 创作 › 超分</button>
+    <button data-demo="multiregion">⑧ 多区域并行重绘</button>
+    <button data-demo="four" class="alt">4 张 / 12 张进度</button>
+    <button data-demo="keyboard" class="alt">输入态</button>
+  </div>
+  <p class="small muted">On the phone, drag a sheet's handle down to dismiss it. In the viewer, swipe left/right to change images, swipe down to close, and tap the image to hide the controls. Long-press (or right-click) a grid image to open its menu. The browser back button works as the system back.</p>
+
+  <h2>1 · Object model</h2>
+  <p>The current UI mixes four nouns on most screens. The new rule: <b>each surface has exactly one primary object</b>. Anything else on that surface is either a summary that links to the object's home, or it isn't shown.</p>
+  <div class="obj"><span>批次 Batch<br><small class="muted">一次提交</small></span><i>→</i><span>任务 Task<br><small class="muted">一次 CLI 调用</small></span><i>→</i><span>图片 Image<br><small class="muted">产物</small></span><i>∈</i><span>列表 List<br><small class="muted">模板身份 / 无模板</small></span></div>
+  <table>
+    <tr><th>Surface</th><th>Primary object</th><th>Question it answers</th></tr>
+    <tr><td>创作 (Create)</td><td>the draft</td><td>What do I want next, and where will it be filed?</td></tr>
+    <tr><td>作品 (Works)</td><td>Image, grouped by List</td><td>What did I get?</td></tr>
+    <tr><td>任务 (Tasks)</td><td>Batch</td><td>What is the system doing, and what failed?</td></tr>
+    <tr><td>模板 (Templates)</td><td>Template</td><td>What can I reuse?</td></tr>
+    <tr><td>查看器 (Viewer)</td><td>one Image</td><td>What can I do with this image?</td></tr>
+  </table>
+  <div class="callout"><b>Fixing D: Works shows results, Tasks shows the process.</b>Works no longer renders a placeholder card per pending task. A list with work in flight shows one live strip (“3 张生成中 · 主模型正在思考”) that links to the batch in Tasks, and finished images drop into the grid with an enter animation. Tasks groups by <code>batch_id</code> (already stored on <code>jobs</code>), so the prompt appears once per submission rather than once per image. Cancel, retry and logs exist only in Tasks.</div>
+  <div class="callout"><b>Fixing C: tapping an image opens the image.</b>Today a tap opens a metadata edit form, “点击放大” is needed to see the image full-size, and local redraw is one level deeper again. In the proposal a tap opens the full-screen viewer with a shared-element transition. Every per-image action lives in the viewer's bottom bar. Name, tags, the original prompt and the task record move into the ⓘ info sheet.</div>
+
+  <h2>2 · Navigation and depth</h2>
+  <ul>
+    <li><b>Four tabs:</b> 创作 · 作品 · 任务 · 模板. 参考图库 is no longer a tab. It becomes the picker sheet behind “+” in Create, which has 参考图 and 作品 tabs. Upload lives there too.</li>
+    <li><b>Avatar sheet:</b> account, call settings, recently deleted, install app, sign out. The top-right “install” icon (which looked like a download button) is removed.</li>
+    <li><b>Depth:</b> tab → list (push) → viewer (overlay) → sheet (overlay). Only one sheet is open at a time. A second step, such as 模板 ▾ → 保存为模板, replaces the sheet's content and animates its height instead of stacking another dialog.</li>
+    <li><b>Generating doesn't navigate.</b> You stay in Create: the button changes to “已加入 3 张”, a dot flies to the 任务 tab, its badge bumps, and a batch pill above the button links to where the results will land.</li>
+  </ul>
+
+  <h2>3 · Where each action lives</h2>
+  <table>
+    <tr><th>Action</th><th>Home</th><th>Shortcut</th><th>Removed from</th></tr>
+    <tr><td>下载 · 用作参考 · 再抽一张 · 局部重绘 · 超分</td><td>Viewer action bar</td><td>Long-press menu</td><td>Card icon rows, “发送到超分” button on every card <span class="tag rm">−</span></td></tr>
+    <tr><td>收藏 · 删除</td><td>Viewer ··· / long-press</td><td>—</td><td>Always-visible card icons <span class="tag rm">−</span></td></tr>
+    <tr><td>Name / tags</td><td>Viewer ⓘ info sheet</td><td>—</td><td>Top of image detail <span class="tag rm">−</span></td></tr>
+    <tr><td>用此提示词创作</td><td>Viewer ⓘ</td><td>—</td><td><span class="tag">new</span> previously only in the queue</td></tr>
+    <tr><td>Cancel · retry · logs</td><td>任务 (batch → expand)</td><td>Live/fail strip in Works links there</td><td>Placeholder cards in Works <span class="tag rm">−</span></td></tr>
+    <tr><td>暂停调度</td><td>任务 header switch</td><td>—</td><td>Next to the filter chips <span class="tag rm">−</span></td></tr>
+    <tr><td>Load / save template</td><td>创作 “模板 ▾” · 模板 tab</td><td>—</td><td>Separate book icon and save icon <span class="tag rm">−</span></td></tr>
+    <tr><td>Filing (归入)</td><td>“归入” row under the prompt</td><td>Divergence warning</td><td>Implicit chip <span class="tag">explicit</span></td></tr>
+    <tr><td>Connection / concurrency</td><td>Banner, shown only when something is wrong</td><td>任务 page</td><td>Always-on status strip <span class="tag rm">−</span></td></tr>
+  </table>
+
+  <h2>4 · Visual hierarchy rules</h2>
+  <ol>
+    <li><b>At most one filled dark button per surface.</b> 生成 in Create, the primary action in a sheet. Download is not the primary action of an image.</li>
+    <li><b>Cards show content, not controls.</b> Grid tiles show only the image. List cards show cover, name and count. Actions are in the viewer, the long-press menu or ···.</li>
+    <li><b>Destructive actions go last in menus, in red, and can be undone.</b> Deleting already goes to 最近删除, so the toast offers 撤销 instead of a confirm dialog.</li>
+    <li><b>Summarize state where the user is looking.</b> Use one live strip or stage bar, never N placeholder cards.</li>
+    <li><b>Show system status only on exceptions.</b> The disconnected/paused banner appears only when it applies.</li>
+    <li><b>Show filing before submit.</b> “归入 · X” sits under the prompt. If the text has drifted far from the template, a warning offers 改为无模板.</li>
+    <li><b>Use one control type per kind of input.</b> Segmented options for enums, switches for booleans, a stepper for counts, no native <code>&lt;select&gt;</code> in sheets. Non-form sheets close by drag, scrim or ×, with no separate 完成.</li>
+    <li><b>Hide the tab bar while typing.</b> With the keyboard up, the tab bar slides away and the generate bar docks to the keyboard (try “输入态”).</li>
+  </ol>
+
+  <h2>5 · Motion</h2>
+  <table>
+    <tr><th>Token</th><th>Value</th><th>Use</th></tr>
+    <tr><td><code>--d1</code></td><td>120 ms</td><td>Press feedback, colour</td></tr>
+    <tr><td><code>--d2</code></td><td>200 ms</td><td>Fades, exits</td></tr>
+    <tr><td><code>--d3</code></td><td>280 ms</td><td>Panels, indicators, expand</td></tr>
+    <tr><td><code>--d4</code></td><td>360 ms</td><td>Shared element, sheet enter, tile enter</td></tr>
+    <tr><td><code>--e-emph</code></td><td>cubic-bezier(.32,.72,0,1)</td><td>Anything that enters or moves</td></tr>
+    <tr><td><code>--e-exit</code></td><td>cubic-bezier(.4,0,1,1)</td><td>Anything that leaves (always shorter)</td></tr>
+  </table>
+  <table>
+    <tr><th>Moment</th><th>Motion</th><th>Mechanism</th></tr>
+    <tr><td>Tab switch</td><td>Crossfade with 8 px rise. The tab pill slides.</td><td>View Transitions on <code>#page</code></td></tr>
+    <tr><td>Open list</td><td>Cover morphs into the header thumbnail, content pushes in from the right</td><td>View Transitions, <code>hero</code> name</td></tr>
+    <tr><td>Open image</td><td>Tile grows into the full-screen image while the backdrop fades in. Reverses on close, including after a swipe.</td><td>FLIP clone (WAAPI)</td></tr>
+    <tr><td>Sheets</td><td>Slide up 340 ms, follow the finger, drop out 220 ms</td><td>WAAPI; <code>@starting-style</code> works for <code>&lt;dialog&gt;</code></td></tr>
+    <tr><td>Results arrive</td><td>Blur-up scale-in. Neighbouring tiles glide to their new positions.</td><td>Keyed list sync + FLIP</td></tr>
+    <tr><td>Submit</td><td>Button label rolls to “已加入”, a dot flies to 任务, the badge bumps</td><td>WAAPI</td></tr>
+    <tr><td>Long-press</td><td>Tile shrinks while held, then bounces as the menu opens</td><td>CSS + WAAPI</td></tr>
+    <tr><td>Toasts</td><td>Rise above whatever bar is present. Position follows context.</td><td>CSS transition</td></tr>
+  </table>
+  <p><code>prefers-reduced-motion</code> reduces all of these to instant state changes.</p>
+
+  <h2>6 · Back stack</h2>
+  <p>Each overlay pushes one <code>history</code> entry: list, viewer, redraw mode and sheet. System back, browser back, the × button, a scrim tap and a drag-dismiss all go through <code>history.back()</code>, so they behave identically and close one level at a time. Tabs don't push entries. Tapping the active tab returns to its root or scrolls to the top. On Android, <code>studioBack()</code> becomes “if depth &gt; 0 then history.back()”.</p>
+
+  <h2>7 · Mapping to the current code</h2>
+  <ul>
+    <li><code>navigate()</code> → wrap in <code>document.startViewTransition</code> and give <code>#page</code> a <code>view-transition-name</code>. Where unsupported, it falls back to an instant switch.</li>
+    <li><code>modal()</code> (single shared <code>&lt;dialog&gt;</code>) → a sheet host with a history entry per layer, plus a content-swap helper for multi-step sheets.</li>
+    <li><code>StudioDOM.updateHTML</code> is already a keyed morph. Add FLIP for moved keys and an <code>enter</code> class for new keys, which is what <code>syncList()</code> does in this demo.</li>
+    <li><code>viewer.js</code> already handles pushState, pinch zoom and 100% view. Keep those, open it straight from tiles with the shared-element fly-in, and move the <code>assetDetail</code> form into an info sheet.</li>
+    <li><code>renderQueueItems</code> → group by <code>batch_id</code>. <code>renderRecent</code>/<code>assetCard</code> → remove the action rows and add the long-press handler.</li>
+    <li>Status bar hints → removed. Connection and pause state become banners.</li>
+  </ul>
+
+  <h2>9 · v0.2 additions</h2>
+  <p>These follow the same rules: one home per action, everything reversible, and the cost of an action shown before you commit to it.</p>
+  <h3>Clear all (清空)</h3>
+  <p>A small text button next to “模板 ▾”, shown only when there is something to clear. It clears the prompt, reference images and template binding but <b>keeps the generation parameters</b>. The toast offers 撤销 for 5 seconds, so there is no confirm dialog.</p>
+  <h3>Quick edit (速改)</h3>
+  <ul>
+    <li>Its home is an input pill in the viewer, above the action bar. Focusing it hides the action bar and shows suggestion chips. Enter sends.</li>
+    <li>It reuses the original image's ratio and size, with the original as reference. The line under the input states exactly what will be sent (“按原图规格 · 16:9 · 1792×1008 · medium”), and tapping it opens the 速改 section of Settings.</li>
+    <li>It is also in the long-press menu as a small sheet, so you can quick-edit from the grid without opening the image.</li>
+    <li>Results get a “速改” badge, link back to their source in ⓘ, and (optionally) toast with “查看” when done.</li>
+  </ul>
+  <h3>Upscale failure and multi-tile redraw</h3>
+  <ul>
+    <li>This follows the new backend model: 4× / 16× / 64× area = 1 / 2 / 3 levels, and each level has parallel tiles followed by one review. Before submitting, the sheet lists each level's sizes, tile count and total calls.</li>
+    <li>Progress is shown as a tile map (one cell per tile) instead of stage bars, so you can see several tiles running in parallel.</li>
+    <li>On failure, the Works strip and the task both say “处理”. That opens a full-screen workspace with the three panes from <code>upscale-failure.js</code> (原图对照 / 直接拼接 / 仿射诊断), a tile overlay you tap to multi-select, quick selections (问题块 / 全选 / 清除), and per-tile 对比 (input ↔ output).</li>
+    <li>The submit bar states the cost (“3 次生图 + 1 次验收”). When the selection is larger than the concurrency limit, it says so and links to the setting. Leaving a problem tile unselected shows a warning, and the task then fails with the backend's own “仍未通过 … 请选择该块” message.</li>
+    <li>Selected tiles run in parallel through the shared session pool. Unselected tiles are reused.</li>
+  </ul>
+  <h3>Settings (设置)</h3>
+  <p>A single page reached from the avatar sheet, replacing the separate 账户设置 / 调用设置 entries. Sections: 账户 · ChatGPT 订阅 · 生成默认值 · 速改 · 超分 · 任务队列 · 调用提示词 · 显示与存储. Changes save immediately (a small “已保存” appears in the header). Other surfaces deep-link to the relevant section and briefly highlight it: the viewer's spec line → 速改, the concurrency hint → 任务队列, “设为默认” in the params sheet → 生成默认值. The prompt editor validates <code>{prompt}</code> live and offers variable chips. Clearing the cache asks for a second tap instead of a dialog. 并发会话 and 动效 affect the demo immediately.</p>
+
+  <h2>10 · v0.3 additions</h2>
+  <h3>Upscale has its own home</h3>
+  <p>Create now has a <b>生成 / 超分</b> switch in its header. 超分 mode is a complete form, so you no longer need an empty prompt plus the stitch option:</p>
+  <ul>
+    <li>原图: a large picker with a row of recent works for one-tap selection. 选择/更换 opens the picker (作品 / 参考图库 / 从相册上传) in single-select mode, where tapping an image picks it and closes the sheet.</li>
+    <li>面积倍率 4× / 16× / 64× with the per-level plan and call budget.</li>
+    <li>统一细节与画风约束, prefilled from Settings.</li>
+    <li>The button reads 开始超分 and gives the same submit feedback as 生成.</li>
+  </ul>
+  <p>The viewer and long-press 超分 entries remain as shortcuts. The old 超规格拼接 option in the parameters sheet becomes <b>生成后超分</b> (关 / 4× / 16× / 64×), which queues an upscale for each image as it finishes.</p>
+  <h3>Progress that scales to any count</h3>
+  <p>Each task card now shows one full-width segmented bar, with one segment per image, tile or region. Each segment fills by stage, shimmers while running, and turns red or amber on failure. The counts go on their own line (“2/4 完成 · 1 生成中 · 1 等待”), so 1, 4 or 20 images all fit at 360 px. The Works live strip and the batch pill use the same bar at a fixed width.</p>
+  <h3>Multi-region local redraw in parallel</h3>
+  <ul>
+    <li>In redraw mode you can draw up to 6 rectangles. Tapping inside one selects it, dragging on empty space adds another, and × removes it. Overlapping rectangles are refused, because the merge couldn't decide which edit owns those pixels.</li>
+    <li>Each region has its own instruction, chosen with the #1 #2 chips. Alternatively, the “同一条要求” switch applies one instruction to all regions. The submit button names any region that still has no instruction.</li>
+    <li>Regions run in parallel through the shared session pool, then merge into <b>one</b> new image that replaces only pixels inside the selections. In Tasks, each region is a segment of the bar, and the expanded card lists each region's instruction and stage plus the merge step.</li>
+    <li>Backend change needed: <code>POST /api/assets/{id}/inpaint</code> takes <code>regions[]</code> (each with its own prompt), runs <code>local_edit.prepare</code> per region as child calls in <code>CALL_POOL</code>, then applies <code>local_edit.compose</code> for each region in turn onto the same base. Compose is already exactly bounded, so non-overlapping regions can't interfere.</li>
+  </ul>
+
+  <h2>8 · Not covered here</h2>
+  <ul>
+    <li>Desktop layout. The same object model would map to three panes: composer | works | viewer/inspector. That would be a separate pass.</li>
+    <li>Pinch zoom and 100% in the viewer, the 超规格拼接 artifacts and the login wizard keep their current behaviour and are only stubbed here.</li>
+    <li>Open questions: is removing the 参考图库 tab acceptable? Should the divergence warning block submit or only inform?</li>
+  </ul>
+</article>
+
+<div class="device-slot"><div class="device"><div class="app" id="app">
+  <div class="sb"><span>9:41</span><span class="isl"></span><span>●●●</span></div>
+  <div id="page"></div>
+  <nav class="tabbar" id="tabbar">
+    <span class="tab-ind" id="tab-ind"></span>
+    <button class="tab" data-act="tab" data-tab="create"><span class="ti" data-ic="sparkle"></span>创作</button>
+    <button class="tab" data-act="tab" data-tab="works"><span class="ti" data-ic="layers"></span>作品</button>
+    <button class="tab" data-act="tab" data-tab="queue"><span class="ti" data-ic="list"></span><span class="badge zero" id="badge">0</span>任务</button>
+    <button class="tab" data-act="tab" data-tab="templates"><span class="ti" data-ic="book"></span>模板</button>
+  </nav>
+  <div class="viewer" id="viewer">
+    <div class="v-bg"></div>
+    <div class="v-stage" id="v-stage"><div class="v-track" id="v-track"></div></div>
+    <header class="v-top">
+      <button class="icon-btn" data-act="v-back" aria-label="返回" data-ic="back"></button>
+      <div class="v-title"><b id="v-count"></b><span id="v-sub"></span></div>
+      <button class="icon-btn v-info" data-act="v-info" aria-label="信息" data-ic="info"></button>
+      <button class="icon-btn v-more" data-act="v-more" aria-label="更多" data-ic="more"></button>
+    </header>
+    <div class="v-quick">
+      <div class="qe-chips" id="qe-chips"></div>
+      <form class="qe-bar" id="qe-form" autocomplete="off"><input id="qe-input" placeholder="一句话速改，例如：换成白天" enterkeyhint="send" maxlength="400"><button class="qe-send" id="qe-send" type="submit" aria-label="发送速改" disabled data-ic="arrowup"></button></form>
+      <button class="qe-meta" data-act="qe-settings"><span id="qe-meta"></span><span data-ic="sliders14"></span></button>
+    </div>
+    <footer class="v-actions">
+      <button class="v-act" data-act="v-dl"><span class="ic" data-ic="download"></span>下载</button>
+      <button class="v-act" data-act="v-ref"><span class="ic" data-ic="imgplus"></span>用作参考</button>
+      <button class="v-act" data-act="v-reroll"><span class="ic" data-ic="refresh"></span>再抽一张</button>
+      <button class="v-act" data-act="v-redraw"><span class="ic" data-ic="select"></span>局部重绘</button>
+      <button class="v-act" data-act="v-up"><span class="ic" data-ic="grid"></span>超分</button>
+    </footer>
+    <div class="v-redraw">
+      <div class="v-hint"><span id="rd-hint">在图上拖动框选区域，可以框选多个</span><button data-act="rd-cancel">取消</button></div>
+      <div class="rd-chips" id="rd-chips" style="display:none"></div>
+      <textarea id="rd-text" rows="2" placeholder="描述选区里需要修改的内容…"></textarea>
+      <button class="rd-shared" id="rd-shared" data-act="rd-shared" style="display:none"><span>所有区域使用同一条要求</span><span class="switch" id="rd-shared-sw"></span></button>
+      <div class="rd-row"><span class="rd-note" id="rd-note">只替换选区内像素，选区外保持原图</span><button class="rd-submit" id="rd-submit" data-act="rd-submit" disabled>提交重绘</button></div>
+    </div>
+  </div>
+  <div id="screens"></div>
+  <div id="layers"></div>
+  <div id="toast"></div>
+</div></div></div>
+
+<script>
+"use strict";
+/* ================= utils ================= */
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const sysRM=matchMedia("(prefers-reduced-motion: reduce)").matches;let RM=sysRM;
+const D=ms=>RM?1:ms;
+const E={std:"cubic-bezier(.2,.8,.2,1)",emph:"cubic-bezier(.32,.72,0,1)",exit:"cubic-bezier(.4,0,1,1)"};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+let uidN=0;const uid=p=>p+(++uidN).toString(36)+Math.random().toString(36).slice(2,6);
+const app=$("#app");
+const sc=()=>app.getBoundingClientRect().width/app.offsetWidth;
+function rectOf(el){const r=el.getBoundingClientRect(),a=app.getBoundingClientRect(),s=sc();return{x:(r.left-a.left)/s,y:(r.top-a.top)/s,w:r.width/s,h:r.height/s};}
+const pad=n=>String(n).padStart(2,"0");
+const fmtTime=t=>{const d=new Date(t);return `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;};
+
+const P={
+  sparkle:'<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.7 1.8 1.8.7-1.8.7L19 20l-.7-1.8-1.8-.7 1.8-.7z"/>',
+  layers:'<path d="M12 3 2 8l10 5 10-5z"/><path d="M2 12.5l10 5 10-5"/><path d="M2 17l10 5 10-5"/>',
+  list:'<path d="M9 6h12M9 12h12M9 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01" stroke-width="3"/>',
+  book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>',
+  chevr:'<path d="M9 6l6 6-6 6"/>',chevd:'<path d="M6 9l6 6 6-6"/>',back:'<path d="M15 18l-6-6 6-6"/>',
+  arrow:'<path d="M5 12h14M13 6l6 6-6 6"/>',x:'<path d="M6 6l12 12M18 6 6 18"/>',plus:'<path d="M12 5v14M5 12h14"/>',
+  minus:'<path d="M5 12h14"/>',check:'<path d="M5 12.5l4.5 4.5L19 7"/>',
+  download:'<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+  imgplus:'<path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/><path d="M16 5h6M19 2v6"/><path d="M21 16l-5-5L5 21"/><circle cx="9" cy="9" r="2"/>',
+  refresh:'<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 21v-5h-5"/>',
+  select:'<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M9 12h6M12 9v6"/>',
+  grid:'<rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>',
+  info:'<circle cx="12" cy="12" r="9"/><path d="M12 16v-4.5M12 8h.01"/>',
+  more:'<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>',
+  star:'<path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>',
+  trash:'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  sliders:'<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  copy:'<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  alert:'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  user:'<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/>',code:'<path d="M8 9l-4 3 4 3M16 9l4 3-4 3M13.5 6l-3 12"/>',
+  archive:'<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>',
+  logout:'<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H3"/>',
+  phone:'<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>',
+  folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  upload:'<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>',edit:'<path d="M4 20h4L19 9l-4-4L4 16z"/>',
+  arrowup:'<path d="M12 19V5M6 11l6-6 6 6"/>',
+  doc:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
+};
+const icon=(n,s=22)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n]||""}</svg>`;
+function hydrateIcons(root=document){$$("[data-ic]",root).forEach(e=>{if(e.firstChild)return;const m=e.dataset.ic.match(/^([a-z]+)(\d*)$/);e.innerHTML=icon(m[1],m[2]?+m[2]:e.classList.contains("qe-send")?18:22);});}
+
+/* ================= procedural images ================= */
+function rng(seed){let a=seed>>>0;return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const hexA=(h,a)=>{const n=parseInt(h.slice(1),16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`;};
+const PAL={
+  night:{sky:["#0e1430","#43204f"],glow:"#ffa04d",layers:["#1c1532","#120d22"],bokeh:["#ff4fa0","#ffb347","#5ad1ff","#ffd27a"]},
+  sea:{sky:["#9fb4c2","#ece6da"],glow:"#fff3d6",layers:["#8094a2","#5b6f7e"],bokeh:[],mist:1},
+  ink:{sky:["#e7e4d9","#f5f3ec"],glow:"#d9d3c2",layers:["#a3a69c","#5c5f57","#34362f"],bokeh:[],mist:1},
+  autumn:{sky:["#f1c062","#f8e6b8"],glow:"#fff2cf",layers:["#cf7d2c","#7e4a1d"],bokeh:["#ffd36b","#f29a3b","#ffe9a8"]},
+  product:{sky:["#f4f2ed","#dedad1"],glow:"#ffffff",layers:[],bokeh:[],product:1},
+  neon:{sky:["#120a2a","#082a3c"],glow:"#00e1ff",layers:["#1d1340","#0d0a20"],bokeh:["#ff2bd6","#00e1ff","#7c4dff"]},
+};
+const THEMES=Object.keys(PAL);
+function themeOf(p,seed=0){if(/霓虹|雨夜|灯笼|茶馆/.test(p))return"night";if(/灯塔|海/.test(p))return"sea";if(/寺|水墨|山/.test(p))return"ink";if(/银杏|秋/.test(p))return"autumn";if(/产品|白底|香水|瓶/.test(p))return"product";if(/赛博|猫|夜城/.test(p))return"neon";return THEMES[seed%THEMES.length];}
+const RATIO={"1:1":1,"3:2":1.5,"2:3":2/3,"16:9":16/9,"9:16":9/16,"自动":1};
+const DIMS={"1:1":[1024,1024],"3:2":[1536,1024],"2:3":[1024,1536],"16:9":[1792,1008],"9:16":[1008,1792],"自动":[1024,1024]};
+const artCache=new Map();
+function art(theme,seed,ratio){
+  const key=theme+"|"+seed+"|"+ratio;if(artCache.has(key))return artCache.get(key);
+  const r=rng(seed*7919+13),R=RATIO[ratio]||1,L=560,w=R>=1?L:Math.round(L*R),h=R>=1?Math.round(L/R):L;
+  const c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d"),p=PAL[theme];
+  let g=x.createLinearGradient(0,0,r()*w*.3,h);g.addColorStop(0,p.sky[0]);g.addColorStop(1,p.sky[1]);x.fillStyle=g;x.fillRect(0,0,w,h);
+  const gx=w*(.18+r()*.64),gy=h*(.16+r()*.3),gr=Math.min(w,h)*(.1+r()*.1);
+  const rg=x.createRadialGradient(gx,gy,0,gx,gy,gr*4.2);rg.addColorStop(0,hexA(p.glow,.95));rg.addColorStop(.2,hexA(p.glow,.55));rg.addColorStop(1,hexA(p.glow,0));x.fillStyle=rg;x.fillRect(0,0,w,h);
+  p.layers.forEach((col,i)=>{const base=h*(.5+i*.16+r()*.06),f1=1+r()*2.5,f2=3+r()*5,p1=r()*6,p2=r()*6,a1=h*(.05+r()*.08),a2=h*(.012+r()*.03);
+    x.beginPath();x.moveTo(0,h);for(let px=0;px<=w;px+=4){const t=px/w;x.lineTo(px,base-Math.sin(t*f1*Math.PI+p1)*a1-Math.sin(t*f2*Math.PI+p2)*a2);}x.lineTo(w,h);x.closePath();
+    x.fillStyle=col;x.globalAlpha=p.mist?.55+i*.2:1;x.fill();x.globalAlpha=1;
+    if(p.mist){const mg=x.createLinearGradient(0,base-h*.08,0,base+h*.06);mg.addColorStop(0,"rgba(255,255,255,0)");mg.addColorStop(.6,"rgba(255,255,255,.5)");mg.addColorStop(1,"rgba(255,255,255,0)");x.fillStyle=mg;x.fillRect(0,base-h*.08,w,h*.14);}});
+  for(let i=0;i<(p.bokeh.length?16:0);i++){const bx=r()*w,by=h*(.35+r()*.6),br=4+r()*Math.min(w,h)*.05,col=p.bokeh[Math.floor(r()*p.bokeh.length)];
+    const bg=x.createRadialGradient(bx,by,0,bx,by,br);bg.addColorStop(0,hexA(col,.15+r()*.6));bg.addColorStop(1,hexA(col,0));x.fillStyle=bg;x.beginPath();x.arc(bx,by,br,0,7);x.fill();}
+  if(p.product){const bw=w*(.2+r()*.1),bh=h*(.42+r()*.12),bx=w/2-bw/2+(r()-.5)*w*.15,by=h*.62-bh/2;
+    x.fillStyle="rgba(0,0,0,.08)";x.beginPath();x.ellipse(bx+bw/2,by+bh+6,bw*.7,10,0,0,7);x.fill();
+    const pg=x.createLinearGradient(bx,0,bx+bw,0);const hue=Math.floor(r()*360);pg.addColorStop(0,`hsl(${hue} 35% 62%)`);pg.addColorStop(.35,`hsl(${hue} 45% 82%)`);pg.addColorStop(1,`hsl(${hue} 30% 48%)`);
+    x.fillStyle=pg;x.beginPath();x.roundRect(bx,by,bw,bh,bw*.18);x.fill();x.fillStyle="#2b2b28";x.beginPath();x.roundRect(bx+bw*.32,by-bh*.14,bw*.36,bh*.16,4);x.fill();}
+  const im=x.getImageData(0,0,w,h),d=im.data;for(let i=0;i<d.length;i+=4){const n=(r()-.5)*14;d[i]+=n;d[i+1]+=n;d[i+2]+=n;}x.putImageData(im,0,0);
+  const url=c.toDataURL("image/jpeg",.86);artCache.set(key,url);return url;
+}
+const src=im=>art(im.theme,im.seed,im.ratio);
+
+/* ================= state ================= */
+const DEFAULT_PROMPTS={
+  call:"使用内置生图工具生成一张图片。\n画面要求：{prompt}\n画幅：{ratio} · 尺寸：{size}\n只返回图片，不执行其他操作。",
+  polish:"先为下面的画面补全构图、层次、光线、配色与风格标签，再调用生图工具：\n{prompt}",
+  tile:"这是超分第 {tile_index}/{tile_count} 块，范围 {bounds}，目标尺寸 {target_size}。\n只增加细节，保持所有边界与元素位置不变。\n原始要求：{prompt}\n统一约束：{injection}"};
+const PROMPT_META={call:["外层调用提示词",["{prompt}","{ratio}","{size}"]],polish:["帮我润色提示词",["{prompt}"]],tile:["超分 · 分块重绘提示词",["{prompt}","{target_size}","{tile_index}","{tile_count}","{bounds}","{injection}"]]};
+const S={tab:"create",coll:null,filter:"active",expanded:new Set(),paused:false,offline:false,worksScroll:0,
+  images:[],batches:[],templates:[],collections:[],library:[],
+  composer:{prompt:"",template:null,refs:[],ratio:"3:2",count:3,size:"自动",polish:false,transparent:false,stitch:"关",effort:"xhigh",ack:false},
+  mode:"gen",upc:{src:null,factor:"16×",inj:"保持原图的胶片颗粒与低饱和色调，不新增文字"},
+  settings:{concurrency:2,maxAttempts:3,notify:true,motion:"system",
+    defaults:{ratio:"3:2",count:3,effort:"xhigh",polish:false},
+    quick:{effort:"medium",keepSpec:true,useRef:true,into:"same",notify:true},
+    upscale:{factor:"16×",autoSelect:true,injection:"保持原图的胶片颗粒与低饱和色调，不新增文字"},
+    prompts:{...DEFAULT_PROMPTS},cache:{mb:86,files:143}}};
+const STAGE=["正在传递","主模型正在思考","等待生图返回","正在回传"];
+const KIND={image:"生成",redraw:"局部重绘",upscale:"超分",reroll:"再抽",quick:"速改"};
+const TSTATE={done:"正常",offset:"偏移",untrusted:"低可信",missing:"未返回",running:"补绘中",queued:"等待"};
+const img=id=>S.images.find(i=>i.id===id)||S.library.find(i=>i.id===id);
+const coll=id=>S.collections.find(c=>c.id===id);
+const tpl=id=>S.templates.find(t=>t.id===id);
+const imagesOf=cid=>S.images.filter(i=>i.coll===cid);
+let seedN=100;
+function makeImage({prompt,coll,ratio,theme,created,batch,name}){
+  const seed=++seedN*31+Math.floor(Math.random()*997);const [w,h]=DIMS[ratio]||DIMS["1:1"];
+  return{id:uid("i"),seed,theme:theme||themeOf(prompt,seed),ratio,prompt,coll,created:created||Date.now(),batch,w,h,bytes:Math.round(w*h*(.5+Math.random()*.4)),fav:false,name:name||`生成作品-${seed.toString(16)}.png`,tags:""};
+}
+/* ---- progressive upscale model (mirrors upscale_workflow.py) ---- */
+const FACTORS={"4×":1,"16×":2,"64×":3};
+const BASEGRID={"16:9":[3,2],"3:2":[3,2],"1:1":[2,2],"2:3":[2,3],"9:16":[2,3],"自动":[2,2]};
+function makeUp(im,factor,injection,plan={}){
+  const n=FACTORS[factor],levels=[];
+  for(let L=0;L<n;L++){const k=2**L,[c,r]=BASEGRID[im.ratio]||[2,2],grid=[c+L,r+L];
+    levels.push({from:[im.w*k,im.h*k],to:[im.w*k*2,im.h*k*2],grid,phase:L?"pending":"tiles",tiles:Array.from({length:grid[0]*grid[1]},(_,i)=>({i,state:"queued",stage:0,reason:""}))});}
+  return{factor,levels,cur:0,injection,src:im.id,plan};
+}
+function upError(t){const u=t.up,lv=u.levels[u.cur],bad=lv.tiles.filter(x=>x.state!=="done"),sel=lv.lastSelection;
+  const left=sel?bad.filter(x=>!sel.includes(x.i)):[];
+  if(left.length)return `第 ${left.map(x=>x.i+1).join("、")} 块仍未通过，已保留未选中的返回，请在失败处理中选择该块。`;
+  return `第 ${u.cur+1} 级验收未通过：`+bad.map(x=>u.plan[`${u.cur}:${x.i}`]?.issue||`第 ${x.i+1} 块${x.reason}`).join("；");}
+function upIssues(t){const u=t.up,lv=u.levels[u.cur];return lv.tiles.filter(x=>x.state!=="done").map(x=>u.plan[`${u.cur}:${x.i}`]?.issue||`第 ${x.i+1} 块：${x.reason}`);}
+const tileGrid=(t,big)=>{const lv=t.up.levels[t.up.cur];return `<span class="tg${big?" big":""}" style="grid-template-columns:repeat(${lv.grid[0]},1fr)">${lv.tiles.map(x=>`<i data-s="${x.state}"></i>`).join("")}</span>`;};
+function upLabel(t){const u=t.up,lv=u.levels[u.cur],n=u.levels.length,done=lv.tiles.filter(x=>x.state==="done").length;
+  if(t.status==="queued")return S.paused?"已暂停":"等待调度";
+  if(t.status==="failed")return `第 ${u.cur+1}/${n} 级未通过 · ${lv.tiles.filter(x=>x.state!=="done").length} 块有问题`;
+  if(t.status==="done")return `${u.factor} 完成 · ${u.levels[n-1].to.join("×")}`;
+  if(t.status==="cancelled")return "已取消";
+  if(lv.phase==="review")return `第 ${u.cur+1}/${n} 级 · 验收中`;
+  const run=lv.tiles.filter(x=>x.state==="running").length;
+  return `第 ${u.cur+1}/${n} 级 · 补绘 ${done}/${lv.tiles.length}${run>1?` · ${run} 块并行`:""}`;}
+const units=t=>t.up?t.up.levels[t.up.cur].tiles.map(x=>({status:x.state,stage:x.stage})):t.multi?t.multi.parts.map(x=>({status:x.state,stage:x.stage})):[t];
+const pctOf=x=>x.status==="running"?Math.round((Math.min(x.stage,3)+.5)/4*100):x.status==="queued"||x.status==="cancelled"?0:100;
+const segBar=(list,w)=>`<span class="bbar${list.length>10?" dense":""}"${w?` style="width:${w}px"`:""}>${list.map(x=>`<i data-st="${x.status}" style="--p:${pctOf(x)}%"></i>`).join("")}</span>`;
+function multiLabel(t){const m=t.multi,n=m.parts.length,done=m.parts.filter(x=>x.state==="done").length,run=m.parts.filter(x=>x.state==="running").length;
+  if(t.status==="queued")return S.paused?"已暂停":"等待调度";if(t.status==="cancelled")return"已取消";
+  if(t.status==="done")return n>1?`已合成 ${n} 个区域`:"完成";
+  if(m.phase==="merge")return `合成 ${n} 个区域…`;
+  return n>1?`${n} 个区域 · ${done}/${n} 完成${run>1?` · ${run} 并行`:""}`:(run?STAGE[m.parts[0].stage]:"等待调度");}
+const taskBar=t=>t.up?tileGrid(t):segBar(units(t),40);
+const taskLabel=t=>t.multi?multiLabel(t):t.up?upLabel(t):t.status==="running"?STAGE[t.stage]:t.status==="queued"?(S.paused?"调度已暂停":"等待调度"):"";
+(function seed(){
+  const T=Date.now();
+  S.templates=[
+    {id:"t1",name:"雨夜霓虹茶馆",text:"雨夜里的霓虹茶馆，电影感构图，暖色灯笼，湿润的石板路反光",ratio:"16:9",refs:2},
+    {id:"t2",name:"清晨海边灯塔",text:"清晨的海边灯塔，薄雾，胶片颗粒，低饱和",ratio:"3:2",refs:0},
+    {id:"t3",name:"山间古寺 · 水墨",text:"山间古寺，晨雾，水墨风，大面积留白",ratio:"2:3",refs:1},
+  ];
+  S.collections=[{id:"c1",name:"雨夜霓虹茶馆",template:"t1"},{id:"c2",name:"清晨海边灯塔",template:"t2"},{id:"c3",name:"山间古寺 · 水墨",template:"t3"},{id:"cnone",name:"无模板",template:null}];
+  const mk=(cid,prompt,ratio,n,ago,fail)=>{const b={id:uid("b"),kind:"image",prompt,coll:cid,ratio,count:n,created:T-ago,tasks:[]};
+    for(let i=0;i<n;i++){if(fail&&i===n-1){b.tasks.push({id:uid("t"),status:"failed",stage:1,err:"image generation tool unavailable",attempt:3});continue;}
+      const im=makeImage({prompt,coll:cid,ratio,created:T-ago+i*9000,batch:b.id});S.images.push(im);b.tasks.push({id:uid("t"),status:"done",stage:4,img:im.id,attempt:1});}
+    S.batches.push(b);};
+  mk("c1","雨夜里的霓虹茶馆，电影感构图，暖色灯笼，湿润的石板路反光","16:9",4,3600e3*5);
+  mk("c2","清晨的海边灯塔，薄雾，胶片颗粒，低饱和","3:2",4,3600e3*4);
+  mk("c3","山间古寺，晨雾，水墨风，大面积留白","2:3",3,3600e3*3);
+  mk("cnone","玻璃香水瓶产品图，白底，柔光","1:1",3,3600e3*2.5);
+  mk("cnone","秋天的银杏大道，午后逆光","3:2",3,3600e3*2,true);
+  mk("c1","雨夜霓虹茶馆，俯视角，霓虹在积水里的倒影","16:9",3,3600e3*1);
+  mk("cnone","赛博朋克夜城里的猫，霓虹招牌","9:16",2,3600e3*.5);
+  S.images.sort((a,b)=>b.created-a.created);S.batches.sort((a,b)=>b.created-a.created);
+  ["材质参考 · 亚麻","光线参考 · 黄昏","构图参考 · 三分","色调参考 · 青橙"].forEach((n,i)=>{const im=makeImage({prompt:n,coll:null,ratio:"1:1",theme:["product","autumn","sea","neon"][i],name:n+".jpg"});im.kind="ref";S.library.push(im);});
+  // a failed 16x upscale so the failure workspace has something real to show
+  const srcIm=S.images.find(i=>i.coll==="c1");
+  const ub={id:"bup",kind:"upscale",prompt:`16× 超分 · ${srcIm.name}`,coll:"c1",ratio:srcIm.ratio,count:1,created:T-1200e3,theme:srcIm.theme,tasks:[]};
+  const ut={id:uid("t"),status:"failed",stage:0,attempt:1,up:makeUp(srcIm,"16×","保持原图的胶片颗粒与低饱和色调，不新增文字",{
+    "0:1":{state:"offset",reason:"配准后核心偏移 3.4 px",issue:"第 2 块接缝处窗框断开"},
+    "0:2":{state:"untrusted",reason:"特征内点比例 18%，匹配不足",issue:"第 3 块灯笼位置偏移"},
+    "0:4":{state:"missing",reason:"此块尚未返回",issue:"第 5 块缺失，右下出现空白"}})};
+  const l0=ut.up.levels[0];l0.tiles.forEach(x=>{const bad=ut.up.plan[`0:${x.i}`];x.state=bad?bad.state:"done";x.reason=bad?bad.reason:"";});l0.phase="failed";
+  ut.err=upError(ut);ub.tasks.push(ut);S.batches.push(ub);S.batches.sort((a,b)=>b.created-a.created);
+  // one live batch so the demo is moving on load
+  const b={id:uid("b"),kind:"image",prompt:"雨夜里的霓虹茶馆，二楼窗边的剪影，灯笼",coll:"c1",ratio:"16:9",count:2,created:T-4000,tasks:[]};
+  for(let i=0;i<2;i++)b.tasks.push({id:uid("t"),status:"queued",stage:0,attempt:0});S.batches.unshift(b);
+})();
+
+/* ================= history / layers ================= */
+const layers=[];let waiters=[];
+history.replaceState({depth:0},"");
+function pushLayer(type,close){layers.push({type,close});history.pushState({depth:layers.length},"");}
+addEventListener("popstate",e=>{const depth=e.state?.depth||0;while(layers.length>depth){layers.pop().close();}const w=waiters;waiters=[];w.forEach(f=>f());});
+function back(){return new Promise(r=>{if(!layers.length)return r();waiters.push(r);history.back();});}
+function closeOverlays(){let k=0;for(let i=layers.length-1;i>=0&&layers[i].type!=="coll";i--)k++;if(!k)return Promise.resolve();return new Promise(r=>{waiters.push(r);history.go(-k);});}
+
+/* ================= keyed list sync with FLIP ================= */
+function syncList(box,items,key,html){
+  if(!box)return;const ready=box.dataset.ready==="1";
+  const old=new Map([...box.children].filter(e=>e.dataset.k).map(e=>[e.dataset.k,e]));
+  const first=new Map();if(ready&&!RM)for(const [k,e] of old)first.set(k,e.getBoundingClientRect());
+  const next=[];
+  for(const it of items){const k=key(it),h=html(it);let el=old.get(k);
+    if(!el){const t=document.createElement("template");t.innerHTML=h.trim();el=t.content.firstElementChild;el.dataset.k=k;el.dataset.h=h;
+      if(ready){el.classList.add("enter");el.addEventListener("animationend",()=>el.classList.remove("enter"),{once:true});}}
+    else if(el.dataset.h!==h){const t=document.createElement("template");t.innerHTML=h.trim();const n=t.content.firstElementChild;el.innerHTML=n.innerHTML;el.className=n.className;for(const a of n.attributes)if(a.name!=="class")el.setAttribute(a.name,a.value);el.dataset.h=h;}
+    old.delete(k);next.push(el);}
+  for(const e of old.values())e.remove();
+  next.forEach((el,i)=>{if(box.children[i]!==el)box.insertBefore(el,box.children[i]||null);});
+  if(ready&&!RM){const s=sc();for(const el of next){const f=first.get(el.dataset.k);if(!f)continue;const l=el.getBoundingClientRect(),dx=(f.left-l.left)/s,dy=(f.top-l.top)/s;
+    if(Math.abs(dx)>1||Math.abs(dy)>1)el.animate([{transform:`translate(${dx}px,${dy}px)`},{transform:"none"}],{duration:380,easing:E.emph});}}
+  box.dataset.ready="1";
+}
+
+/* ================= view transitions ================= */
+function vt(kind,fn){
+  if(RM||!document.startViewTransition){fn();return Promise.resolve();}
+  document.documentElement.dataset.vt=kind;
+  const t=document.startViewTransition(fn);
+  return t.finished.catch(()=>{}).finally(()=>{if(document.documentElement.dataset.vt===kind)delete document.documentElement.dataset.vt;});
+}
+
+/* ================= render ================= */
+const topBar=(title,right="")=>`<header class="top"><button class="avatar" data-act="me" aria-label="账户">D</button><h1>${title}</h1><span class="grow"></span>${right}</header><div class="banner-slot"></div>`;
+function renderPage(){
+  const p=$("#page");
+  if(S.tab==="create")p.innerHTML=createHTML();
+  else if(S.tab==="works")p.innerHTML=S.coll?collHTML():worksHTML();
+  else if(S.tab==="queue")p.innerHTML=queueHTML();
+  else p.innerHTML=tplsHTML();
+  hydrateIcons(p);
+  if(S.tab==="works"&&!S.coll){const s=$("#page .scroll");if(s){s.scrollTop=S.worksScroll;s.addEventListener("scroll",()=>S.worksScroll=s.scrollTop,{passive:true});}}
+  updatePage();updateChrome();
+}
+function refresh(){updatePage();updateChrome();}
+function updatePage(){
+  if(S.tab==="create")updateCreate();
+  else if(S.tab==="works")S.coll?updateColl():updateWorks();
+  else if(S.tab==="queue")updateQueue();
+  else updateTpls();
+}
+const activeTasks=()=>S.batches.flatMap(b=>b.tasks).filter(t=>t.status==="queued"||t.status==="running");
+let lastBadge=-1,badgeHold=0;
+function updateChrome(){
+  $$(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===S.tab));
+  const i=["create","works","queue","templates"].indexOf(S.tab);$("#tab-ind").style.transform=`translateX(${i*100}%)`;
+  if(Date.now()>=badgeHold){const n=activeTasks().length,b=$("#badge");b.textContent=n;b.classList.toggle("zero",n===0);
+    if(lastBadge>=0&&n>lastBadge&&!RM){b.classList.remove("bump");void b.offsetWidth;b.classList.add("bump");}lastBadge=n;}
+  const slot=$("#page .banner-slot");if(slot){const want=S.offline?`<div class="banner">${icon("alert",18)}<span>订阅连接已断开，新任务会等待</span><button data-act="reconnect">重新连接</button></div>`:S.paused&&S.tab!=="queue"?`<div class="banner">${icon("clock",18)}<span>调度已暂停，新任务不会开始</span><button data-act="unpause">恢复</button></div>`:"";
+    if(slot.dataset.h!==want){slot.innerHTML=want;slot.dataset.h=want;}}
+  placeToast();
+}
+
+/* ---------- create ---------- */
+const modeSeg=()=>`<div class="mode-seg" id="mode-seg"><span class="ind"></span><button data-act="mode" data-v="gen" class="${S.mode==="gen"?"on":""}">生成</button><button data-act="mode" data-v="up" class="${S.mode==="up"?"on":""}">超分</button></div>`;
+function placeInd(seg,instant){const on=$("button.on",seg),ind=$(".ind",seg);if(!on)return;if(instant){ind.style.transition="none";}ind.style.width=on.offsetWidth+"px";ind.style.transform=`translateX(${on.offsetLeft}px)`;if(instant){void ind.offsetWidth;ind.style.transition="";}}
+function createHTML(){return S.mode==="up"?upModeHTML():genHTML();}
+function upModeHTML(){const u=S.upc;return `${topBar("创作",modeSeg())}
+<div class="scroll" id="scroll">
+  <section class="card" id="cu-card"><div class="card-head"><span class="label">原图</span><span class="grow"></span><button class="ghost-btn" data-act="cu-pick" id="cu-change"></button></div><div id="cu-src"></div></section>
+  <section class="card"><div class="card-head"><span class="label">面积倍率</span><span class="muted small">宽高 ×2 / ×4 / ×8</span></div><div class="opts" id="cu-f">${Object.keys(FACTORS).map(v=>`<button class="opt tall${v===u.factor?" on":""}" data-act="cu-f" data-v="${v}">${v}<small>${FACTORS[v]} 级</small></button>`).join("")}</div><div id="cu-plan"></div></section>
+  <section class="card"><div class="card-head"><span class="label">统一细节与画风约束</span><span class="muted small">可选</span></div><textarea class="input" id="cu-inj" rows="2" placeholder="注入每一级每一块，并作为验收依据">${esc(u.inj)}</textarea></section>
+  <p class="note" style="margin:0 4px">每级逐块补绘并行进行，通过验收才进入下一级；失败会保留已完成的块，可在任务里选块重绘。</p>
+</div>
+<div class="gen-bar"><button class="bp hide" id="bp" data-act="bp"></button><div class="sum static"><span class="st"><b id="sum1"></b><span id="sum2"></span></span></div><button class="gen-btn" id="gen" data-act="up-start"><span class="lab a">开始超分${icon("arrow",18)}</span><span class="lab b">${icon("check",18)}<span id="gen-done">已加入</span></span></button></div>`;}
+function planHTML(im,f){const u=makeUp(im,f,""),tiles=u.levels.reduce((a,l)=>a+l.tiles.length,0);
+  return `<div class="up-plan">${u.levels.map((l,i)=>`<div><span>第 ${i+1} 级</span><b>${l.from.join("×")} → ${l.to.join("×")}</b><span>${l.tiles.length} 块</span></div>`).join("")}<div class="tot"><span>预算</span><b>${tiles} 次生图 + ${u.levels.length} 次验收</b><span>最终 ${u.levels.at(-1).to.join("×")}</span></div></div>`;}
+function setHTML(el,h){if(el&&el.dataset.h!==h){el.innerHTML=h;el.dataset.h=h;}}
+function updateUpCreate(){
+  const u=S.upc,im=u.src&&img(u.src);
+  setHTML($("#cu-src"),im?`<div class="cu-hero"><img src="${src(im)}" alt="" style="aspect-ratio:${im.w}/${im.h}"><div><b>${esc(im.name)}</b><span>${im.w} × ${im.h} · ${esc(coll(im.coll)?.name||"参考图")}</span></div></div>`
+    :`<button class="cu-empty" data-act="cu-pick">${icon("imgplus",26)}<b>选择要超分的图片</b><span>作品、参考图库，或从相册上传</span></button><div class="cu-recent-h">最近作品 · 点一下即可选中</div><div class="cu-recent">${S.images.slice(0,10).map(i=>`<button data-act="cu-src" data-id="${i.id}" aria-label="${esc(i.name)}"><img src="${src(i)}" alt=""></button>`).join("")}</div>`);
+  setHTML($("#cu-change"),im?`${icon("refresh",16)}更换`:`${icon("imgplus",16)}选择`);
+  setHTML($("#cu-plan"),im?planHTML(im,u.factor):`<div class="up-plan"><div><span class="muted">选好原图后，这里显示每级尺寸与调用预算</span></div></div>`);
+  if(im){const m=makeUp(im,u.factor,"");$("#sum1").textContent=`${u.factor} · ${m.levels.length} 级`;$("#sum2").textContent=`→ ${m.levels.at(-1).to.join("×")} · ${m.levels.reduce((a,l)=>a+l.tiles.length,0)+m.levels.length} 次调用`;}
+  else{$("#sum1").textContent=`${u.factor} 超分`;$("#sum2").textContent="尚未选择原图";}
+  const seg=$("#mode-seg");if(seg&&!seg.dataset.ready){placeInd(seg,true);seg.dataset.ready=1;}
+  updBp();
+}
+function genHTML(){const c=S.composer;return `${topBar("创作",modeSeg())}
+<div class="scroll" id="scroll">
+  <section class="card" id="prompt-card">
+    <div class="card-head"><span class="label">提示词</span><span class="grow"></span><button class="clear-btn off" id="clear-btn" data-act="clear-all" aria-label="清空提示词与参考图">${icon("x",14)}清空</button><button class="ghost-btn" data-act="tpl-menu">${icon("book",16)}模板${icon("chevd",14)}</button></div>
+    <textarea id="prompt" placeholder="描述你想要的画面…" maxlength="24000">${esc(c.prompt)}</textarea>
+    <div id="into"></div>
+  </section>
+  <section class="card">
+    <div class="card-head"><span class="label">参考图</span><span class="muted small" id="ref-count"></span></div>
+    <div class="ref-strip" id="refs"></div>
+  </section>
+</div>
+<div class="gen-bar">
+  <button class="bp hide" id="bp" data-act="bp"></button>
+  <button class="sum" data-act="params"><span class="st"><b id="sum1"></b><span id="sum2"></span></span>${icon("sliders",18)}</button>
+  <button class="gen-btn" id="gen" data-act="generate"><span class="lab a">生成${icon("arrow",18)}</span><span class="lab b">${icon("check",18)}<span id="gen-done">已加入</span></span></button>
+</div>`;}
+function bigrams(s){s=s.replace(/[\s，。,.、·]/g,"");const o=new Set();for(let i=0;i<s.length-1;i++)o.add(s.slice(i,i+2));return o;}
+function similarity(a,b){const A=bigrams(a),B=bigrams(b);if(!A.size||!B.size)return 1;let n=0;A.forEach(x=>B.has(x)&&n++);return n/Math.min(A.size,B.size);}
+function updateInto(){
+  const c=S.composer,t=tpl(c.template),box=$("#into");if(!box)return;
+  const cn=t?(S.collections.find(x=>x.template===t.id)?.name||t.name):null;
+  const div=t&&!c.ack&&c.prompt.trim().length>4&&similarity(c.prompt,t.text)<.25;
+  const h=`<div class="file-into"><span>${icon("folder",14)}归入</span>${t?`<span class="into-chip" id="into-chip"><span class="t">${esc(cn)}</span><button data-act="detach" aria-label="解除模板">${icon("x",14)}</button></span>`:`<span class="into-chip none">无模板</span>`}</div>${div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:""}`;
+  if(box.dataset.h!==h){box.innerHTML=h;box.dataset.h=h;}
+}
+function updateCreate(){
+  if(S.mode==="up")return updateUpCreate();
+  {const seg=$("#mode-seg");if(seg&&!seg.dataset.ready){placeInd(seg,true);seg.dataset.ready=1;}}
+  const c=S.composer;updateInto();
+  $("#clear-btn")?.classList.toggle("off",!(c.prompt.trim()||c.refs.length||c.template));
+  $("#ref-count").textContent=`${c.refs.length} / 8`;
+  syncList($("#refs"),[...c.refs.map(id=>({id})),{id:"__add"}],x=>x.id,x=>x.id==="__add"?`<button class="ref-add" data-act="pick-refs" aria-label="添加参考图">${icon("plus",22)}</button>`:`<div class="ref"><img src="${src(img(x.id))}" alt=""><button class="rm" data-act="rm-ref" data-id="${x.id}" aria-label="移除">${icon("x",12)}</button></div>`);
+  $("#sum1").textContent=`${c.ratio} · ${c.count} 张`;
+  $("#sum2").textContent=[c.size==="自动"?"自动尺寸":c.size+" 长边",c.polish&&"润色",c.transparent&&"透明",c.stitch!=="关"&&"生成后 "+c.stitch+" 超分","GPT-6.1 Sol · "+c.effort].filter(Boolean).join(" · ");
+  updBp();
+}
+function updBp(){
+  const act=S.batches.filter(b=>b.tasks.some(t=>t.status==="queued"||t.status==="running")),bp=$("#bp");
+  if(act.length){const n=act.reduce((s,b)=>s+b.tasks.filter(t=>t.status==="queued"||t.status==="running").length,0),b=act[0];
+    const h=`<span class="spin"></span><span><b>${n} 项进行中</b>${act.length>1?` · ${act.length} 批`:""}</span>${segBar(act.flatMap(x=>x.tasks.flatMap(units)),48)}<span class="to">${esc(coll(b.coll)?.name||"")}${icon("chevr",14)}</span>`;
+    if(bp.dataset.h!==h){bp.innerHTML=h;bp.dataset.h=h;}bp.dataset.coll=b.coll;bp.classList.remove("hide");}
+  else bp.classList.add("hide");
+}
+
+/* ---------- works ---------- */
+function worksHTML(){return `${topBar("作品")}<div class="scroll"><div class="section-h"><h2>最近生成</h2></div><div class="recent" id="recent"></div><div class="section-h"><h2>列表</h2><span class="muted small" id="coll-count"></span></div><div class="colls" id="colls"></div></div>`;}
+const liveIn=cid=>S.batches.filter(b=>b.coll===cid).flatMap(b=>b.tasks).filter(t=>t.status==="queued"||t.status==="running").length;
+const tileHTML=(im,list)=>`<button class="tile${im.fav?" fav":""}"${im.badge?` data-badge="${esc(im.badge)}"`:""} data-act="img" data-id="${im.id}" data-list="${list}" aria-label="${esc(im.name)}"><img src="${src(im)}" alt="" draggable="false"></button>`;
+function updateWorks(){
+  syncList($("#recent"),S.images.slice(0,10),i=>i.id,im=>tileHTML(im,"recent"));
+  const cs=S.collections.filter(c=>imagesOf(c.id).length||liveIn(c.id)).sort((a,b)=>(imagesOf(b.id)[0]?.created||Date.now())-(imagesOf(a.id)[0]?.created||Date.now()));
+  $("#coll-count").textContent=`${cs.length} 个`;
+  syncList($("#colls"),cs,c=>c.id,c=>{const ims=imagesOf(c.id),live=liveIn(c.id),k=Math.min(3,ims.length);
+    return `<button class="coll" data-act="coll" data-id="${c.id}"><div class="cover n${k}">${ims.slice(0,3).map(i=>`<img src="${src(i)}" alt="">`).join("")}</div><div class="coll-name">${esc(c.name)}</div><div class="coll-meta"><span>${ims.length} 张</span>${live?`<span class="live">${live} 生成中</span>`:""}</div></button>`;});
+}
+function collHTML(){const c=coll(S.coll),first=imagesOf(c.id)[0];return `<header class="top coll-top"><button class="icon-btn" data-act="coll-back" aria-label="返回">${icon("back")}</button><div class="hero" id="hero">${first?`<img src="${src(first)}" alt="">`:""}</div><div class="ct"><h1>${esc(c.name)}</h1><span id="coll-sub"></span></div><button class="icon-btn" data-act="coll-more" aria-label="更多">${icon("more")}</button></header><div class="banner-slot"></div>
+<div class="scroll"><div id="live"></div><div class="grid" id="grid"></div><p class="hint">长按图片可收藏、删除或直接执行操作</p></div>`;}
+function updateColl(){
+  const c=coll(S.coll);if(!c)return;const ims=imagesOf(c.id),bs=S.batches.filter(b=>b.coll===c.id);
+  $("#coll-sub").textContent=`${ims.length} 张${c.template?" · 模板身份":" · 未绑定模板"}`;
+  const live=bs.flatMap(b=>b.tasks.map(t=>({b,t}))).filter(x=>x.t.status==="queued"||x.t.status==="running");
+  const failed=bs.flatMap(b=>b.tasks.map(t=>({b,t}))).filter(x=>x.t.status==="failed");
+  const lead=live.find(x=>x.t.up&&x.t.status==="running")||live.reduce((m,x)=>x.t.status==="running"&&x.t.stage>=(m?.t.stage??-1)?x:m,null);
+  const upFail=failed.find(x=>x.t.up),plainFail=failed.filter(x=>!x.t.up);
+  const h=(live.length?`<button class="live-strip" data-act="goto-batch" data-id="${(lead||live[0]).b.id}"><span class="spin"></span><span><b>${live.length} 项进行中</b> · ${lead?taskLabel(lead.t):(S.paused?"调度已暂停":"等待调度")}</span><span class="stk">${segBar(live.flatMap(x=>units(x.t)),72)}</span>${icon("chevr",16)}</button>`:"")
+   +(upFail?`<div class="live-strip fail-strip">${icon("alert",18)}<span>超分未通过 · ${upFail.t.up.levels[upFail.t.up.cur].tiles.filter(x=>x.state!=="done").length} 块有问题</span><span class="grow"></span><button data-act="failure" data-id="${upFail.b.id}">处理</button></div>`:"")
+   +(plainFail.length?`<div class="live-strip fail-strip">${icon("alert",18)}<span>${plainFail.length} 张失败</span><span class="grow"></span><button data-act="retry-coll">重试</button><button data-act="goto-batch" data-id="${plainFail[0].b.id}">详情</button></div>`:"");
+  const lv=$("#live");if(lv.dataset.h!==h){lv.innerHTML=h;lv.dataset.h=h;}
+  syncList($("#grid"),ims,i=>i.id,im=>tileHTML(im,"coll"));
+}
+
+/* ---------- queue ---------- */
+function queueHTML(){return `${topBar("任务",`<button class="pause-ctl" data-act="pause"><span>暂停调度</span><span class="switch ${S.paused?"on":""}" id="pause-sw"></span></button>`)}
+<div class="scroll"><div id="paused-note"></div><div class="seg" id="qseg"><span class="ind"></span><button data-act="qf" data-f="active">进行中<em></em></button><button data-act="qf" data-f="done">已完成<em></em></button><button data-act="qf" data-f="failed">失败<em></em></button></div><div id="batches"></div><p class="empty" id="qempty" hidden></p></div>`;}
+const stagesHTML=t=>`<span class="stages" data-st="${t.status}" data-s="${Math.min(t.stage,3)}"><i></i><i></i><i></i><i></i></span>`;
+function bstate(b){const st=b.tasks.map(t=>t.status);return{active:st.some(s=>s==="queued"||s==="running"),failed:st.filter(s=>s==="failed").length,done:st.filter(s=>s==="done").length,n:st.length};}
+const bfilter=(b,f)=>{const s=bstate(b);return f==="active"?s.active:f==="failed"?!s.active&&s.failed>0:!s.active&&!s.failed;};
+function batchHTML(b){
+  if(b.kind==="upscale")return upBatchHTML(b);
+  const s=bstate(b),c=coll(b.coll),open=S.expanded.has(b.id),thumb=b.tasks.find(t=>t.img&&img(t.img)),t0=b.tasks[0],m=t0.multi;
+  const cnt=k=>b.tasks.filter(t=>t.status===k).length,run=cnt("running"),q=cnt("queued");
+  const sum=m?multiLabel(t0):s.active?[`${s.done}/${s.n} 完成`,run&&`${run} 生成中${s.n===1?` · ${STAGE[t0.stage]}`:""}`,q&&`${q} ${S.paused?"已暂停":"等待"}`].filter(Boolean).join(" · "):s.failed?`${s.failed} 张失败 · ${s.done} 张完成`:`${s.done} 张完成`;
+  const srcIm=b.src&&img(b.src);
+  const rows=m?m.parts.map(x=>`<div class="trow"><span class="n">#${x.i+1}</span>${stagesHTML({status:x.state,stage:x.stage})}<span class="lbl">${esc(x.text)}</span><span class="muted small">${x.state==="running"?STAGE[x.stage]:x.state==="done"?"完成":"等待"}</span></div>`).join("")
+      +(t0.status==="done"&&img(t0.img)?`<div class="trow"><span class="n"></span><span class="lbl">已合成为一张新图，选区外像素保持原图</span><button class="link-btn" data-act="img" data-id="${t0.img}" data-list="batch:${b.id}">查看</button></div>`:m.phase==="merge"?`<div class="trow"><span class="n"></span><span class="spin"></span><span class="lbl">合成中：只替换各选区内像素</span></div>`:"")
+    :b.tasks.map((t,i)=>{const lbl=t.status==="queued"?"等待调度":t.status==="running"?STAGE[t.stage]:t.status==="done"?"完成":t.status==="failed"?`失败 · ${t.err}`:"已取消";
+      const a=t.status==="queued"||t.status==="running"?`<button class="link-btn danger" data-act="cancel-task" data-b="${b.id}" data-t="${t.id}">取消</button>`:t.status==="failed"?`<button class="link-btn" data-act="log" data-b="${b.id}">日志</button><button class="link-btn" data-act="retry-task" data-b="${b.id}" data-t="${t.id}">重试</button>`:t.status==="done"&&img(t.img)?`<button class="link-btn" data-act="img" data-id="${t.img}" data-list="batch:${b.id}">查看</button>`:"";
+      return `<div class="trow"><span class="n">#${i+1}</span>${stagesHTML(t)}<span class="lbl${t.status==="failed"?" err":""}">${esc(lbl)}</span>${a}</div>`;}).join("");
+  const bars=m?m.parts.map(x=>({status:x.state,stage:x.stage})):b.tasks;
+  const thumbSrc=thumb?src(img(thumb.img)):srcIm?src(srcIm):null;
+  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"><span class="b-thumb">${thumbSrc?`<img src="${thumbSrc}" alt="">`:icon(s.active?"clock":"alert",20)}</span><span class="b-text"><span class="b-prompt"><span class="kind ${b.kind}">${KIND[b.kind]}${m&&m.parts.length>1?` ×${m.parts.length}`:""}</span>${esc(b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${b.ratio} · ${b.tasks.length>1?b.tasks.length+" 张 · ":""}${fmtTime(b.created)}</span><span class="b-status col">${segBar(bars)}<span class="b-sum">${sum}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">${b.tasks.length>1?"全部取消":"取消"}</button>`:""}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败</button>`:""}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
+}
+function upBatchHTML(b){
+  const t=b.tasks[0],u=t.up,c=coll(b.coll),open=S.expanded.has(b.id),srcIm=img(u.src),done=t.img&&img(t.img);
+  const active=t.status==="queued"||t.status==="running";
+  const lv=u.levels.map((l,i)=>{const cls=i<u.cur||t.status==="done"?"done":i===u.cur?(t.status==="failed"?"bad":"cur"):"";return `<span class="lvl ${cls}">第 ${i+1} 级 · ${l.from.join("×")} → ${l.to.join("×")} · ${l.tiles.length} 块</span>`;}).join("");
+  const acts=(active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">取消</button>`:"")
+    +(t.status==="failed"?`<button class="pill-btn" data-act="log" data-b="${b.id}">日志</button><button class="pill-btn strong" data-act="failure" data-id="${b.id}">失败处理 · 选块重绘</button>`:"")
+    +(done?`<button class="pill-btn" data-act="img" data-id="${t.img}" data-list="batch:${b.id}">查看结果</button>`:"");
+  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"><span class="b-thumb">${srcIm?`<img src="${src(done?img(t.img):srcIm)}" alt="">`:""}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">${KIND.upscale} ${u.factor}</span>${esc(srcIm?.name||b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${u.levels.length} 级 · ${fmtTime(b.created)}</span><span class="b-status col up">${tileGrid(t)}<span class="b-sum"${t.status==="failed"?' style="color:var(--red)"':""}>${upLabel(t)}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div><div class="up-detail"><span class="up-levels">${lv}</span>${tileGrid(t,true)}</div>${t.status==="failed"&&t.err?`<p class="err-sum">${esc(t.err)}</p>`:""}<div class="b-actions">${acts}</div></div></div></article>`;
+}
+function updateQueue(){
+  const counts={active:0,done:0,failed:0};S.batches.forEach(b=>["active","done","failed"].forEach(f=>bfilter(b,f)&&counts[f]++));
+  $$("#qseg button").forEach(b=>{b.classList.toggle("on",b.dataset.f===S.filter);b.querySelector("em").textContent=counts[b.dataset.f]||"";});
+  const on=$("#qseg button.on"),ind=$("#qseg .ind");if(on){ind.style.width=on.offsetWidth+"px";ind.style.transform=`translateX(${on.offsetLeft-3}px)`;}
+  $("#pause-sw").classList.toggle("on",S.paused);
+  const pn=$("#paused-note"),ph=S.paused?`<div class="paused-note">调度已暂停：进行中的任务会完成，等待中的不会开始。</div>`:"";if(pn.dataset.h!==ph){pn.innerHTML=ph;pn.dataset.h=ph;}
+  const list=S.batches.filter(b=>bfilter(b,S.filter));
+  syncList($("#batches"),list,b=>b.id,batchHTML);
+  const e=$("#qempty");e.hidden=!!list.length;e.textContent={active:"没有进行中的任务",done:"还没有完成的任务",failed:"没有失败的任务"}[S.filter];
+}
+
+/* ---------- templates ---------- */
+function tplsHTML(){return `${topBar("模板",`<button class="ghost-btn" data-act="tpl-new">${icon("plus",16)}新建</button>`)}<div class="scroll"><div id="tpls"></div></div>`;}
+function updateTpls(){
+  syncList($("#tpls"),S.templates,t=>t.id,t=>{const c=S.collections.find(x=>x.template===t.id),ims=c?imagesOf(c.id):[];
+    return `<button class="tpl" data-act="tpl" data-id="${t.id}"><span class="tpl-cover">${ims[0]?`<img src="${src(ims[0])}" alt="">`:""}</span><span class="tpl-body"><b>${esc(t.name)}</b><span class="ex">${esc(t.text)}</span><span class="chips"><span class="chip">${t.ratio}</span><span class="chip">${t.refs} 张参考</span><span class="chip">${ims.length} 张作品</span></span></span></button>`;});
+}
+
+/* ================= navigation ================= */
+function go(tab){
+  if(tab===S.tab){if(tab==="works"&&S.coll)back();else $("#page .scroll")?.scrollTo({top:0,behavior:RM?"auto":"smooth"});return Promise.resolve();}
+  return vt("tab",()=>{S.tab=tab;renderPage();});
+}
+function openColl(cid){
+  const cover=S.tab==="works"&&!S.coll?$(`.coll[data-id="${cid}"] .cover`):null;
+  if(cover)cover.style.viewTransitionName="hero";
+  pushLayer("coll",closeColl);
+  return vt("push",()=>{if(cover)cover.style.viewTransitionName="";S.tab="works";S.coll=cid;renderPage();const h=$("#hero");if(h&&cover)h.style.viewTransitionName="hero";})
+    .then(()=>{const h=$("#hero");if(h)h.style.viewTransitionName="";});
+}
+function closeColl(){
+  if(!S.coll)return;const cid=S.coll;
+  if(S.tab!=="works"){S.coll=null;return;}
+  const h=$("#hero");if(h)h.style.viewTransitionName="hero";
+  vt("pop",()=>{if(h)h.style.viewTransitionName="";S.coll=null;renderPage();const c=$(`.coll[data-id="${cid}"] .cover`);if(c)c.style.viewTransitionName=h?"hero":"";})
+    .then(()=>{const c=$(`.coll[data-id="${cid}"] .cover`);if(c)c.style.viewTransitionName="";});
+}
+
+/* ================= sheets ================= */
+function openSheet({title,html,cls="",onMount}){
+  const L=document.createElement("div");L.className="sheet-layer";
+  L.innerHTML=`<div class="scrim" data-act="sheet-close"></div><section class="sheet ${cls}" role="dialog" aria-modal="true" aria-label="${esc(title||"")}"><div class="grab"><i></i></div>${title?`<header class="sheet-head"><h2>${esc(title)}</h2><button class="icon-btn" data-act="sheet-close" aria-label="关闭">${icon("x",20)}</button></header>`:""}<div class="sheet-body">${html}</div></section>`;
+  $("#layers").append(L);hydrateIcons(L);
+  const sh=$(".sheet",L),scr=$(".scrim",L);
+  scr.animate([{opacity:0},{opacity:1}],{duration:D(220),easing:E.std});
+  sh.animate([{transform:"translateY(100%)"},{transform:"translateY(0)"}],{duration:D(360),easing:E.emph});
+  dragDismiss(L);pushLayer("sheet",()=>dismissSheet(L));onMount&&onMount(L);placeToast();return L;
+}
+function dismissSheet(L){
+  const sh=$(".sheet",L),scr=$(".scrim",L),y=parseFloat(L.dataset.y||0);L.style.pointerEvents="none";
+  sh.animate([{transform:`translateY(${y}px)`},{transform:`translateY(${sh.offsetHeight+20}px)`}],{duration:D(220),easing:E.exit,fill:"forwards"});
+  scr.animate([{opacity:getComputedStyle(scr).opacity},{opacity:0}],{duration:D(220),fill:"forwards"}).finished.then(()=>{L.remove();placeToast();});
+}
+function swapSheet(L,title,html,onMount){
+  const sh=$(".sheet",L),body=$(".sheet-body",L),h1=sh.offsetHeight;
+  if(title)$(".sheet-head h2",L).textContent=title;body.innerHTML=html;hydrateIcons(body);const h2=sh.offsetHeight;
+  sh.animate([{height:h1+"px"},{height:h2+"px"}],{duration:D(300),easing:E.emph});
+  body.animate([{opacity:0,transform:"translateX(16px)"},{opacity:1,transform:"none"}],{duration:D(260),easing:E.emph});onMount&&onMount(L);
+}
+function topSheet(){return $$("#layers .sheet-layer").filter(l=>l.style.pointerEvents!=="none").pop();}
+function dragDismiss(L){
+  const sh=$(".sheet",L),scr=$(".scrim",L);let d=null;
+  const start=e=>{if(e.target.closest("button"))return;d={y:e.clientY,t:performance.now(),dy:0};sh.setPointerCapture(e.pointerId);};
+  sh.addEventListener("pointerdown",e=>{if(e.target.closest(".grab,.sheet-head"))start(e);});
+  sh.addEventListener("pointermove",e=>{if(!d)return;let dy=(e.clientY-d.y)/sc();dy=dy<0?dy*.2:dy;d.dy=dy;sh.style.transform=`translateY(${dy}px)`;scr.style.opacity=String(1-Math.max(0,dy)/(sh.offsetHeight*1.4));});
+  const end=()=>{if(!d)return;const v=d.dy/(performance.now()-d.t);
+    if(d.dy>110||(v>.6&&d.dy>30)){L.dataset.y=d.dy;sh.style.transform="";back();}
+    else{sh.animate([{transform:`translateY(${d.dy}px)`},{transform:"translateY(0)"}],{duration:D(260),easing:E.emph});sh.style.transform="";scr.style.opacity="";}d=null;};
+  sh.addEventListener("pointerup",end);sh.addEventListener("pointercancel",end);
+}
+
+/* ================= toast ================= */
+let toastT;
+function toast(msg,o={}){
+  const host=$("#toast");host.innerHTML=`<div class="toast"><span>${esc(msg)}</span>${o.action?`<button>${esc(o.action)}</button>`:""}</div>`;
+  const el=host.firstChild;el.animate([{opacity:0,transform:"translateY(16px) scale(.97)"},{opacity:1,transform:"none"}],{duration:D(280),easing:E.emph});
+  const hide=()=>{el.animate([{opacity:1},{opacity:0,transform:"translateY(8px)"}],{duration:D(180),easing:E.exit,fill:"forwards"}).finished.then(()=>el.remove());};
+  if(o.action)el.querySelector("button").onclick=()=>{clearTimeout(toastT);hide();o.run();};
+  clearTimeout(toastT);toastT=setTimeout(hide,o.ms||3400);placeToast();
+}
+function placeToast(){const t=$("#toast"),sheet=topSheet(),scr=typeof topScreen==="function"&&topScreen();
+  if(scr&&!sheet){t.style.top="auto";t.style.bottom=scr.classList.contains("fail-screen")?"128px":"24px";return;}
+  t.style.top=sheet?"calc(var(--safe-top) + 8px)":"auto";
+  t.style.bottom=sheet?"auto":V.open?(vw.classList.contains("qe-on")?"108px":"236px"):S.tab==="create"?(app.classList.contains("typing")?"84px":$("#bp")&&!$("#bp").classList.contains("hide")?"calc(var(--tab-h) + 128px)":"calc(var(--tab-h) + 88px)"):"calc(var(--tab-h) + 12px)";}
+
+/* ================= fly helper ================= */
+function bezier(x1,y1,x2,y2){const cx=3*x1,bx=3*(x2-x1)-cx,ax=1-cx-bx,cy=3*y1,by=3*(y2-y1)-cy,ay=1-cy-by;
+  const X=t=>((ax*t+bx)*t+cx)*t,Y=t=>((ay*t+by)*t+cy)*t,dX=t=>(3*ax*t+2*bx)*t+cx;
+  return x=>{let t=x;for(let i=0;i<6;i++){const d=dX(t);if(Math.abs(d)<1e-6)break;t-=(X(t)-x)/d;}return Y(Math.max(0,Math.min(1,t)));};}
+const easeEmph=bezier(.32,.72,0,1);
+// rAF-driven so it always progresses; left/top/size keep the cover crop "uncropping" smoothly.
+function fly(from,to,url,dur,r0,r1,parent){
+  const f=document.createElement("div");f.className="v-fly";f.style.backgroundImage=`url("${url}")`;parent.append(f);
+  const set=k=>{const l=(a,b)=>a+(b-a)*k;Object.assign(f.style,{left:l(from.x,to.x)+"px",top:l(from.y,to.y)+"px",width:l(from.w,to.w)+"px",height:l(from.h,to.h)+"px",borderRadius:l(r0,r1)+"px"});};
+  set(0);const T=D(dur);let t0=null;
+  return new Promise(res=>{const step=now=>{if(t0===null)t0=now;const p=Math.min(1,(now-t0)/T);set(easeEmph(p));if(p<1)requestAnimationFrame(step);else{f.remove();res();}};requestAnimationFrame(step);});
+}
+function flyDot(fromEl,toEl){
+  if(RM)return;const a=rectOf(fromEl),b=rectOf(toEl),x0=a.x+a.w/2,y0=a.y+a.h/2,x1=b.x+b.w/2,y1=b.y+b.h/2-6,xm=(x0+x1)/2,ym=Math.min(y0,y1)-90;
+  const d=document.createElement("div");d.className="fly-dot";app.append(d);
+  d.animate([{transform:`translate(${x0}px,${y0}px) scale(.6)`,opacity:0},{transform:`translate(${x0}px,${y0-10}px) scale(1.1)`,opacity:1,offset:.12},{transform:`translate(${xm}px,${ym}px) scale(1)`,offset:.5},{transform:`translate(${x1}px,${y1}px) scale(.5)`,opacity:.9}],{duration:620,easing:"cubic-bezier(.45,0,.55,1)"}).finished.then(()=>d.remove());
+}
+
+/* ================= viewer ================= */
+const V={gen:0,open:false,list:[],i:0,redraw:false,sel:null,bgAnim:null,hidden:null};
+const vw=$("#viewer"),track=$("#v-track"),stage=$("#v-stage"),vbg=$(".v-bg",vw);
+function listFor(kind,id){
+  if(kind==="recent")return S.images.slice(0,10).map(i=>i.id);
+  if(kind==="coll")return imagesOf(S.coll).map(i=>i.id);
+  if(kind?.startsWith("batch:")){const b=S.batches.find(x=>x.id===kind.slice(6));return b?b.tasks.filter(t=>t.img&&img(t.img)).map(t=>t.img):[id];}
+  return [id];
+}
+function fitRect(im){const W=app.offsetWidth,H=app.offsetHeight,top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
+  let w=aw,h=w/R;if(h>ah){h=ah;w=h*R;}return{x:(W-w)/2,y:top+(ah-h)/2,w,h};}
+function layoutSlides(){
+  track.style.transform="";
+  track.innerHTML=[-1,0,1].map(o=>{const id=V.list[V.i+o];if(!id||!img(id))return"";const im=img(id),r=fitRect(im);
+    return `<div class="slide" data-o="${o}" style="transform:translateX(calc(${o} * (100% + 20px)))"><img src="${src(im)}" alt="" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px"></div>`;}).join("");
+  const im=img(V.list[V.i]),c=coll(im?.coll);
+  $("#v-count").textContent=V.list.length>1?`${V.i+1} / ${V.list.length}`:"1 / 1";
+  $("#v-sub").textContent=c?c.name:"参考图";
+  updQuickMeta();
+}
+const curImg=()=>$('.slide[data-o="0"] img',track);
+const srcTile=id=>{const t=$(`#page .tile[data-id="${id}"]`);if(!t)return null;const s=t.closest(".scroll,.recent");const r=t.getBoundingClientRect(),a=$("#page .scroll").getBoundingClientRect();return r.bottom>a.top+4&&r.top<a.bottom-4&&r.right>a.left&&r.left<a.right?t:null;};
+function openViewer(id,listKind,opts={}){
+  if(V.open)return;V.gen++;V.list=listFor(listKind,id);V.i=Math.max(0,V.list.indexOf(id));V.open=true;
+  vw.classList.add("open");vw.classList.remove("chrome-off","redraw");app.classList.add("dark-sb");layoutSlides();
+  const cur=curImg(),tile=srcTile(id),to=rectOf(cur);
+  V.bgAnim?.cancel();vbg.style.opacity="0";
+  V.bgAnim=vbg.animate([{opacity:0},{opacity:1}],{duration:D(280),easing:E.std,fill:"forwards"});
+  V.bgAnim.finished.then(()=>{vbg.style.opacity="1";V.bgAnim?.cancel();V.bgAnim=null;}).catch(()=>{});
+  $$(".v-top,.v-actions",vw).forEach(e=>e.animate([{opacity:0},{opacity:1}],{duration:D(220),delay:D(160),fill:"backwards",easing:E.std}));
+  if(tile&&!RM){const from=rectOf(tile);cur.style.visibility="hidden";tile.style.visibility="hidden";V.hidden=tile;
+    fly(from,to,src(img(id)),380,12,3,vw).then(()=>{cur.style.visibility="";});}
+  else cur.animate([{opacity:0,transform:"scale(.94)"},{opacity:1,transform:"none"}],{duration:D(260),easing:E.emph});
+  pushLayer("viewer",closeViewer);placeToast();
+  if(opts.redraw)setTimeout(enterRedraw,D(420));
+}
+function closeViewer(){
+  if(!V.open)return;exitRedraw();V.open=false;
+  const id=V.list[V.i],cur=curImg();if(V.hidden){V.hidden.style.visibility="";V.hidden=null;}
+  const tile=srcTile(id),from=cur?rectOf(cur):null;
+  const op=getComputedStyle(vbg).opacity;V.bgAnim?.cancel();
+  vbg.animate([{opacity:op},{opacity:0}],{duration:D(260),easing:E.std,fill:"forwards"});vbg.style.opacity="0";
+  $$(".v-top,.v-actions",vw).forEach(e=>e.animate([{opacity:1},{opacity:0}],{duration:D(120),fill:"forwards"}).finished.then(a=>a.cancel()));
+  app.classList.remove("dark-sb");
+  const g=V.gen,finish=()=>{if(V.gen!==g||V.open)return;vw.classList.remove("open");track.innerHTML="";placeToast();};
+  if(tile&&from&&!RM){cur.style.visibility="hidden";tile.style.visibility="hidden";
+    fly(from,rectOf(tile),src(img(id)),320,3,12,vw).then(()=>{tile.style.visibility="";finish();});}
+  else if(cur)cur.animate([{opacity:1,transform:cur.style.transform||"none"},{opacity:0,transform:"scale(.9)"}],{duration:D(220),easing:E.exit,fill:"forwards"}).finished.then(finish);
+  else finish();
+}
+function slideTo(dir,dx=0){
+  const W=app.offsetWidth+20;
+  track.animate([{transform:`translateX(${dx}px)`},{transform:`translateX(${-dir*W}px)`}],{duration:D(300),easing:E.emph}).finished.then(()=>{V.i+=dir;layoutSlides();});
+  track.style.transform=`translateX(${-dir*W}px)`;
+}
+let drag=null;
+stage.addEventListener("pointerdown",e=>{if(!V.open)return;if(V.redraw)return selStart(e);drag={x:e.clientX,y:e.clientY,t:performance.now(),axis:null,dx:0,dy:0};stage.setPointerCapture(e.pointerId);});
+stage.addEventListener("pointermove",e=>{
+  if(V.redraw)return selMove(e);if(!drag)return;const s=sc();let dx=(e.clientX-drag.x)/s,dy=(e.clientY-drag.y)/s;
+  if(!drag.axis){if(Math.hypot(dx,dy)<8)return;drag.axis=Math.abs(dx)>Math.abs(dy)?"x":dy>0?"y":"n";if(drag.axis==="y")vw.classList.add("chrome-off");}
+  if(drag.axis==="x"){if((V.i===0&&dx>0)||(V.i===V.list.length-1&&dx<0))dx*=.3;drag.dx=dx;track.style.transform=`translateX(${dx}px)`;}
+  else if(drag.axis==="y"){dy=Math.max(0,dy);drag.dy=dy;drag.dx=dx;const c=curImg();c.style.transform=`translate(${dx*.6}px,${dy}px) scale(${Math.max(.72,1-dy/1100)})`;vbg.style.opacity=String(1-Math.min(dy/420,.9));}
+});
+const dragEnd=()=>{
+  if(V.redraw)return selEnd();if(!drag)return;const d=drag;drag=null;
+  if(!d.axis){if(performance.now()-d.t<350)vw.classList.toggle("chrome-off");return;}
+  if(d.axis==="x"){if(d.dx<-64&&V.i<V.list.length-1)slideTo(1,d.dx);else if(d.dx>64&&V.i>0)slideTo(-1,d.dx);
+    else{track.animate([{transform:`translateX(${d.dx}px)`},{transform:"none"}],{duration:D(260),easing:E.emph});track.style.transform="";}}
+  else if(d.axis==="y"){if(d.dy>110)back();else{const c=curImg();c.animate([{transform:c.style.transform},{transform:"none"}],{duration:D(280),easing:E.emph});c.style.transform="";vbg.style.opacity="1";vw.classList.remove("chrome-off");}}
+};
+stage.addEventListener("pointerup",dragEnd);stage.addEventListener("pointercancel",dragEnd);
+
+/* ---- redraw ---- */
+function enterRedraw(){if(!V.open||V.redraw)return;V.redraw=true;Object.assign(V,{regions:[],active:-1,shared:false,sharedText:""});
+  vw.classList.add("redraw");vw.classList.remove("chrome-off");$("#rd-text").value="";$("#rd-shared-sw").classList.remove("on");renderRegions();updRedraw();pushLayer("redraw",exitRedraw);placeToast();}
+function exitRedraw(){if(!V.redraw)return;V.redraw=false;vw.classList.remove("redraw");$$(".sel",stage).forEach(e=>e.remove());$("#rd-dim")?.remove();V.regions=[];}
+let sd=null;
+const overlaps=(a,b)=>a.x<b.x+b.w&&b.x<a.x+a.w&&a.y<b.y+b.h&&b.y<a.y+a.h;
+function selStart(e){
+  if(e.target.closest(".rm"))return;
+  const c=curImg();if(!c)return;const r=rectOf(c),p=local(e);
+  const hit=V.regions.findIndex(g=>p.x>=g.x&&p.x<=g.x+g.w&&p.y>=g.y&&p.y<=g.y+g.h);
+  if(hit>=0){selectRegion(hit);return;}
+  if(V.regions.length>=6){toast("最多 6 个区域");return;}
+  sd={r,x0:clamp(p.x,r.x,r.x+r.w),y0:clamp(p.y,r.y,r.y+r.h),t:{x:0,y:0,w:0,h:0}};stage.setPointerCapture(e.pointerId);
+  const el=document.createElement("div");el.className="sel";el.innerHTML='<b class="no"></b><span class="sz"></span>';stage.append(el);sd.el=el;selDraw(sd.x0,sd.y0);}
+function selMove(e){if(!sd)return;const p=local(e);selDraw(clamp(p.x,sd.r.x,sd.r.x+sd.r.w),clamp(p.y,sd.r.y,sd.r.y+sd.r.h));}
+function selDraw(x1,y1){const t=sd.t;t.x=Math.min(sd.x0,x1);t.y=Math.min(sd.y0,y1);t.w=Math.abs(x1-sd.x0);t.h=Math.abs(y1-sd.y0);
+  Object.assign(sd.el.style,{left:t.x+"px",top:t.y+"px",width:t.w+"px",height:t.h+"px"});
+  const im=img(V.list[V.i]),k=im.w/sd.r.w,ov=V.regions.findIndex(g=>overlaps(g,t));
+  sd.el.classList.toggle("bad",ov>=0);$(".no",sd.el).textContent=ov>=0?`与 #${ov+1} 重叠`:`#${V.regions.length+1}`;$(".sz",sd.el).textContent=`${Math.round(t.w*k)}×${Math.round(t.h*k)}`;updDim(t);}
+function selEnd(){if(!sd)return;const t={...sd.t},el=sd.el;sd=null;
+  if(t.w<14||t.h<14){el.remove();updDim();return;}
+  if(V.regions.some(g=>overlaps(g,t))){el.animate([{opacity:1},{opacity:0,transform:"scale(.96)"}],{duration:D(220),fill:"forwards"}).finished.then(()=>{el.remove();updDim();});toast("选区不能重叠：合成时无法确定像素归属");return;}
+  el.remove();V.regions.push({...t,text:"",fresh:true});selectRegion(V.regions.length-1);
+  if(!V.shared)setTimeout(()=>$("#rd-text").focus({preventScroll:true}),D(120));}
+function selectRegion(i){V.active=i;renderRegions();const ta=$("#rd-text");ta.value=V.shared?V.sharedText:(V.regions[i]?.text||"");
+  ta.placeholder=V.shared?"描述所有区域要做的修改…":i>=0?`描述区域 #${i+1} 需要修改的内容…`:"描述选区里需要修改的内容…";updRedraw();}
+function rdInput(){const v=$("#rd-text").value;if(V.shared)V.sharedText=v;else if(V.regions[V.active])V.regions[V.active].text=v;renderChips();updRedraw();}
+function renderRegions(){
+  $$(".sel",stage).forEach(e=>e.remove());const c=curImg();if(!c)return;const im=img(V.list[V.i]),k=im.w/rectOf(c).w;
+  V.regions.forEach((g,i)=>{const el=document.createElement("div");el.className=`sel${i===V.active?" on":""}${g.fresh?" enter":""}`;g.fresh=false;
+    Object.assign(el.style,{left:g.x+"px",top:g.y+"px",width:g.w+"px",height:g.h+"px"});
+    el.innerHTML=`<b class="no">#${i+1}</b><span class="sz">${Math.round(g.w*k)}×${Math.round(g.h*k)}</span><button class="rm" data-act="rd-rm" data-i="${i}" aria-label="删除区域 ${i+1}">${icon("x",12)}</button>`;stage.append(el);});
+  updDim();renderChips();}
+function renderChips(){const box=$("#rd-chips"),n=V.regions.length;box.style.display=n?"flex":"none";
+  box.innerHTML=V.regions.map((g,i)=>{const ok=(V.shared?V.sharedText:g.text).trim();return `<button class="rd-chip${i===V.active?" on":""}" data-act="rd-pick" data-i="${i}">#${i+1}${ok?icon("check",13):""}</button>`;}).join("");}
+function updDim(tmp){let d=$("#rd-dim");const list=[...V.regions,...(tmp?[tmp]:[])];if(!list.length){d?.remove();return;}
+  const W=app.offsetWidth,H=app.offsetHeight;
+  if(!d){d=document.createElementNS("http://www.w3.org/2000/svg","svg");d.id="rd-dim";d.setAttribute("class","rd-dim");d.innerHTML='<path fill-rule="evenodd" fill="rgba(0,0,0,.5)"/>';stage.append(d);}
+  d.setAttribute("viewBox",`0 0 ${W} ${H}`);d.firstChild.setAttribute("d",`M0 0H${W}V${H}H0Z`+list.map(g=>`M${g.x} ${g.y}h${g.w}v${g.h}h${-g.w}Z`).join(""));}
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function local(e){const a=app.getBoundingClientRect(),s=sc();return{x:(e.clientX-a.left)/s,y:(e.clientY-a.top)/s};}
+function updRedraw(){const n=V.regions.length,cap=S.settings.concurrency,missing=V.shared?(V.sharedText.trim()?[]:V.regions):V.regions.filter(g=>!g.text.trim());
+  const b=$("#rd-submit");b.disabled=!n||missing.length>0;
+  b.textContent=!n?"提交重绘":missing.length&&!V.shared&&n>1?`#${V.regions.indexOf(missing[0])+1} 还没写要求`:n>1?`并行重绘 ${n} 个区域`:"提交重绘";
+  $("#rd-hint").textContent=n?`已框选 ${n} 个区域 · 点区域编辑，空白处继续框选`:"在图上拖动框选区域，可以框选多个";
+  $("#rd-note").textContent=n>1?`${n} 个区域并行${n>cap?`（并发 ${cap} 路）`:""} · 完成后合成为一张新图`:"只替换选区内像素，选区外保持原图";
+  $("#rd-shared").style.display=n>1?"flex":"none";}
+
+/* ================= actions ================= */
+function newBatch({kind="image",prompt,cid,ratio,count=1,theme,up,multi}){
+  const b={id:uid("b"),kind,prompt,coll:cid,ratio,count,created:Date.now(),theme,tasks:[]};
+  if(up||multi){b.tasks.push({id:uid("t"),status:"queued",stage:0,attempt:0,up,multi});S.batches.unshift(b);return b;}
+  for(let i=0;i<count;i++)b.tasks.push({id:uid("t"),status:"queued",stage:0,attempt:0,fail:/失败/.test(prompt)&&i===0});
+  S.batches.unshift(b);return b;
+}
+function collForTemplate(tid){if(!tid)return coll("cnone");let c=S.collections.find(x=>x.template===tid);if(!c){const t=tpl(tid);c={id:uid("c"),name:t.name,template:tid};S.collections.push(c);}return c;}
+function holdBadge(){badgeHold=Date.now()+D(560);setTimeout(updateChrome,D(580));}
+function generate(){
+  const c=S.composer,btn=$("#gen");
+  if(!c.prompt.trim()){const card=$("#prompt-card");card.classList.remove("shake");void card.offsetWidth;card.classList.add("shake");toast("先写下想要的画面");return;}
+  if(btn.classList.contains("done"))return;
+  const cl=collForTemplate(c.template),nb=newBatch({prompt:c.prompt.trim(),cid:cl.id,ratio:c.ratio,count:c.count});nb.stitch=c.stitch;
+  $("#gen-done").textContent=`已加入 ${c.count} 张`;btn.classList.add("done");
+  flyDot(btn,$('.tab[data-tab="queue"] .ti'));holdBadge();refresh();
+  setTimeout(()=>btn.classList.remove("done"),1700);
+}
+function goBatch(bid){const b=S.batches.find(x=>x.id===bid);if(!b)return;
+  S.filter=["active","failed","done"].find(f=>bfilter(b,f));S.expanded.add(bid);
+  closeOverlays().then(()=>vt("tab",()=>{S.tab="queue";renderPage();})).then(()=>{const el=$(`.batch[data-id="${bid}"]`);if(el){el.scrollIntoView({block:"center",behavior:RM?"auto":"smooth"});el.classList.add("hl");setTimeout(()=>el.classList.remove("hl"),1700);}});}
+function flashChip(){setTimeout(()=>{const c=$("#into-chip")||$(".into-chip");if(c){c.classList.remove("flash");void c.offsetWidth;c.classList.add("flash");}},D(260));}
+function useAsRef(id){const c=S.composer;if(!c.refs.includes(id)){if(c.refs.length>=8)return toast("最多 8 张参考图");c.refs.push(id);}
+  toast(`已加入参考图（${c.refs.length}/8）`,{action:"去创作",run:()=>closeOverlays().then(()=>go("create"))});}
+function reroll(id){const im=img(id);const b=newBatch({kind:"reroll",prompt:im.prompt,cid:im.coll||"cnone",ratio:im.ratio,theme:im.theme});holdBadge();refresh();
+  toast("已再抽一张",{action:"查看任务",run:()=>goBatch(b.id)});}
+async function deleteImage(id){
+  const im=img(id),idx=S.images.indexOf(im);if(idx<0)return;
+  await Promise.all($$(`#page .tile[data-id="${id}"]`).map(e=>e.animate([{opacity:1,transform:"scale(1)"},{opacity:0,transform:"scale(.8)"}],{duration:D(200),easing:E.exit,fill:"forwards"}).finished));
+  S.images.splice(idx,1);refresh();
+  toast("已移入最近删除",{action:"撤销",run:()=>{S.images.splice(idx,0,im);refresh();}});
+}
+function loadTemplate(id){const t=tpl(id),c=S.composer;Object.assign(c,{prompt:t.text,template:id,ratio:t.ratio,ack:false});
+  return closeOverlays().then(()=>S.tab==="create"?(renderPage(),null):go("create")).then(()=>{flashChip();toast(`已载入模板「${t.name}」`);});}
+
+/* ---- sheets content ---- */
+function paramsSheet(){openSheet({title:"生成参数",html:paramsBody()});}
+function paramsBody(){
+  const c=S.composer,o=(k,v,lab=v,sub="")=>`<button class="opt${sub?" tall":""}${c[k]===v?" on":""}" data-act="opt" data-k="${k}" data-v="${v}">${lab}${sub?`<small>${sub}</small>`:""}</button>`;
+  const sw=(k,lab,sub)=>`<button class="row" data-act="sw" data-k="${k}" style="width:100%"><span class="rl">${lab}<small>${sub}</small></span><span class="switch ${c[k]?"on":""}"></span></button>`;
+  return `
+    <div class="field-label">画幅</div><div class="opts">${["1:1","3:2","2:3","16:9","9:16","自动"].map(v=>o("ratio",v)).join("")}</div>
+    <div class="row" style="margin-top:8px"><span class="rl">数量<small>每张为独立会话</small></span><span class="stepper"><button data-act="cnt" data-d="-1" aria-label="减少">${icon("minus",18)}</button><output id="cnt">${c.count}</output><button data-act="cnt" data-d="1" aria-label="增加">${icon("plus",18)}</button></span></div>
+    <div class="field-label">图像尺寸</div><div class="opts c4">${["自动","1K","2K","4K"].map(v=>o("size",v)).join("")}</div>
+    <p class="note">作为原生生图要求传给模型；实际尺寸以图片详情为准。</p>
+    ${sw("polish","帮我润色","由模型补全构图、光线与风格")}${sw("transparent","透明背景","由生图工具决定是否支持")}
+    <div class="field-label">生成后超分</div><div class="opts c4">${o("stitch","关")}${Object.keys(FACTORS).map(v=>o("stitch",v,v,FACTORS[v]+" 级")).join("")}</div>
+    <p class="note">每张生成完成后自动加入该倍率的超分任务。只超分已有图片，请用创作页顶部的“超分”。</p>
+    <div class="field-label">思考强度 · GPT-6.1 Sol</div><div class="opts c5">${["low","medium","high","xhigh","max"].map(v=>o("effort",v)).join("")}</div>
+    <div class="btn-row" style="margin-top:18px"><button class="secondary" data-act="params-reset" style="flex:1;justify-content:center">${icon("refresh",16)}恢复默认值</button><button class="secondary" data-act="params-default" style="flex:1;justify-content:center">${icon("check",16)}设为默认</button></div>`;
+}
+function tplMenuSheet(){
+  const L=openSheet({title:"模板",html:`${S.templates.map(t=>`<button class="menu-row" data-act="tpl-load" data-id="${t.id}">${icon("book",20)}<span>${esc(t.name)}</span><span class="rt">${S.composer.template===t.id?"当前":""}</span></button>`).join("")}<div class="menu-sep"></div><button class="menu-row" data-act="tpl-save-form">${icon("plus",20)}<span>将当前内容保存为模板</span></button>`});
+  return L;
+}
+function tplSaveForm(L){
+  const c=S.composer;
+  swapSheet(L,"保存为模板",`<div class="field-label">名称</div><input class="input" id="tpl-name" value="${esc(c.prompt.slice(0,10)||"新模板")}">
+    <div class="field-label">可复用正文</div><textarea class="input" id="tpl-text">${esc(c.prompt)}</textarea>
+    <p class="note">可删去只属于本次的描述。参考图 ${c.refs.length} 张与生成参数会一起保存。</p>
+    <button class="row" data-act="sw-bind" style="width:100%"><span class="rl">本次创作归入该模板<small>之后用它生成的图片会进入同名列表</small></span><span class="switch on" id="bind-sw"></span></button>
+    <button class="primary" data-act="tpl-save">保存模板</button>`);
+}
+function imageMenu(id,fromViewer){
+  const im=img(id);if(!im)return;
+  const rows=fromViewer?[["fav",im.fav?"取消收藏":"收藏","star"],["info","名称与标签","edit"],["dl","下载原图","download"]]
+    :[["quick","速改…","edit"],["fav",im.fav?"取消收藏":"收藏","star"],["ref","用作参考图","imgplus"],["reroll","再抽一张","refresh"],["redraw","局部重绘","select"],["up","发送到超分","grid"],["dl","下载","download"]];
+  openSheet({html:`<div class="sheet-hd"><img src="${src(im)}" alt=""><div><b>${esc(im.name)}</b><span>${im.w} × ${im.h} · ${esc(coll(im.coll)?.name||"")}</span></div></div>
+    ${rows.map(([a,l,i])=>`<button class="menu-row" data-act="im-${a}" data-id="${id}">${icon(i,20)}<span>${l}</span></button>`).join("")}
+    <div class="menu-sep"></div><button class="menu-row danger" data-act="im-del" data-id="${id}">${icon("trash",20)}<span>删除</span><span class="rt">可在最近删除恢复</span></button>`});
+}
+function infoSheet(id){
+  const im=img(id),b=S.batches.find(x=>x.id===im.batch),c=coll(im.coll);
+  openSheet({title:"图片信息",html:`<div class="prompt-box">${esc(im.prompt)}</div>
+    <div class="btn-row"><button class="secondary" data-act="copy-prompt" data-id="${id}">${icon("copy",16)}复制</button><button class="secondary" data-act="use-prompt" data-id="${id}">${icon("sparkle",16)}用此提示词创作</button></div>
+    <dl class="kv"><dt>尺寸</dt><dd>${im.w} × ${im.h} · ${(im.bytes/1048576).toFixed(1)} MB</dd><dt>参数</dt><dd>${im.ratio} · 自动尺寸 · GPT-6.1 Sol / xhigh</dd><dt>归入</dt><dd>${esc(c?.name||"—")}</dd>${im.src&&img(im.src)?`<dt>来源</dt><dd>${esc(im.badge||"")} · ${esc(img(im.src).name)}</dd>`:""}<dt>生成于</dt><dd>${fmtTime(im.created)}</dd>${b?`<dt>任务</dt><dd><button class="link-btn" style="padding:0" data-act="goto-batch" data-id="${b.id}">查看任务记录 ›</button></dd>`:""}</dl>
+    <div class="field-label">名称</div><input class="input" data-edit="name" data-id="${id}" value="${esc(im.name)}">
+    <div class="field-label">标签</div><input class="input" data-edit="tags" data-id="${id}" value="${esc(im.tags)}" placeholder="例如：产品，材质，构图">
+    <p class="note">修改后自动保存。</p>`});
+}
+function upscaleSheet(id){
+  const im=img(id);let f=S.settings.upscale.factor;
+  const plan=()=>{const u=makeUp(im,f,"");const tiles=u.levels.reduce((a,l)=>a+l.tiles.length,0);
+    return u.levels.map((l,i)=>`<div><span>第 ${i+1} 级</span><b>${l.from.join("×")} → ${l.to.join("×")}</b><span>${l.tiles.length} 块</span></div>`).join("")
+      +`<div class="tot"><span>预算</span><b>${tiles} 次生图 + ${u.levels.length} 次验收</b><span>最终 ${u.levels.at(-1).to.join("×")}</span></div>`;};
+  openSheet({title:"发送到超分",html:`<div class="up-src"><img src="${src(im)}" alt=""><div><b>${esc(im.name)}</b><span>${im.w} × ${im.h}</span></div></div>
+    <div class="field-label">面积倍率</div><div class="opts" id="upo">${Object.keys(FACTORS).map(v=>`<button class="opt tall${v===f?" on":""}" data-act="up-f" data-v="${v}">${v}<small>宽高 ×${2**FACTORS[v]} · ${FACTORS[v]} 级</small></button>`).join("")}</div>
+    <div class="up-plan" id="up-plan">${plan()}</div>
+    <p class="note">每级逐块补绘并行进行，通过验收后才进入下一级；失败会保留已完成的块。</p>
+    <div class="field-label">统一细节与画风约束</div><textarea class="input" id="up-inj" rows="2" placeholder="注入每一级每一块，并作为验收依据">${esc(S.settings.upscale.injection)}</textarea>
+    <button class="primary" data-act="up-go" data-id="${id}">加入任务${icon("arrow",18)}</button>`,
+    onMount:L=>{L.dataset.f=f;L.addEventListener("click",e=>{const b=e.target.closest('[data-act="up-f"]');if(!b)return;f=b.dataset.v;L.dataset.f=f;$$("#upo .opt",L).forEach(x=>x.classList.toggle("on",x===b));const p=$("#up-plan",L);p.innerHTML=plan();p.animate([{opacity:.3},{opacity:1}],{duration:D(200)});});}});
+}
+function pickerSheet(opt={}){
+  const sel=new Set(),single=!!opt.single;let tab=single?"works":"lib";
+  const grid=()=>(tab==="lib"?S.library:S.images.slice(0,16)).map(im=>`<button class="pick${sel.has(im.id)?" on":""}" data-act="pk" data-id="${im.id}"><img src="${src(im)}" alt=""><span class="ck">${icon("check",13)}</span></button>`).join("");
+  openSheet({title:opt.title||"添加参考图",html:`<div class="seg" id="pk-seg" style="margin-top:0"><span class="ind"></span><button class="${tab==="lib"?"on":""}" data-act="pk-tab" data-v="lib">参考图库</button><button class="${tab==="works"?"on":""}" data-act="pk-tab" data-v="works">作品</button></div>
+    <button class="secondary" data-act="pk-upload" style="width:100%;justify-content:center">${icon("upload",16)}从相册上传</button>
+    <div class="pick-grid" id="pk-grid">${grid()}</div>${single?`<p class="note" style="text-align:center">点一下图片即可选中</p>`:`<button class="primary" id="pk-ok" data-act="pk-ok" disabled>添加</button>`}`,
+    onMount:L=>{const seg=()=>{const on=$("#pk-seg button.on",L),ind=$("#pk-seg .ind",L);ind.style.width=on.offsetWidth+"px";ind.style.transform=`translateX(${on.offsetLeft-3}px)`;};requestAnimationFrame(seg);
+      L.addEventListener("click",e=>{const p=e.target.closest('[data-act="pk"]'),t=e.target.closest('[data-act="pk-tab"]'),ok=e.target.closest('[data-act="pk-ok"]');
+        const upl=e.target.closest('[data-act="pk-upload"]');
+        if(upl){const im=makeImage({prompt:"上传图片",coll:null,ratio:["1:1","3:2","2:3"][Math.floor(Math.random()*3)],theme:THEMES[Math.floor(Math.random()*THEMES.length)],name:`上传-${Date.now().toString(16).slice(-5)}.jpg`});im.kind="ref";S.library.unshift(im);
+          if(single){toast("已上传到参考图库");back().then(()=>opt.onPick(im.id));return;}
+          sel.add(im.id);tab="lib";$$("#pk-seg button",L).forEach(x=>x.classList.toggle("on",x.dataset.v==="lib"));seg();$("#pk-grid",L).innerHTML=grid();const b=$("#pk-ok",L);b.disabled=false;b.textContent=`添加 ${sel.size} 张`;return;}
+        if(p&&single){p.classList.add("on");setTimeout(()=>back().then(()=>opt.onPick(p.dataset.id)),D(180));return;}
+        if(p){const id=p.dataset.id;sel.has(id)?sel.delete(id):sel.add(id);p.classList.toggle("on");const b=$("#pk-ok",L);b.disabled=!sel.size;b.textContent=sel.size?`添加 ${sel.size} 张`:"添加";}
+        if(t){tab=t.dataset.v;$$("#pk-seg button",L).forEach(x=>x.classList.toggle("on",x===t));seg();const g=$("#pk-grid",L);g.innerHTML=grid();g.animate([{opacity:0,transform:"translateY(6px)"},{opacity:1,transform:"none"}],{duration:D(220),easing:E.std});}
+        if(ok){const c=S.composer;for(const id of sel)if(!c.refs.includes(id)&&c.refs.length<8)c.refs.push(id);back().then(refresh);}});}});
+}
+function meSheet(){openSheet({html:`<div class="sheet-hd"><span class="avatar" style="width:48px;height:48px;font-size:18px">D</span><div><b>demo</b><span>${S.offline?"订阅已断开":"订阅已连接"} · ${S.settings.concurrency} 路并发</span></div></div>
+  <button class="menu-row" data-act="settings">${icon("sliders",20)}<span>设置</span><span class="rt">账户、默认值、调用提示词</span></button>
+  ${[["archive","最近删除"],["phone","安装应用"]].map(([i,l])=>`<button class="menu-row" data-act="stub">${icon(i,20)}<span>${l}</span></button>`).join("")}
+  ${innerWidth<=900?`<button class="menu-row" data-act="spec">${icon("doc",20)}<span>查看设计方案说明</span></button>`:""}
+  <div class="menu-sep"></div><button class="menu-row danger" data-act="stub">${icon("logout",20)}<span>退出登录</span></button>`});}
+function tplSheet(id){const t=tpl(id),c=S.collections.find(x=>x.template===id),n=c?imagesOf(c.id).length:0;
+  openSheet({title:t.name,html:`<div class="prompt-box">${esc(t.text)}</div><div class="chips" style="margin-top:12px"><span class="chip">${t.ratio}</span><span class="chip">${t.refs} 张参考图</span><span class="chip">自动尺寸</span></div>
+  <p class="note">用该模板生成的图片归入「${esc(c?.name||t.name)}」列表（${n} 张）。在模板基础上修改正文仍会归入，可在创作页解除。</p>
+  <button class="primary" data-act="tpl-load" data-id="${id}">载入到创作${icon("arrow",18)}</button>
+  <div class="btn-row"><button class="secondary" data-act="stub" style="flex:1;justify-content:center">${icon("edit",16)}编辑</button>${c?`<button class="secondary" data-act="open-coll" data-id="${c.id}" style="flex:1;justify-content:center">${icon("layers",16)}查看作品</button>`:""}</div>`});}
+
+/* ---- dispatcher ---- */
+let lp=null,lpFired=false;
+app.addEventListener("pointerdown",e=>{const t=e.target.closest("#page .tile");if(!t||e.button>0)return;
+  lp={t,x:e.clientX,y:e.clientY,timer:setTimeout(()=>{lpFired=true;t.classList.remove("pressing");t.animate([{transform:"scale(.94)"},{transform:"scale(1.03)"},{transform:"scale(1)"}],{duration:D(320),easing:E.std});navigator.vibrate?.(10);imageMenu(t.dataset.id);lp=null;},480)};t.classList.add("pressing");});
+const lpCancel=()=>{if(lp){clearTimeout(lp.timer);lp.t.classList.remove("pressing");lp=null;}};
+app.addEventListener("pointermove",e=>{if(lp&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)>10)lpCancel();});
+app.addEventListener("pointerup",lpCancel);app.addEventListener("pointercancel",lpCancel);
+app.addEventListener("contextmenu",e=>{const t=e.target.closest("#page .tile");if(t){e.preventDefault();lpCancel();imageMenu(t.dataset.id);}});
+
+app.addEventListener("click",async e=>{
+  const a=e.target.closest("[data-act]");if(!a)return;
+  if(lpFired){lpFired=false;if(a.dataset.act==="img")return;}
+  const k=a.dataset.act,id=a.dataset.id;
+  switch(k){
+    case"tab":go(a.dataset.tab);break;
+    case"clear-all":{const c=S.composer,snap={prompt:c.prompt,refs:[...c.refs],template:c.template,ack:c.ack},ta=$("#prompt");
+      const apply=()=>{Object.assign(c,{prompt:"",refs:[],template:null,ack:false});if(ta)ta.value="";refresh();};
+      if(ta&&!RM)ta.animate([{opacity:1,filter:"blur(0)"},{opacity:0,filter:"blur(4px)"}],{duration:160,easing:E.exit}).finished.then(()=>{apply();ta.animate([{opacity:0},{opacity:1}],{duration:180});});else apply();
+      toast("已清空正文、参考图与模板 · 参数保留",{action:"撤销",ms:5000,run:()=>{Object.assign(c,snap);if(S.tab==="create"){$("#prompt").value=c.prompt;refresh();flashChip();}}});break;}
+    case"params-reset":{const d=S.settings.defaults;Object.assign(S.composer,{ratio:d.ratio,count:d.count,effort:d.effort,polish:d.polish,size:"自动",transparent:false,stitch:"关"});swapSheet(a.closest(".sheet-layer"),null,paramsBody());refresh();toast("已恢复默认参数");break;}
+    case"params-default":{const c=S.composer;Object.assign(S.settings.defaults,{ratio:c.ratio,count:c.count,effort:c.effort,polish:c.polish});toast("已设为默认",{action:"去设置",run:()=>closeOverlays().then(()=>openSettings("set-defaults"))});break;}
+    case"settings":await back();openSettings();break;
+    case"scr-back":back();break;
+    case"sessions":toast("已退出其他 2 台设备");a.querySelector(".s-r").firstChild.textContent="0 台";break;
+    case"reconnect-set":S.offline=false;refresh();{const p=$("#sub-pill");if(p){p.className="pill-ok";p.textContent="已连接";}}toast("订阅已连接");break;
+    case"set-toggle":{const p=a.dataset.p,v=!getP(p);setP(p,v);$(".switch",a).classList.toggle("on",v);settingChanged(p);break;}
+    case"set-seg":{const p=a.dataset.p;setP(p,a.dataset.v);$$("button",a.parentElement).forEach(x=>x.classList.toggle("on",x===a));settingChanged(p);break;}
+    case"set-step":{const p=a.dataset.p,v=clamp(getP(p)+ +a.dataset.d,+a.dataset.min,+a.dataset.max);if(v===getP(p)){a.parentElement.animate([{transform:"translateX(0)"},{transform:`translateX(${a.dataset.d*4}px)`},{transform:"none"}],{duration:D(200)});break;}
+      setP(p,v);const o=$(`[data-out="${p}"]`,topScreen());o.textContent=v;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});settingChanged(p);break;}
+    case"prompt-edit":promptEditor(a.dataset.k);break;
+    case"pe-save":{const k=a.dataset.k,v=$("#pe-text").value;S.settings.prompts[k]=v;await back();const b=$("#pb-"+k);if(b)b.innerHTML=promptBadge(k);settingChanged("prompts");toast("已保存，只影响之后的新任务");break;}
+    case"inj-edit":injEditor();break;
+    case"inj-save":S.settings.upscale.injection=$("#inj-text").value.trim();await back();{const r=$('[data-act="inj-edit"] .s-r',topScreen());if(r)r.firstChild.textContent=S.settings.upscale.injection.slice(0,12)+"…";}settingChanged("upscale.injection");break;
+    case"cache-clear":{const st=S.settings.cache;if(!a.classList.contains("danger-soft")){a.classList.add("danger-soft");a.textContent="确认清理？";setTimeout(()=>{if(a.isConnected&&st.mb){a.classList.remove("danger-soft");a.textContent="清理";}},3000);break;}
+      st.mb=0;st.files=0;$("#cache-bar").style.width="0%";$("#cache-txt").textContent="0 MB / 192 MB · 0 个文件";a.classList.remove("danger-soft");a.textContent="已清理";a.disabled=true;toast("图片缓存已清理，之后按需重新下载");break;}
+    case"qe-chip":{const inp=$("#qe-input");inp.value=a.textContent;$("#qe-send").disabled=false;inp.focus();break;}
+    case"qe-settings":if(topSheet())await back();openSettings("set-quick");break;
+    case"im-quick":await back();quickSheet(id);break;
+    case"failure":await closeOverlays();openFailure(id);break;
+    case"fx-pane":FX.pane=a.dataset.v;FX.cmp=null;fxRender();{const st=$(".fx-stage",topScreen());st&&st.animate([{opacity:.4},{opacity:1}],{duration:D(220),easing:E.std});}break;
+    case"fx-tile":{const i=+a.dataset.i;FX.sel.has(i)?FX.sel.delete(i):FX.sel.add(i);fxSel();break;}
+    case"fx-sel":{const lv=fxTask().up.levels[fxTask().up.cur],v=a.dataset.v;FX.sel=new Set(v==="none"?[]:lv.tiles.filter(x=>v==="all"||x.state!=="done").map(x=>x.i));if(v==="all")FX.showOk=true;fxRender();break;}
+    case"fx-showok":FX.showOk=!FX.showOk;fxRender();break;
+    case"fx-cmp":FX.cmp=+a.dataset.i;FX.side="output";fxRender();{const v=$("#fx-view",topScreen());v.scrollIntoView({block:"start",behavior:RM?"auto":"smooth"});v.animate([{opacity:0,transform:"scale(.97)"},{opacity:1,transform:"none"}],{duration:D(260),easing:E.emph});}break;
+    case"fx-cmp-close":FX.cmp=null;fxRender();break;
+    case"fx-side":{FX.side=a.dataset.v;const c=$(".cmp",topScreen());c.classList.toggle("side-input",FX.side==="input");c.classList.toggle("side-output",FX.side==="output");$$('[data-act="fx-side"]',topScreen()).forEach(x=>x.classList.toggle("on",x===a));$("#cmp-tag").textContent=FX.side==="input"?"输入（含重叠）":"模型原始返回";break;}
+    case"fx-latest":$("#fx-latest-sw").classList.toggle("on");FX.latest=!FX.latest;break;
+    case"fx-cc":openSettings("set-queue");break;
+    case"fx-go":fxSubmit();break;
+
+    case"me":meSheet();break;
+    case"spec":back().then(()=>{const s=$("#spec");s.style.display="block";s.style.height="auto";s.style.padding="24px 20px 60px";s.scrollIntoView({behavior:"smooth"});});break;
+    case"stub":toast("演示中未实现：入口保留在头像菜单");break;
+    case"reconnect":S.offline=false;updateChrome();toast("已重新连接");break;
+    case"unpause":S.paused=false;refresh();break;
+    case"sheet-close":back();break;
+    case"generate":generate();break;
+    case"params":paramsSheet();break;
+    case"opt":{const kk=a.dataset.k;S.composer[kk]=a.dataset.v;$$(`.opt[data-k="${kk}"]`,a.closest(".sheet")).forEach(x=>x.classList.toggle("on",x===a));refresh();break;}
+    case"sw":{const kk=a.dataset.k;S.composer[kk]=!S.composer[kk];$(".switch",a).classList.toggle("on",S.composer[kk]);refresh();break;}
+    case"cnt":{const c=S.composer;c.count=clamp(c.count+ +a.dataset.d,1,20);const o=$("#cnt");o.textContent=c.count;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});refresh();break;}
+    case"tpl-menu":tplMenuSheet();break;
+    case"tpl-load":loadTemplate(id);break;
+    case"tpl-save-form":if(!S.composer.prompt.trim()){toast("先写下正文再保存");break;}tplSaveForm(a.closest(".sheet-layer"));break;
+    case"sw-bind":$("#bind-sw").classList.toggle("on");break;
+    case"tpl-save":{const L=a.closest(".sheet-layer"),name=$("#tpl-name",L).value.trim()||"新模板",text=$("#tpl-text",L).value.trim(),bind=$("#bind-sw",L).classList.contains("on");
+      const t={id:uid("t"),name,text,ratio:S.composer.ratio,refs:S.composer.refs.length};S.templates.unshift(t);
+      if(bind){S.composer.template=t.id;S.composer.ack=false;collForTemplate(t.id);}
+      await back();refresh();if(bind)flashChip();toast(bind?`模板已保存，本次归入「${name}」`:"模板已保存");break;}
+    case"detach":S.composer.template=null;S.composer.ack=false;updateInto();toast("已改为无模板");break;
+    case"dv-keep":S.composer.ack=true;updateInto();break;
+    case"pick-refs":pickerSheet();break;
+    case"rm-ref":{const el=a.closest(".ref");await el.animate([{opacity:1,transform:"scale(1)"},{opacity:0,transform:"scale(.7)"}],{duration:D(180),easing:E.exit,fill:"forwards"}).finished;S.composer.refs=S.composer.refs.filter(x=>x!==id);refresh();break;}
+    case"upload":toast("演示：调用系统图片选择器");break;
+    case"bp":openColl(a.dataset.coll);break;
+    case"coll":openColl(id);break;
+    case"coll-back":back();break;
+    case"coll-more":{const c=coll(S.coll);openSheet({html:`<div class="sheet-hd"><div><b>${esc(c.name)}</b><span>${imagesOf(c.id).length} 张</span></div></div>
+      ${c.template?`<button class="menu-row" data-act="tpl-load" data-id="${c.template}">${icon("book",20)}<span>载入该模板去创作</span></button>`:""}<button class="menu-row" data-act="stub">${icon("edit",20)}<span>重命名</span></button><div class="menu-sep"></div><button class="menu-row danger" data-act="stub">${icon("trash",20)}<span>删除列表</span><span class="rt">进行中的任务不受影响</span></button>`});break;}
+    case"open-coll":await closeOverlays();if(S.coll===id&&S.tab==="works")break;if(S.coll){S.coll=null;}openColl(id);break;
+    case"img":openViewer(id,a.dataset.list);break;
+    case"goto-batch":goBatch(id);break;
+    case"retry-coll":S.batches.filter(b=>b.coll===S.coll).forEach(b=>b.tasks.forEach(t=>{if(t.status==="failed"&&!t.up)Object.assign(t,{status:"queued",stage:0,err:null,fail:false});}));holdBadge();refresh();toast("失败的任务已重新排队");break;
+    case"pause":S.paused=!S.paused;refresh();break;
+    case"qf":if(S.filter!==a.dataset.f){S.filter=a.dataset.f;$("#batches").dataset.ready="";$("#batches").innerHTML="";updateQueue();$$("#batches .batch").forEach((el,i)=>el.animate([{opacity:0,transform:"translateY(10px)"},{opacity:1,transform:"none"}],{duration:D(300),delay:D(i*30),easing:E.emph,fill:"backwards"}));}break;
+    case"bt":{const el=a.closest(".batch");el.classList.toggle("open");el.classList.contains("open")?S.expanded.add(id):S.expanded.delete(id);break;}
+    case"cancel-task":{const t=S.batches.find(b=>b.id===a.dataset.b).tasks.find(t=>t.id===a.dataset.t);t.status="cancelled";refresh();toast("已取消 1 个任务");break;}
+    case"cancel-batch":S.batches.find(b=>b.id===id).tasks.forEach(t=>{if(t.status==="queued"||t.status==="running")t.status="cancelled";});refresh();toast("已取消整批任务");break;
+    case"retry-task":{const t=S.batches.find(b=>b.id===a.dataset.b).tasks.find(t=>t.id===a.dataset.t);if(t.up){openFailure(a.dataset.b);break;}Object.assign(t,{status:"queued",stage:0,err:null,fail:false});holdBadge();refresh();break;}
+    case"retry-batch":S.batches.find(b=>b.id===id).tasks.forEach(t=>{if(t.status==="failed")Object.assign(t,{status:"queued",stage:0,err:null,fail:false});});holdBadge();refresh();break;
+    case"log":openSheet({title:"任务日志",html:`<div class="prompt-box" style="font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.7">thread.started demo-7f3a<br>turn.started<br>tool_call image_gen …<br><span style="color:var(--red)">error: image generation tool unavailable</span><br>retry 3/3 exhausted</div>`});break;
+    case"tpl":tplSheet(id);break;
+    case"tpl-new":tplMenuSheet();break;
+    // viewer
+    case"v-back":back();break;
+    case"v-info":infoSheet(V.list[V.i]);break;
+    case"v-more":imageMenu(V.list[V.i],true);break;
+    case"v-dl":toast("已保存到「下载」");break;
+    case"v-ref":useAsRef(V.list[V.i]);break;
+    case"v-reroll":reroll(V.list[V.i]);break;
+    case"v-redraw":enterRedraw();break;
+    case"v-up":upscaleSheet(V.list[V.i]);break;
+    case"rd-cancel":back();break;
+    case"rd-submit":{const im=img(V.list[V.i]),n=V.regions.length;if(!n)break;
+      const parts=V.regions.map((g,i)=>({i,text:(V.shared?V.sharedText:g.text).trim(),state:"queued",stage:0}));
+      const uniq=[...new Set(parts.map(p=>p.text))];
+      const b=newBatch({kind:"redraw",prompt:n>1?(uniq.length===1?`${n} 个区域：${uniq[0]}`:parts.map(p=>`#${p.i+1} ${p.text}`).join("；")):parts[0].text,cid:im.coll||"cnone",ratio:im.ratio,theme:im.theme,multi:{parts,phase:"parts",src:im.id}});b.src=im.id;
+      holdBadge();await back();refresh();toast(n>1?`${n} 个区域开始并行重绘`:"局部重绘已加入任务",{action:"查看",run:()=>goBatch(b.id)});break;}
+    case"rd-rm":{V.regions.splice(+a.dataset.i,1);const k=Math.min(V.active,V.regions.length-1);selectRegion(k);break;}
+    case"rd-pick":selectRegion(+a.dataset.i);$("#rd-text").focus({preventScroll:true});break;
+    case"rd-shared":{V.shared=!V.shared;$("#rd-shared-sw").classList.toggle("on",V.shared);if(V.shared&&!V.sharedText)V.sharedText=V.regions[V.active]?.text||"";selectRegion(V.active);break;}
+    case"mode":{const v=a.dataset.v;if(S.mode===v)break;const seg=a.parentElement;$$("button",seg).forEach(x=>x.classList.toggle("on",x===a));placeInd(seg);
+      const sc0=$("#page .scroll"),bar=$("#page .gen-bar");await Promise.all([sc0,bar].map(e=>e.animate([{opacity:1},{opacity:0,transform:"translateY(6px)"}],{duration:D(130),easing:E.exit,fill:"forwards"}).finished));
+      S.mode=v;renderPage();$$("#page .scroll,#page .gen-bar").forEach(e=>e.animate([{opacity:0,transform:"translateY(10px)"},{opacity:1,transform:"none"}],{duration:D(260),easing:E.emph}));break;}
+    case"cu-f":S.upc.factor=a.dataset.v;$$("#cu-f .opt").forEach(x=>x.classList.toggle("on",x===a));refresh();$("#cu-plan .up-plan")?.animate([{opacity:.3},{opacity:1}],{duration:D(220)});break;
+    case"cu-src":S.upc.src=id;refresh();break;
+    case"cu-pick":pickerSheet({single:true,title:"选择要超分的图片",onPick:pid=>{S.upc.src=pid;refresh();}});break;
+    case"up-start":{const u=S.upc,im=u.src&&img(u.src),btn=$("#gen");
+      if(!im){const c=$("#cu-card");c.classList.remove("shake");void c.offsetWidth;c.classList.add("shake");toast("先选择要超分的原图");break;}
+      if(btn.classList.contains("done"))break;u.inj=$("#cu-inj").value.trim();
+      newBatch({kind:"upscale",prompt:`${u.factor} 超分 · ${im.name}`,cid:im.coll||"cnone",ratio:im.ratio,theme:im.theme,up:makeUp(im,u.factor,u.inj)});
+      $("#gen-done").textContent=`已加入 ${u.factor}`;btn.classList.add("done");flyDot(btn,$('.tab[data-tab="queue"] .ti'));holdBadge();refresh();setTimeout(()=>btn.classList.remove("done"),1700);break;}
+    case"up-go":{const im=img(id),L=a.closest(".sheet-layer"),f=L.dataset.f,inj=$("#up-inj",L).value.trim();const b=newBatch({kind:"upscale",prompt:`${f} 超分 · ${im.name}`,cid:im.coll||"cnone",ratio:im.ratio,theme:im.theme,up:makeUp(im,f,inj)});holdBadge();await back();refresh();toast(`${f} 超分已加入任务`,{action:"查看",run:()=>goBatch(b.id)});break;}
+    case"copy-prompt":toast("提示词已复制");break;
+    case"use-prompt":{const im=img(id),c=coll(im.coll);Object.assign(S.composer,{prompt:im.prompt,template:c?.template||null,ratio:im.ratio,ack:false});await closeOverlays();S.tab==="create"?renderPage():await go("create");flashChip();break;}
+    // image menu
+    case"im-fav":{const im=img(id);im.fav=!im.fav;await back();refresh();toast(im.fav?"已收藏":"已取消收藏");break;}
+    case"im-ref":await back();useAsRef(id);break;
+    case"im-reroll":await back();reroll(id);break;
+    case"im-redraw":await back();openViewer(id,S.coll?"coll":"recent",{redraw:true});break;
+    case"im-up":await back();upscaleSheet(id);break;
+    case"im-dl":await back();toast("已保存到「下载」");break;
+    case"im-info":await back();infoSheet(id);break;
+    case"im-del":{await back();if(V.open&&V.list[V.i]===id){await back();}deleteImage(id);break;}
+  }
+});
+app.addEventListener("input",e=>{
+  if(e.target.id==="prompt"){S.composer.prompt=e.target.value;updateInto();}
+  if(e.target.id==="cu-inj")S.upc.inj=e.target.value;
+  if(e.target.id==="rd-text")rdInput();
+});
+app.addEventListener("change",e=>{const t=e.target;if(t.dataset.edit){const im=img(t.dataset.id);im[t.dataset.edit]=t.value;toast("已保存",{ms:1400});}});
+app.addEventListener("focusin",e=>{if(e.target.id==="prompt"){app.classList.add("typing");placeToast();}});
+app.addEventListener("focusout",e=>{if(e.target.id==="prompt"){app.classList.remove("typing");placeToast();}});
+
+
+/* ================= quick edit ================= */
+const QE_CHIPS=["换成白天","去掉画面里的文字","背景虚化","更有电影感","色调更暖","换成雨天"];
+function quickSpec(im){const q=S.settings.quick;
+  return q.keepSpec?`按原图规格 · ${im.ratio} · ${im.w}×${im.h} · ${q.effort}`:`按创作参数 · ${S.composer.ratio} · ${q.effort}`;}
+function updQuickMeta(){const im=img(V.list[V.i]);if(!im)return;$("#qe-meta").textContent=quickSpec(im)+(S.settings.quick.into==="same"?"":" · 归入无模板");}
+$("#qe-chips").innerHTML=QE_CHIPS.map(c=>`<button type="button" data-act="qe-chip">${c}</button>`).join("");
+function sendQuick(id,text){
+  const im=img(id),q=S.settings.quick;text=(text||"").trim();if(!im||!text)return false;
+  const b=newBatch({kind:"quick",prompt:text,cid:q.into==="same"?(im.coll||"cnone"):"cnone",ratio:q.keepSpec?im.ratio:S.composer.ratio,theme:im.theme});
+  b.src=id;holdBadge();refresh();
+  toast(`速改已加入 · ${b.ratio}${q.useRef?" · 以原图为参考":""}`,{action:"查看任务",run:()=>goBatch(b.id)});return true;
+}
+function quickSheet(id){const im=img(id);
+  openSheet({title:"速改",cls:"qe-sheet",html:`<div class="sheet-hd"><img src="${src(im)}" alt=""><div><b>${esc(im.name)}</b><span>${quickSpec(im)}</span></div></div>
+    <form class="qe-bar" id="qs-form" autocomplete="off"><input id="qs-input" placeholder="一句话描述要改什么" enterkeyhint="send" maxlength="400"><button class="qe-send" type="submit" disabled aria-label="发送速改">${icon("arrowup",18)}</button></form>
+    <div class="qe-chips">${QE_CHIPS.map(c=>`<button type="button" data-act="qs-chip">${c}</button>`).join("")}</div>
+    <button class="qe-meta" data-act="qe-settings">结果${S.settings.quick.into==="same"?"归入原列表":"归入无模板"} · 在设置中调整 ${icon("chevr",12)}</button>`,
+    onMount:L=>{const inp=$("#qs-input",L),btn=$("#qs-form button",L);
+      inp.addEventListener("input",()=>btn.disabled=!inp.value.trim());
+      $("#qs-form",L).addEventListener("submit",async e=>{e.preventDefault();if(!inp.value.trim())return;const v=inp.value;await back();sendQuick(id,v);});
+      L.addEventListener("click",e=>{const c=e.target.closest('[data-act="qs-chip"]');if(c){inp.value=c.textContent;btn.disabled=false;inp.focus();}});
+      setTimeout(()=>inp.focus({preventScroll:true}),D(360));}});
+}
+$("#qe-form").addEventListener("submit",e=>{e.preventDefault();const inp=$("#qe-input");if(sendQuick(V.list[V.i],inp.value)){inp.value="";$("#qe-send").disabled=true;inp.blur();}});
+$("#qe-input").addEventListener("input",e=>{$("#qe-send").disabled=!e.target.value.trim();});
+$("#qe-input").addEventListener("focus",()=>{vw.classList.add("qe-on");placeToast();});
+["#qe-chips","#qe-send"].forEach(sel=>$(sel).addEventListener("mousedown",e=>e.preventDefault()));
+$("#qe-input").addEventListener("blur",()=>setTimeout(()=>{if(document.activeElement?.id!=="qe-input"){vw.classList.remove("qe-on");placeToast();}},120));
+
+/* ================= full-screen screens ================= */
+function openScreen(html,{cls="",onMount,onClose}={}){
+  const el=document.createElement("section");el.className="screen "+cls;el.innerHTML=html;$("#screens").append(el);hydrateIcons(el);
+  el.animate([{transform:"translateX(100%)"},{transform:"none"}],{duration:D(380),easing:E.emph});
+  let d=null;
+  el.addEventListener("pointerdown",e=>{const p=local(e);if(p.x<22){d={x:e.clientX,dx:0};el.setPointerCapture(e.pointerId);}});
+  el.addEventListener("pointermove",e=>{if(!d)return;d.dx=Math.max(0,(e.clientX-d.x)/sc());el.style.transform=`translateX(${d.dx}px)`;});
+  el.addEventListener("pointerup",()=>{if(!d)return;if(d.dx>110){el.dataset.x=d.dx;back();}else{el.animate([{transform:`translateX(${d.dx}px)`},{transform:"none"}],{duration:D(240),easing:E.emph});el.style.transform="";}d=null;});
+  pushLayer("screen",()=>{onClose&&onClose();el.style.pointerEvents="none";const x=+(el.dataset.x||0);el.animate([{transform:`translateX(${x}px)`},{transform:"translateX(100%)"}],{duration:D(260),easing:E.exit,fill:"forwards"}).finished.then(()=>{el.remove();placeToast();});});
+  onMount&&onMount(el);placeToast();return el;
+}
+const topScreen=()=>$$("#screens .screen").filter(e=>e.style.pointerEvents!=="none").pop();
+
+/* ================= settings ================= */
+const getP=p=>p.split(".").reduce((o,k)=>o[k],S.settings);
+const setP=(p,v)=>{const ks=p.split("."),last=ks.pop();ks.reduce((o,k)=>o[k],S.settings)[last]=v;};
+const lbl=(l,sub)=>`<span class="s-l">${l}${sub?`<small>${sub}</small>`:""}</span>`;
+const sSwitch=(p,l,sub)=>`<button class="s-row" data-act="set-toggle" data-p="${p}">${lbl(l,sub)}<span class="switch ${getP(p)?"on":""}"></span></button>`;
+const sSeg=(p,opts,l,sub)=>`<div class="s-row col">${lbl(l,sub)}<div class="mini-seg">${opts.map(([v,t])=>`<button data-act="set-seg" data-p="${p}" data-v="${v}" class="${getP(p)===v?"on":""}">${t}</button>`).join("")}</div></div>`;
+const sStep=(p,l,sub,min,max)=>`<div class="s-row">${lbl(l,sub)}<span class="stepper sm"><button data-act="set-step" data-p="${p}" data-d="-1" data-min="${min}" data-max="${max}" aria-label="减少">${icon("minus",16)}</button><output data-out="${p}">${getP(p)}</output><button data-act="set-step" data-p="${p}" data-d="1" data-min="${min}" data-max="${max}" aria-label="增加">${icon("plus",16)}</button></span></div>`;
+const sLink=(l,right,act,extra="",sub="")=>`<button class="s-row" data-act="${act}" ${extra}>${lbl(l,sub)}<span class="s-r">${right}${icon("chevr",16)}</span></button>`;
+const group=(id,title,body,foot="")=>`<section class="group" id="${id}"><div class="g-title">${title}</div><div class="g-card">${body}</div>${foot}</section>`;
+const promptBadge=k=>S.settings.prompts[k]!==DEFAULT_PROMPTS[k]?`<span class="badge-mod">已修改</span>`:"默认";
+function quickPreview(){const q=S.settings.quick;return `例：16:9 原图 → ${q.keepSpec?"16:9 · 1792×1008":S.composer.ratio+" · 自动尺寸"} · ${q.effort} · ${q.useRef?"以原图为参考":"仅文字"} · ${q.into==="same"?"归入原列表":"归入无模板"}`;}
+function settingsHTML(){const st=S.settings,ef=[["low","low"],["medium","medium"],["high","high"],["xhigh","xhigh"],["max","max"]];
+  return `<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon("back")}</button><h1>设置</h1><span class="grow"></span><span class="saved" id="saved">${icon("check",14)}已保存</span></header>
+<div class="scroll set-scroll">
+${group("set-account","账户",`<div class="s-row"><span class="prof"><span class="avatar">D</span>${lbl("demo","管理员 · 本设备已登录")}</span></div>${sLink("修改密码","","stub")}${sLink("退出其他设备","2 台","sessions")}`)}
+${group("set-sub","ChatGPT 订阅",`<div class="s-row">${lbl("连接状态","服务器上的 Codex CLI 会话")}<span id="sub-pill" class="${S.offline?"pill-warn":"pill-ok"}">${S.offline?"已断开":"已连接"}</span></div>${sLink(S.offline?"重新连接":"重新授权","","reconnect-set")}${sLink("运行生图检查","会使用一次额度","stub")}`)}
+${group("set-defaults","生成默认值",sSeg("defaults.ratio",["1:1","3:2","2:3","16:9","9:16","自动"].map(v=>[v,v]),"画幅")+sStep("defaults.count","数量","每张为独立会话",1,20)+sSeg("defaults.effort",ef,"思考强度")+sSwitch("defaults.polish","帮我润色","默认关闭"),`<p class="g-foot">新建创作和“恢复默认值”使用这些参数；参数面板里的“设为默认”会写回这里。</p>`)}
+${group("set-quick","速改",sSwitch("quick.keepSpec","保持原图规格","画幅与尺寸跟随原图")+sSwitch("quick.useRef","以原图为参考","关闭后只按文字重新生成")+sSeg("quick.into",[["same","原列表"],["none","无模板"]],"结果归入")+sSeg("quick.effort",ef,"思考强度","速改通常不需要最高强度")+sSwitch("quick.notify","完成后提示","带“查看”按钮的提示"),`<p class="g-foot" id="qe-preview">${quickPreview()}</p>`)}
+${group("set-upscale","超分",sSeg("upscale.factor",Object.keys(FACTORS).map(v=>[v,`${v} · ${FACTORS[v]} 级`]),"默认倍率")+sSwitch("upscale.autoSelect","失败时预选问题块","打开失败处理时自动勾选")+sLink("默认画风约束",esc(st.upscale.injection.slice(0,12))+"…","inj-edit"))}
+${group("set-queue","任务队列",sStep("concurrency","并发会话","生成、速改与超分子块共用",1,4)+sStep("maxAttempts","单块最多尝试","临时错误退避重试；鉴权与额度错误立即停止",1,5)+sSwitch("notify","完成与失败提示"))}
+${group("set-prompts","调用提示词",Object.keys(PROMPT_META).map(k=>sLink(PROMPT_META[k][0],`<span id="pb-${k}">${promptBadge(k)}</span>`,"prompt-edit",`data-k="${k}"`)).join(""),`<p class="g-foot">只影响之后的新任务；已提交的任务保留配置快照。</p>`)}
+${group("set-display","显示与存储",sSeg("motion",[["system","跟随系统"],["reduce","减少动效"],["full","完整动效"]],"动效")+`<div class="s-row col"><div style="display:flex;align-items:center;gap:12px">${lbl("图片缓存",`<span id="cache-txt">${st.cache.mb} MB / 192 MB · ${st.cache.files} 个文件</span>`)}<button class="pill-btn" id="cache-btn" data-act="cache-clear">清理</button></div><div class="cache-bar"><i id="cache-bar" style="width:${st.cache.mb/192*100}%"></i></div></div>`)}
+${group("set-more","其他",sLink("最近删除","3 项","stub")+sLink("安装应用","Android / 主屏幕","stub"))}
+<div class="g-card" style="margin-bottom:12px"><button class="s-row danger" data-act="stub">退出登录</button></div>
+<p class="g-foot" style="text-align:center">Image Studio · 演示 v0.2</p>
+</div>`;}
+function openSettings(section){
+  const el=openScreen(settingsHTML(),{cls:"settings"});
+  if(section){const g=$("#"+section,el);if(g){const sc2=$(".scroll",el);sc2.scrollTop=g.offsetTop-70;setTimeout(()=>{const c=$(".g-card",g);c.classList.add("flash");setTimeout(()=>c.classList.remove("flash"),1700);},D(380));}}
+}
+let savedT;
+function settingChanged(p){
+  const el=topScreen();if(el){const sv=$("#saved",el);if(sv){sv.classList.add("on");clearTimeout(savedT);savedT=setTimeout(()=>sv.classList.remove("on"),1400);}
+    const qp=$("#qe-preview",el);if(qp)qp.textContent=quickPreview();}
+  if(p==="motion")applyMotion();
+  if(p.startsWith("quick"))updQuickMeta();
+  refresh();
+}
+function applyMotion(){const m=S.settings.motion;RM=m==="reduce"||(m==="system"&&sysRM);document.documentElement.classList.toggle("rm",RM);}
+function promptEditor(k){const [title,vars]=PROMPT_META[k];
+  openSheet({title,html:`<textarea class="input mono" id="pe-text" rows="8">${esc(S.settings.prompts[k])}</textarea>
+    <div class="var-chips">${vars.map(v=>`<button type="button" data-act="pe-var">${v}</button>`).join("")}</div>
+    <p class="form-err" id="pe-err"></p>
+    <div class="btn-row"><button class="secondary" data-act="pe-reset" style="flex:1;justify-content:center">恢复默认</button><button class="primary" data-act="pe-save" data-k="${k}" style="flex:1.4;margin:0">保存</button></div>`,
+    onMount:L=>{const ta=$("#pe-text",L),err=$("#pe-err",L),sv=$('[data-act="pe-save"]',L);
+      const check=()=>{const ok=ta.value.includes("{prompt}");err.textContent=ok?"":"必须包含 {prompt}，否则任务拿不到正文";sv.disabled=!ok;};check();
+      ta.addEventListener("input",check);
+      L.addEventListener("click",e=>{const v=e.target.closest('[data-act="pe-var"]');if(v){const a=ta.selectionStart,b=ta.selectionEnd;ta.setRangeText(v.textContent,a,b,"end");ta.focus();check();}
+        if(e.target.closest('[data-act="pe-reset"]')){ta.value=DEFAULT_PROMPTS[k];check();ta.animate([{opacity:.4},{opacity:1}],{duration:D(200)});}});}});
+}
+function injEditor(){
+  openSheet({title:"默认画风约束",html:`<textarea class="input" id="inj-text" rows="4">${esc(S.settings.upscale.injection)}</textarea><p class="note">新超分任务默认填入；每个任务仍可单独修改。</p><button class="primary" data-act="inj-save">保存</button>`});
+}
+
+/* ================= upscale failure workspace ================= */
+const FX={bid:null,sel:new Set(),pane:"affine",cmp:null,side:"output",showOk:false,latest:true};
+function fxTask(){const b=S.batches.find(x=>x.id===FX.bid);return b&&b.tasks[0];}
+function openFailure(bid){
+  const b=S.batches.find(x=>x.id===bid);if(!b)return;const t=b.tasks[0],u=t.up,lv=u.levels[u.cur];
+  Object.assign(FX,{bid,pane:"affine",cmp:null,side:"output",showOk:false,latest:true,
+    sel:new Set(S.settings.upscale.autoSelect?lv.tiles.filter(x=>x.state!=="done").map(x=>x.i):[])});
+  const issues=upIssues(t);
+  openScreen(`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon("back")}</button><div class="ct"><h1>失败处理 · 选块重绘</h1><span>${u.factor} · 第 ${u.cur+1}/${u.levels.length} 级 · ${lv.from.join("×")} → ${lv.to.join("×")}</span></div></header>
+  <div class="scroll fx-scroll">
+    <div class="fx-err">${icon("alert",20)}<div><b>本级验收未通过</b><ul>${issues.map(i=>`<li>${esc(i)}</li>`).join("")}</ul><details><summary>原始错误</summary><code>${esc(t.err||"")}</code></details></div></div>
+    <div class="seg" id="fx-seg"><span class="ind"></span><button data-act="fx-pane" data-v="source">原图对照</button><button data-act="fx-pane" data-v="raw">直接拼接</button><button data-act="fx-pane" data-v="affine">仿射诊断</button></div>
+    <div id="fx-view"></div>
+    <div class="fx-quick"><button data-act="fx-sel" data-v="problems">选择问题块</button><button data-act="fx-sel" data-v="all">全选</button><button data-act="fx-sel" data-v="none">清除</button></div>
+    <div id="fx-list"></div><div id="fx-warn"></div>
+    <div class="field-label">统一细节与画风约束</div><textarea class="input" id="fx-inj" rows="2">${esc(u.injection)}</textarea>
+    <p class="note">注入本级每一块，也作为验收依据。</p>
+    <div class="g-card" style="margin-top:12px"><button class="s-row" data-act="fx-latest">${lbl("使用设置中的最新分块提示词",S.settings.prompts.tile!==DEFAULT_PROMPTS.tile?"设置里的提示词已修改":"与任务快照一致")}<span class="switch on" id="fx-latest-sw"></span></button></div>
+  </div>
+  <div class="fx-bar"><div class="fx-sum" id="fx-sum"></div><button class="primary" id="fx-go" data-act="fx-go">重绘所选</button></div>`,
+  {cls:"fail-screen",onMount:el=>{fxRender(el);}});
+}
+const PANE_CAP={source:"仅放大显示，比较原始几何",raw:"按目标大小直接拼接：观察内容偏移与接缝",affine:"红色＝缺失；橙框＝低可信或偏移块"};
+function fxView(t){
+  const u=t.up,lv=u.levels[u.cur],im=img(u.src),url=src(im),[c,r]=lv.grid;
+  const bg=x=>{const col=x.i%c,row=Math.floor(x.i/c);return `background-image:url('${url}');background-size:${c*100}% ${r*100}%;background-position:${c>1?col/(c-1)*100:0}% ${r>1?row/(r-1)*100:0}%`;};
+  const box=x=>{const col=x.i%c,row=Math.floor(x.i/c);return `left:${col/c*100}%;top:${row/r*100}%;width:${100/c}%;height:${100/r}%`;};
+  if(FX.cmp!==null){const x=lv.tiles[FX.cmp];
+    return `<div class="cmp-bar"><button class="ghost-btn" data-act="fx-cmp-close">${icon("back",14)}全图</button><span>第 ${x.i+1} 块 · <b class="st-${x.state}">${TSTATE[x.state]}</b></span><span class="grow"></span><div class="mini-seg" style="flex-wrap:nowrap"><button data-act="fx-side" data-v="input" class="${FX.side==="input"?"on":""}">输入</button><button data-act="fx-side" data-v="output" class="${FX.side==="output"?"on":""}">输出</button></div></div>
+      <div class="cmp side-${FX.side}" style="aspect-ratio:${lv.from[0]/c}/${lv.from[1]/r}"><div class="cmp-l in" style="${bg(x)}"></div><div class="cmp-l out ${x.state}" style="${bg(x)}">${x.state==="missing"?"<span>此块尚未返回</span>":""}</div><span class="cmp-tag" id="cmp-tag">${FX.side==="input"?"输入（含重叠）":"模型原始返回"}</span></div>
+      <p class="fx-cap">${esc(x.reason||"该块配准与验收正常")}</p>`;}
+  const cells=FX.pane==="source"?`<img src="${url}" alt="">`:lv.tiles.map(x=>`<div class="cell ${x.state}" style="${box(x)};${bg(x)}"></div>`).join("");
+  const hits=lv.tiles.map(x=>`<button class="hit${FX.sel.has(x.i)?" on":""}${x.state==="running"?" run":""}" data-act="fx-tile" data-i="${x.i}" style="${box(x)}" aria-pressed="${FX.sel.has(x.i)}" aria-label="选择第 ${x.i+1} 块"><span class="hn">${x.i+1}</span><span class="hc">${icon("check",12)}</span></button>`).join("");
+  return `<div class="fx-stage pane-${FX.pane}" style="aspect-ratio:${lv.from[0]}/${lv.from[1]}">${cells}${hits}</div><p class="fx-cap">${PANE_CAP[FX.pane]}</p>`;
+}
+function fxRow(x){return `<div class="fx-row${FX.sel.has(x.i)?" on":""}" data-i="${x.i}"><button class="fx-ck" data-act="fx-tile" data-i="${x.i}" aria-label="选择第 ${x.i+1} 块">${icon("check",13)}</button><span class="fx-n">#${x.i+1}</span><span class="fx-t"><b class="st-${x.state}">${TSTATE[x.state]}</b><small>${esc(x.reason||"配准与接缝正常，可复用")}</small></span><button class="link-btn" data-act="fx-cmp" data-i="${x.i}">对比</button></div>`;}
+function fxRender(el=topScreen()){
+  const t=fxTask();if(!t||!el)return;const lv=t.up.levels[t.up.cur];
+  $("#fx-view",el).innerHTML=fxView(t);
+  const bad=lv.tiles.filter(x=>x.state!=="done"),ok=lv.tiles.filter(x=>x.state==="done");
+  $("#fx-list",el).innerHTML=bad.map(fxRow).join("")+`<button class="fx-more${FX.showOk?" open":""}" data-act="fx-showok">其余 ${ok.length} 块正常 · 也可选择重绘 ${icon("chevd",14)}</button>`+(FX.showOk?ok.map(fxRow).join(""):"");
+  $$("#fx-seg button",el).forEach(b=>b.classList.toggle("on",b.dataset.v===FX.pane&&FX.cmp===null));
+  const on=$("#fx-seg button.on",el),ind=$("#fx-seg .ind",el);ind.style.opacity=on?"1":"0";if(on){ind.style.width=on.offsetWidth+"px";ind.style.transform=`translateX(${on.offsetLeft-3}px)`;}
+  fxSel(el);
+}
+function fxSel(el=topScreen()){
+  const t=fxTask();if(!t||!el)return;const lv=t.up.levels[t.up.cur],n=FX.sel.size,cap=S.settings.concurrency;
+  $$(".hit",el).forEach(h=>{const on=FX.sel.has(+h.dataset.i);h.classList.toggle("on",on);h.setAttribute("aria-pressed",on);});
+  $$(".fx-row",el).forEach(r=>r.classList.toggle("on",FX.sel.has(+r.dataset.i)));
+  const left=lv.tiles.filter(x=>x.state!=="done"&&!FX.sel.has(x.i));
+  const w=$("#fx-warn",el),wh=left.length&&n?`<p class="fx-warn">第 ${left.map(x=>x.i+1).join("、")} 块有问题但未选中，本级验收仍会失败。</p>`:"";if(w.dataset.h!==wh){w.innerHTML=wh;w.dataset.h=wh;}
+  $("#fx-sum",el).innerHTML=n?`已选 ${n} 块 · ${n} 次生图 + 1 次验收${n>cap?` · 并发 ${cap} 路，其余排队<button data-act="fx-cc">调整</button>`:" · 并行重绘"}`:"点选图块或列表来选择要重绘的块";
+  const go=$("#fx-go",el);go.disabled=!n;go.textContent=n?`重绘所选 ${n} 块`:"重绘所选";
+}
+async function fxSubmit(){
+  const b=S.batches.find(x=>x.id===FX.bid),t=b.tasks[0],u=t.up,lv=u.levels[u.cur],sel=[...FX.sel].sort((a,c)=>a-c),cap=S.settings.concurrency;
+  u.injection=$("#fx-inj",topScreen()).value.trim();lv.lastSelection=sel;
+  for(const i of sel)Object.assign(lv.tiles[i],{state:"queued",stage:0,repaired:true,reason:""});
+  lv.phase="tiles";lv.reviewing=false;t.status="queued";t.err=null;holdBadge();
+  await back();S.expanded.add(b.id);goBatch(b.id);
+  toast(`${sel.length} 块开始重绘${sel.length>cap?`（并发 ${cap} 路，${sel.length-cap} 块排队）`:"，并行进行"}`);
+}
+function finishUp(b,t){
+  const u=t.up,s0=img(u.src)||{},last=u.levels.at(-1);
+  const im=makeImage({prompt:s0.prompt||b.prompt,coll:b.coll,ratio:b.ratio,theme:b.theme,batch:b.id,name:`超分-${u.factor}-${Date.now().toString(16).slice(-6)}.png`});
+  if(s0.seed)im.seed=s0.seed;[im.w,im.h]=last.to;im.bytes=im.w*im.h*.4;im.badge=u.factor;im.src=u.src;
+  S.images.unshift(im);t.img=im.id;t.status="done";
+  if(S.settings.notify)toast(`超分完成 · ${im.w}×${im.h}`,{action:"查看",run:()=>closeOverlays().then(()=>openViewer(im.id,"recent"))});
+}
+
+/* ================= simulated scheduler ================= */
+const dur=()=>700+Math.random()*1300,tdur=()=>450+Math.random()*700;
+function busy(t){if(t.multi)return t.status==="running"?t.multi.parts.filter(x=>x.state==="running").length:0;if(!t.up)return t.status==="running"?1:0;if(t.status!=="running")return 0;const lv=t.up.levels[t.up.cur];return lv.tiles.filter(x=>x.state==="running").length+(lv.reviewing?1:0);}
+function multiStep(b,t,now){const m=t.multi;let ch=false;
+  if(m.phase==="parts"){for(const x of m.parts){if(x.state!=="running"||now<x.next)continue;x.stage++;ch=true;if(x.stage>=4)x.state="done";else x.next=now+dur()*.7;}
+    if(m.parts.every(x=>x.state==="done")){m.phase="merge";m.next=now+1000;ch=true;}}
+  else if(m.phase==="merge"&&now>=m.next){m.phase="done";ch=true;
+    const s0=img(m.src)||{},n=m.parts.length;
+    const im=makeImage({prompt:s0.prompt||b.prompt,coll:b.coll,ratio:b.ratio,theme:b.theme,batch:b.id,name:`局部重绘-${Date.now().toString(16).slice(-6)}.png`});
+    if(s0.seed)im.seed=s0.seed+7;if(s0.w){im.w=s0.w;im.h=s0.h;}im.badge=n>1?`重绘×${n}`:"重绘";im.src=m.src;
+    S.images.unshift(im);t.img=im.id;t.status="done";
+    if(S.settings.notify)toast(n>1?`${n} 个区域已合成为一张新图`:"局部重绘完成",{action:"查看",run:()=>closeOverlays().then(()=>openViewer(im.id,"recent"))});}
+  return ch;}
+function upStep(b,t,now){
+  const u=t.up,lv=u.levels[u.cur];let ch=false;
+  if(lv.phase==="tiles"){
+    for(const x of lv.tiles){if(x.state!=="running"||now<x.next)continue;x.stage++;ch=true;
+      if(x.stage>=4){const bad=u.plan[`${u.cur}:${x.i}`];if(bad&&!x.repaired){x.state=bad.state;x.reason=bad.reason;}else{x.state="done";x.reason="";}}
+      else x.next=now+tdur();}
+    if(lv.tiles.every(x=>x.state!=="queued"&&x.state!=="running")){lv.phase="review";lv.reviewing=false;ch=true;}
+  }else if(lv.phase==="review"&&lv.reviewing&&now>=lv.next){
+    lv.reviewing=false;ch=true;const bad=lv.tiles.filter(x=>x.state!=="done");
+    if(bad.length){lv.phase="failed";t.status="failed";t.err=upError(t);
+      if(S.settings.notify)toast(`超分未通过 · ${bad.length} 块有问题`,{action:"处理",run:()=>openFailure(b.id)});}
+    else{lv.phase="done";if(u.cur<u.levels.length-1){u.cur++;u.levels[u.cur].phase="tiles";}else finishUp(b,t);}
+  }
+  if(topScreen()?.classList.contains("fail-screen")&&FX.bid===b.id)fxRender();
+  return ch;
+}
+function tick(){
+  const now=Date.now(),cap=S.settings.concurrency;let changed=false;
+  const all=[...S.batches].reverse().flatMap(b=>b.tasks.map(t=>[b,t]));
+  for(const [b,t] of all){
+    if(t.status!=="running")continue;
+    if(t.multi){changed=multiStep(b,t,now)||changed;continue;}
+    if(t.up){changed=upStep(b,t,now)||changed;continue;}
+    if(now<t.next)continue;t.stage++;changed=true;
+    if(t.fail&&t.stage===2){t.status="failed";t.err="image generation tool unavailable";continue;}
+    if(t.stage<4){t.next=now+dur();continue;}
+    const tag={redraw:"局部重绘",quick:"速改",reroll:null}[b.kind];
+    const im=makeImage({prompt:b.prompt,coll:b.coll,ratio:b.ratio,theme:b.theme,batch:b.id,name:tag?`${tag}-${Date.now().toString(16).slice(-6)}.png`:undefined});
+    if(b.kind==="quick"||b.kind==="redraw"){im.badge=b.kind==="quick"?"速改":"重绘";if(b.src&&img(b.src))im.src=b.src;}
+    S.images.unshift(im);t.img=im.id;t.status="done";
+    if(b.stitch&&b.stitch!=="关")newBatch({kind:"upscale",prompt:`${b.stitch} 超分 · ${im.name}`,cid:b.coll,ratio:b.ratio,theme:b.theme,up:makeUp(im,b.stitch,S.settings.upscale.injection)});
+    if(b.kind==="quick"&&S.settings.quick.notify)toast(`速改完成「${b.prompt.slice(0,12)}」`,{action:"查看",run:()=>closeOverlays().then(()=>openViewer(im.id,"recent"))});
+    else if(S.settings.notify&&!bstate(b).active&&!(S.tab==="works"&&S.coll===b.coll)&&!V.open&&b.created>boot)toast(`「${b.prompt.slice(0,10)}…」${bstate(b).done} 张已完成`,{action:"查看",run:()=>openColl(b.coll)});
+  }
+  if(!S.paused&&!S.offline){
+    let used=all.reduce((n,[,t])=>n+busy(t),0);
+    for(const [b,t] of all){
+      if((t.up||t.multi)&&t.status==="queued"){t.status="running";t.attempt++;changed=true;}
+      if(used>=cap)continue;
+      if(t.up&&t.status==="running"){const lv=t.up.levels[t.up.cur];
+        if(lv.phase==="tiles")for(const x of lv.tiles){if(used>=cap)break;if(x.state==="queued"){x.state="running";x.stage=0;x.next=now+tdur();used++;changed=true;}}
+        else if(lv.phase==="review"&&!lv.reviewing){lv.reviewing=true;lv.next=now+1500;used++;changed=true;}}
+      else if(t.multi&&t.status==="running"){if(t.multi.phase==="parts")for(const x of t.multi.parts){if(used>=cap)break;if(x.state==="queued"){x.state="running";x.stage=0;x.next=now+dur()*.7;used++;changed=true;}}}
+      else if(!t.up&&!t.multi&&t.status==="queued"){t.status="running";t.stage=0;t.attempt++;t.next=now+dur();used++;changed=true;}
+    }
+  }
+  if(changed)refresh();
+}
+const boot=Date.now();
+
+/* ================= demo drivers ================= */
+document.addEventListener("click",async e=>{
+  const d=e.target.closest("[data-demo]");if(!d)return;const k=d.dataset.demo;
+  await closeOverlays();
+  if(k==="generate"){await go("create");if(!S.composer.prompt.trim()){S.composer.prompt="雨夜里的霓虹茶馆，俯视角，霓虹在积水里的倒影";S.composer.template="t1";S.composer.ratio="16:9";renderPage();}await sleep(350);generate();}
+  if(k==="viewer"||k==="redraw"||k==="longpress"){if(S.tab!=="works"||S.coll!=="c1"){if(S.coll&&S.tab==="works"){await back();await sleep(350);}if(S.tab!=="works")await go("works");await sleep(250);await openColl("c1");await sleep(250);}
+    const t=$("#grid .tile");if(!t)return;if(k==="longpress"){t.classList.add("pressing");await sleep(480);t.classList.remove("pressing");imageMenu(t.dataset.id);}else openViewer(t.dataset.id,"coll",{redraw:k==="redraw"});}
+  if(k==="queue"){S.filter="active";if(S.tab==="queue")renderPage();else go("queue");}
+  if(k==="diverge"){await loadTemplate("t1");await sleep(500);const ta=$("#prompt");S.composer.prompt="秋天的银杏大道，午后逆光，落叶";ta.value=S.composer.prompt;updateInto();}
+  if(k==="offline"){S.offline=!S.offline;updateChrome();if(!S.offline)tick();}
+  if(k==="keyboard"){await go("create");await sleep(300);$("#prompt").focus();}
+  if(k==="quick"){if(S.tab!=="works"||S.coll!=="c1"){if(S.coll&&S.tab==="works"){await back();await sleep(350);}if(S.tab!=="works")await go("works");await sleep(250);await openColl("c1");await sleep(250);}
+    const t=$("#grid .tile");if(!t)return;openViewer(t.dataset.id,"coll");await sleep(650);const inp=$("#qe-input");inp.focus({preventScroll:true});inp.value="换成白天，保留灯笼";$("#qe-send").disabled=false;}
+  if(k==="failure"){const b=S.batches.find(x=>x.kind==="upscale"&&x.tasks[0].status==="failed")||S.batches.find(x=>x.id==="bup");
+    if(b.tasks[0].status!=="failed"){toast("示例超分已经修好；可在作品里重新发送一张到超分");return;}
+    S.filter="failed";S.expanded.add(b.id);if(S.tab==="queue")renderPage();else await go("queue");await sleep(450);openFailure(b.id);}
+  if(k==="settings")openSettings();
+  if(k==="upmode"){await go("create");if(S.mode!=="up"){await sleep(250);$('[data-act="mode"][data-v="up"]').click();}}
+  if(k==="multiregion"){if(S.tab!=="works"||S.coll!=="c1"){if(S.coll&&S.tab==="works"){await back();await sleep(350);}if(S.tab!=="works")await go("works");await sleep(250);await openColl("c1");await sleep(250);}
+    const t=$("#grid .tile");if(!t)return;openViewer(t.dataset.id,"coll");await sleep(600);enterRedraw();await sleep(450);
+    const r=rectOf(curImg());V.regions=[{x:r.x+r.w*.06,y:r.y+r.h*.18,w:r.w*.26,h:r.h*.38,text:"把灯笼换成蓝色",fresh:true},{x:r.x+r.w*.40,y:r.y+r.h*.08,w:r.w*.2,h:r.h*.32,text:"窗户里加一个人影",fresh:true},{x:r.x+r.w*.66,y:r.y+r.h*.52,w:r.w*.28,h:r.h*.4,text:"",fresh:true}];
+    selectRegion(2);}
+  if(k==="four"){await go("create");if(S.mode!=="gen"){S.mode="gen";renderPage();}
+    Object.assign(S.composer,{prompt:"雨夜霓虹茶馆，四个机位",count:4});const nb1=newBatch({prompt:"雨夜霓虹茶馆，四个机位",cid:collForTemplate(S.composer.template).id,ratio:S.composer.ratio,count:4});
+    newBatch({prompt:"秋天的银杏大道，十二张风格探索",cid:"cnone",ratio:"3:2",count:12});holdBadge();S.filter="active";S.expanded.add(nb1.id);await go("queue");refresh();}
+  if(k==="clear"){await go("create");if(!S.composer.prompt.trim()){S.composer.prompt="雨夜里的霓虹茶馆，俯视角，霓虹在积水里的倒影";S.composer.template="t1";renderPage();}await sleep(500);$("#clear-btn").click();}
+});
+
+/* ================= boot ================= */
+function fit(){const dev=$(".device");if(innerWidth<=900){dev.style.transform="";return;}const s=Math.min(1,(innerHeight-28)/868);dev.style.transform=`scale(${s})`;}
+addEventListener("resize",fit);fit();
+app.addEventListener("scroll",()=>{app.scrollTop=0;app.scrollLeft=0;});vw.addEventListener("scroll",()=>{vw.scrollTop=0;});
+applyMotion();hydrateIcons();renderPage();setInterval(tick,250);
+</script>
+</body>
+</html>
