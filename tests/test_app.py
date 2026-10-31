@@ -1,5 +1,6 @@
 """Application contract tests; fake CLI outputs are never production proof."""
 import importlib
+import asyncio
 import io
 import json
 import os
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -19,7 +21,7 @@ class StudioTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         os.environ["STUDIO_DATA"] = cls.temp.name
         os.environ["STUDIO_SETUP_TOKEN"] = "test-setup-secret"
-        os.environ["STUDIO_TEST_EVENTS"] = str(Path(cls.temp.name)/'cli-events.jsonl')
+        os.environ["STUDIO_TEST_EVENTS"] = str(Path(cls.temp.name)/'cli-events')
         os.environ.pop("STUDIO_SETUP_TOKEN_FILE", None)
         import app
         cls.appmod = importlib.reload(app)
@@ -39,8 +41,10 @@ elif 'exec' in sys.argv:
     def event(action):
         if path:=os.environ.get('STUDIO_TEST_EVENTS'):
             record={'event':action,'time':time.time(),'pid':os.getpid(),'job':metadata.get('job_id',directory.name),'kind':metadata.get('kind','image'),'call':directory.name}
-            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
-            os.write(fd,json.dumps(record).encode()+bytes([10]));os.close(fd)
+            folder=Path(path);folder.mkdir(exist_ok=True)
+            name=f'{time.time_ns()}-{os.getpid()}-{action}'
+            temporary=folder/(name+'.tmp');temporary.write_text(json.dumps(record),encoding='utf-8')
+            temporary.replace(folder/(name+'.json'))
     atexit.register(event,'end')
     signal.signal(signal.SIGTERM,lambda *_:sys.exit(143))
     event('start')
@@ -78,6 +82,17 @@ elif 'exec' in sys.argv:
 ''', encoding="utf-8")
         fake.chmod(0o700)
         cls.appmod.CODEX_BIN = str(fake)
+        # Windows cannot execute a POSIX shebang directly. Keep the same fake
+        # CLI and inherited pipes, but launch it through this interpreter.
+        cls.subprocess_patch = None
+        if os.name == 'nt':
+            spawn = asyncio.create_subprocess_exec
+            async def spawn_fake(program, *args, **kwargs):
+                if str(program) == str(fake):
+                    return await spawn(sys.executable, str(fake), *args, **kwargs)
+                return await spawn(program, *args, **kwargs)
+            cls.subprocess_patch = mock.patch('asyncio.create_subprocess_exec', side_effect=spawn_fake)
+            cls.subprocess_patch.start()
         cls.client = TestClient(cls.appmod.app, base_url="https://image.example.com")
         cls.client.__enter__()
         r = cls.client.post("/api/auth/setup", json={"username":"admin","password":"test-password-long","setup_token":"test-setup-secret"})
@@ -88,6 +103,8 @@ elif 'exec' in sys.argv:
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
+        if cls.subprocess_patch:
+            cls.subprocess_patch.stop()
         cls.temp.cleanup()
 
     def post(self, path, body=None):
@@ -103,9 +120,33 @@ elif 'exec' in sys.argv:
         self.fail("Job did not reach expected state: "+str(job))
 
     def cli_events(self,jobs):
-        path=Path(self.temp.name)/'cli-events.jsonl'
-        records=[json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        path=Path(self.temp.name)/'cli-events'
+        records=[json.loads(p.read_text(encoding='utf-8')) for p in path.glob('*.json')] if path.exists() else []
+        records.sort(key=lambda record: record['time'])
         return [r for r in records if r['job'] in jobs]
+
+    def assert_process_exited(self, pid):
+        if os.name != 'nt':
+            with self.assertRaises(ProcessLookupError): os.kill(pid, 0)
+            return
+        # On Windows os.kill(pid, 0) can terminate a live process. Query it.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            self.assertEqual(ctypes.get_last_error(), 87)
+            return
+        try:
+            code = wintypes.DWORD()
+            self.assertTrue(kernel.GetExitCodeProcess(handle, ctypes.byref(code)))
+            self.assertNotEqual(code.value, 259, f'process {pid} is still active')
+        finally:
+            kernel.CloseHandle(handle)
 
     def stitch_folder(self,jid):
         root=self.appmod.DATA/'jobs'/jid/'stitch'
@@ -446,7 +487,7 @@ elif 'exec' in sys.argv:
         self.assertEqual(stage({'type':'item.completed','item':{'type':'image_generation'}}),('receiving','cli'))
         p=self.appmod.job_progress({'status':'running','stage':'generating','stage_source':'worker','stage_updated':100})
         self.assertEqual((p['label'],p['step'],p['indeterminate']),('等待生图返回',3,True))
-        self.assertNotIn('percent',p)
+        self.assertIsNone(p.get('percent'))
         self.assertEqual(self.appmod.job_progress({'status':'succeeded'})['indeterminate'],False)
         self.client.patch('/api/settings',json={'paused':True},headers=self.headers)
         jid=self.post('/api/jobs',{'prompt':'Progress regression'}).json()['ids'][0]
@@ -531,9 +572,17 @@ elif 'exec' in sys.argv:
             requests=[json.loads(p.read_text()) for p in self.stitch_folder(jid).joinpath('calls').glob('*/request.json')]
             redraw=[r for r in requests if r['kind']=='redraw']
             self.assertEqual(len(redraw),4)
+            import upscale_prompts
+            snapshot=job['options']['upscale_prompts']
             for request in redraw:
                 text=request['worker_instruction']
-                self.assertIn('Do not rewrite it or add stylistic details',text)
+                metadata=request['prompt_metadata'];values=metadata['variables']
+                self.assertEqual(text,upscale_prompts.render(snapshot['templates']['image_call'],values))
+                tile=next(part for part in metadata['components'] if part['key']=='tile')
+                self.assertTrue(tile['enabled'])
+                self.assertEqual(tile['text'],upscale_prompts.render(snapshot['templates']['tile'],values))
+                self.assertIn(tile['text'],text)
+                self.assertNotIn('TEST_CONCURRENCY four children',text)
                 self.assertNotIn('Act as an art director',text)
                 for forbidden in ('SIFT','Graph Cut','NumPy','拉普拉斯','完整流程','细化后的'):
                     self.assertNotIn(forbidden,text)
@@ -576,9 +625,9 @@ elif 'exec' in sys.argv:
             self.assertEqual(self.post('/api/jobs/'+jid+'/cancel').status_code,200)
             self.assertEqual(self.client.get('/api/jobs/'+jid).json()['status'],'cancelled')
             self.assertEqual(self.appmod.job_processes(jid),[])
-            for record in started:
-                with self.assertRaises(ProcessLookupError):os.kill(record['pid'],0)
-            self.assertEqual(self.peak_calls(self.cli_events({jid}),'redraw'),4)
+            for record in started:self.assert_process_exited(record['pid'])
+            # Windows force-terminates processes without running Python atexit.
+            if os.name != 'nt':self.assertEqual(self.peak_calls(self.cli_events({jid}),'redraw'),4)
             snapshot=self.client.get('/api/state').json()['calls']
             self.assertEqual((snapshot['active'],snapshot['waiting']),(0,0))
             probe=self.post('/api/jobs',{'prompt':'Capacity is reusable after cancelling all children'}).json()['ids'][0]
@@ -662,7 +711,7 @@ elif 'exec' in sys.argv:
     def test_32_retry_upgrades_legacy_masks_without_regenerating_cached_tiles(self):
         from stitch_engine import REGISTRATION_VERSION
         source=self.client.get('/api/assets?kind=reference').json()['items'][0]
-        jid=self.post('/api/jobs',{'prompt':'Legacy affine mask migration','source_asset_id':source['id'],'stitch':4}).json()['ids'][0]
+        jid=self.post('/api/jobs',{'prompt':'Legacy affine mask migration','source_asset_id':source['id'],'stitch':4,'upscale_policy':{'include_source_context':True}}).json()['ids'][0]
         job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
         folder=self.stitch_folder(jid);plan=json.loads((folder/'plan.json').read_text())
         checkpoints={p:p.stat().st_mtime_ns for p in (folder/'redraw').glob('*.png')}
@@ -680,9 +729,8 @@ elif 'exec' in sys.argv:
         inspection=max((folder/'calls').glob('inspection-*/request.json'),key=lambda p:p.stat().st_mtime_ns)
         review_request=json.loads(inspection.read_text())['worker_instruction']
         self.assertIn('Legacy affine mask migration',review_request)
-        self.assertIn('残留水印和符号',review_request)
-        self.assertIn('整图超分',review_request)
-        self.assertIn('相对坐标',review_request)
+        self.assertIn('历史背景不自动产生新的编辑目标',review_request)
+        self.assertIn('归一化坐标',review_request)
         quality=json.loads((folder/'diagnostics/quality.json').read_text())
         self.assertTrue(all(a['registration_version']==REGISTRATION_VERSION for a in quality['alignments']))
         self.assertEqual(quality['uncovered_pixels'],0)
