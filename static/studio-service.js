@@ -51,6 +51,7 @@ const StudioService=(()=>{
     return {factor:j.options.stitch+'×',levels:stages,cur,injection:j.options.upscale_injection||'',src:source?.id||j.options.source_asset_id,plan:{},raw:p};
   }
   function task(j){const p=j.progress||{},t={id:j.id,status:state(j.status),stage:Math.max(0,['sending','thinking','generating','receiving'].indexOf(p.stage||j.stage)),err:j.error,attempt:j.attempt,img:j.outputs?.[0]?.id,raw:j};
+    t.waitingForSlot=p.stage==='call_wait';
     if(j.options.stitch)t.up=upModel(j);
     if(j.options.regions)t.multi={src:j.options.source_asset_id,phase:p.label?.includes('合成')?'merge':t.status==='done'?'done':'parts',parts:j.options.regions.map((r,i)=>{const a=p.regions?.find(x=>x.index===i)||{};return {i,text:r.prompt,state:state(a.status||'queued'),stage:['sending','thinking','generating','receiving'].indexOf(a.stage)};})};return t;
   }

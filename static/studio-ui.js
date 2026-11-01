@@ -82,7 +82,7 @@ function upIssues(t){const bad=t.up?.levels[t.up.cur]?.tiles.filter(x=>x.state!=
 const tileGrid=(t,big)=>{const lv=t.up.levels[t.up.cur];return `<span class="tg${big?" big":""}" data-layout="grid-template-columns:repeat(${lv.grid[0]},1fr)">${lv.tiles.map(x=>`<i data-s="${x.state}"></i>`).join("")}</span>`;};
 function upLabel(t){return t.raw?.progress?.label||"等待调度";}
 const units=t=>t.up?t.up.levels[t.up.cur].tiles.map(x=>({status:x.state,stage:x.stage})):t.multi?t.multi.parts.map(x=>({status:x.state,stage:x.stage})):[t];
-const pctOf=x=>x.status==="running"?Math.round((Math.min(x.stage,3)+.5)/4*100):x.status==="queued"||x.status==="cancelled"?0:100;
+const pctOf=x=>x.waitingForSlot?0:x.status==="running"?Math.round((Math.min(x.stage,3)+.5)/4*100):x.status==="queued"||x.status==="cancelled"?0:100;
 const segBar=(list,w)=>`<span class="bbar${list.length>10?" dense":""}"${w?` data-layout="width:${w}px"`:""}>${list.map(x=>`<i data-st="${x.status}" data-layout="--p:${pctOf(x)}%"></i>`).join("")}</span>`;
 function multiLabel(t){const m=t.multi,n=m.parts.length,done=m.parts.filter(x=>x.state==="done").length,run=m.parts.filter(x=>x.state==="running").length;
   if(t.status==="queued")return S.paused?"已暂停":"等待调度";if(t.status==="cancelled")return"已取消";
@@ -90,7 +90,7 @@ function multiLabel(t){const m=t.multi,n=m.parts.length,done=m.parts.filter(x=>x
   if(m.phase==="merge")return `合成 ${n} 个区域…`;
   return n>1?`${n} 个区域 · ${done}/${n} 完成${run>1?` · ${run} 并行`:""}`:(run?STAGE[m.parts[0].stage]:"等待调度");}
 const taskBar=t=>t.status==='done'?'':t.up?StudioProgress.short(t,40):segBar(units(t),40);
-const taskLabel=t=>t.multi?multiLabel(t):t.up?upLabel(t):t.status==="running"?STAGE[t.stage]:t.status==="queued"?(S.paused?"调度已暂停":"等待调度"):"";
+const taskLabel=t=>t.multi?multiLabel(t):t.up?upLabel(t):t.status==="running"?(t.raw?.progress?.label||STAGE[t.stage]):t.status==="queued"?(S.paused?"调度已暂停":"等待调度"):"";
 /* ================= history / layers ================= */
 const layers=[];let waiters=[];
 history.replaceState({depth:0},"");
@@ -267,7 +267,7 @@ function updateColl(){
 /* ---------- queue ---------- */
 function queueHTML(){return `${topBar("任务",`<button class="pause-ctl" data-act="pause"><span>暂停调度</span><span class="switch ${S.paused?"on":""}" id="pause-sw"></span></button>`)}
 <div class="scroll"><div id="paused-note"></div><div class="seg" id="qseg"><span class="ind"></span><button data-act="qf" data-f="active">进行中<em></em></button><button data-act="qf" data-f="done">已完成<em></em></button><button data-act="qf" data-f="failed">失败<em></em></button></div><div id="batches"></div><p class="empty" id="qempty" hidden></p></div>`;}
-const stagesHTML=t=>t.status==='done'?'':`<span class="stages" data-st="${t.status}" data-s="${Math.max(0,Math.min(t.stage,3))}"><i></i><i></i><i></i><i></i></span>`;
+const stagesHTML=t=>t.status==='done'?'':`<span class="stages" data-st="${t.waitingForSlot?'queued':t.status}" data-s="${Math.max(0,Math.min(t.stage,3))}"><i></i><i></i><i></i><i></i></span>`;
 function bstate(b){const st=b.tasks.map(t=>t.status);return{active:st.some(s=>s==="queued"||s==="running"),failed:st.filter(s=>s==="failed").length,done:st.filter(s=>s==="done").length,n:st.length};}
 const bfilter=(b,f)=>{const s=bstate(b);return f==="active"?s.active:f==="failed"?!s.active&&s.failed>0:!s.active&&!s.failed;};
 function chainedBatchHTML(b){
@@ -286,7 +286,7 @@ function batchHTML(b){
   if(b.kind==="upscale"&&b.tasks.length===1&&b.tasks[0].up)return upBatchHTML(b);
   const s=bstate(b),c=coll(b.coll),open=S.expanded.has(b.id),thumb=b.tasks.find(t=>t.img&&img(t.img)),t0=b.tasks[0],m=t0.multi;
   const cnt=k=>b.tasks.filter(t=>t.status===k).length,run=cnt("running"),q=cnt("queued");
-  const sum=m?multiLabel(t0):s.active?[`${s.done}/${s.n} 完成`,run&&`${run} 生成中${s.n===1?` · ${STAGE[t0.stage]}`:""}`,q&&`${q} ${S.paused?"已暂停":"等待"}`].filter(Boolean).join(" · "):s.failed?`${s.failed} 张失败 · ${s.done} 张完成` :`${s.done} 张完成${cnt("cancelled")?` · ${cnt("cancelled")} 已取消`:""}`;
+  const sum=m?multiLabel(t0):s.active?[`${s.done}/${s.n} 完成`,run&&`${run} 生成中${s.n===1?` · ${taskLabel(t0)}`:""}`,q&&`${q} ${S.paused?"已暂停":"等待"}`].filter(Boolean).join(" · "):s.failed?`${s.failed} 张失败 · ${s.done} 张完成` :`${s.done} 张完成${cnt("cancelled")?` · ${cnt("cancelled")} 已取消`:""}`;
   const srcIm=b.src&&img(b.src);
   const rows=m?m.parts.map(x=>`<div class="trow"><span class="n">#${x.i+1}</span>${stagesHTML({status:x.state,stage:x.stage})}<span class="lbl">${esc(x.text)}</span><span class="muted small">${x.state==="running"?STAGE[x.stage]:x.state==="done"?"完成":x.state==="failed"?"失败":x.state==="cancelled"?"已取消":"等待"}</span></div>`).join("")
       +(t0.status==="done"&&img(t0.img)?`<div class="trow"><span class="n"></span><span class="lbl">已合成为一张新图，选区外像素保持原图</span><button class="link-btn" data-act="img" data-id="${t0.img}" data-list="batch:${b.id}">查看</button></div>`:m.phase==="merge"?`<div class="trow"><span class="n"></span><span class="spin"></span><span class="lbl">合成中：只替换各选区内像素</span></div>`:"")
@@ -834,7 +834,7 @@ function promptEditor(k){const [title,vars]=PROMPT_META[k];
         if(e.target.closest('[data-act="pe-reset"]')){ta.value=DEFAULT_PROMPTS[k];check();ta.animate([{opacity:.4},{opacity:1}],{duration:D(200)});}});}});
 }
 function injEditor(){
-  openSheet({title:"默认画风约束",html:`<textarea class="input" id="inj-text" rows="4">${esc(S.settings.upscale.injection)}</textarea><p class="note">新超分任务默认填入；每个任务仍可单独修改。</p><button class="primary" data-act="inj-save">保存</button>`});
+  openSheet({title:"默认任务统一要求",html:`<textarea class="input" id="inj-text" rows="4" maxlength="12000">${esc(S.settings.upscale.injection)}</textarea><p class="note">只用于新任务预填，提交后随任务固定；已有任务需要复制后调整。</p><button class="primary" data-act="inj-save">保存</button>`});
 }
 
 /* ================= upscale failure workspace ================= */
