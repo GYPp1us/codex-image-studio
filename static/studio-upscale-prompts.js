@@ -6,11 +6,25 @@ const StudioUpscalePrompts=(()=>{
   const defaults=()=>({append_system:S.settings.upscale.appendSystem??true,include_source_context:S.settings.upscale.includeSourceContext??false});
   function policy(scope){if(scope==='composer')return S.composer.upscalePolicy||defaults();if(scope==='upscale')return S.upc.policy||defaults();return drafts.get(scope)?.policy||defaults();}
   function setPolicy(scope,value){if(scope==='composer')S.composer.upscalePolicy=value;else if(scope==='upscale')S.upc.policy=value;else drafts.set(scope,{...drafts.get(scope),policy:value});previews.delete(scope);}
+  function requirements(scope){return scope==='composer'?S.composer.upscaleRequirements??'':scope==='upscale'?S.upc.inj??'':drafts.get(scope)?.requirements??'';}
+  function setRequirements(scope,value){
+    if(scope==='composer')S.composer.upscaleRequirements=value;else if(scope==='upscale')S.upc.inj=value;else drafts.set(scope,{...drafts.get(scope),requirements:value});previews.delete(scope);
+    for(const holder of document.querySelectorAll('.prompt-composition[data-prompt-scope]'))if(holder.dataset.promptScope===scope)for(const input of holder.querySelectorAll('[data-upp-requirements]'))if(input.value!==value)input.value=value;
+  }
+  function refreshEntries(scope){
+    for(const holder of document.querySelectorAll('.prompt-composition[data-prompt-scope]'))if(holder.dataset.promptScope===scope)holder.outerHTML=entry(scope,{source:holder.dataset.promptSource});
+  }
+  function state(scope,holder){
+    holder=holder||[...document.querySelectorAll('.prompt-composition[data-prompt-scope]')].find(el=>el.dataset.promptScope===scope);
+    const layer=holder?.closest('.sheet-layer'),source=holder?.dataset.promptSource||(scope==='upscale'?S.upc.src:null);
+    const factor=Number(String(scope==='upscale'?S.upc.factor:scope==='composer'?S.composer.stitch:layer?.dataset.f||'4').replace('×',''));
+    return {source:source||null,factor,upscale_requirements:requirements(scope),upscale_policy:{...policy(scope)}};
+  }
   function entry(scope,{source=null}={}){
     const value=policy(scope);
-    return `<div class="prompt-composition" data-prompt-scope="${scope}"${source?` data-prompt-source="${source}"`:''}><div class="composition-options">${[['append_system','拼接超分系统提示','图块保真、细节与接缝约束'],['include_source_context','附带原图历史描述','仅作背景，不重做历史编辑']].map(([key,label,note])=>`<button type="button" class="composition-choice ${value[key]?'on':''}" data-upp-policy="${key}" aria-pressed="${value[key]}"><span class="choice-check">${icon('check',13)}</span><span><b>${label}</b><small>${note}</small></span></button>`).join('')}</div><div class="composition-order"><span>调用协议</span>${value.append_system?'<i>＋</i><span>超分系统提示</span>':''}${value.include_source_context?'<i>＋</i><span>历史背景</span>':''}<i>＋</i><span>本任务统一要求</span></div><div class="composition-foot"><p>关闭系统提示仍保留尺寸、原图附件与产物协议；验收提示独立配置。</p><button class="link-btn" type="button" data-upp-preview>查看拼接</button></div></div>`;
+    return `<div class="prompt-composition" data-prompt-scope="${scope}"${source?` data-prompt-source="${source}"`:''}><div class="composition-source"><span>本次草稿选项 · 提交后固定</span><button class="link-btn" type="button" data-upp-defaults>恢复超分默认</button></div>${scope==='composer'?`<label class="composition-requirements">超分任务统一要求<textarea class="input" rows="2" maxlength="12000" data-upp-requirements placeholder="只约束后续超分，不改变本次原图生成要求">${esc(requirements(scope))}</textarea></label>`:''}<div class="composition-options">${[['append_system','拼接超分系统提示','图块保真、细节与接缝约束'],['include_source_context','附带原图历史描述','仅作背景，不重做历史编辑']].map(([key,label,note])=>`<button type="button" class="composition-choice ${value[key]?'on':''}" data-upp-policy="${key}" aria-pressed="${value[key]}"><span class="choice-check">${icon('check',13)}</span><span><b>${label}</b><small>${note}</small></span></button>`).join('')}</div><div class="composition-order"><span>调用协议</span>${value.append_system?'<i>＋</i><span>超分系统提示</span>':''}${value.include_source_context?'<i>＋</i><span>历史背景</span>':''}<i>＋</i><span>统一要求（有填写时）</span></div><div class="composition-foot"><p>关闭系统提示仍保留尺寸、原图附件与产物协议；验收提示独立配置。</p><button class="link-btn" type="button" data-upp-preview>查看拼接</button></div></div>`;
   }
-  function entryValue(scope){return {upscale_policy:policy(scope),expected_prompt_revision:previews.get(scope)?.revision};}
+  function entryValue(scope){const saved=previews.get(scope);return {upscale_policy:{...policy(scope)},expected_prompt_revision:saved?.signature===JSON.stringify(state(scope))?saved.revision:undefined};}
   function settingsHTML(){return `<div class="up-prompt-settings">${Object.entries(settings.upscale_prompt_labels).map(([key,label])=>`<button class="s-row" data-upp-edit="${key}"><span class="s-l">${esc(label)}<small>${esc((settings.upscale_prompt_variables[key]||[]).map(v=>'{'+v+'}').join(' · '))}</small></span><span class="s-r">${settings.upscale_system_prompts[key]===settings.default_upscale_system_prompts[key]?'默认':'自定义'}${icon('chevr',15)}</span></button>`).join('')}</div>`;}
   function edit(key){
     const label=settings.upscale_prompt_labels[key],initial=settings.upscale_system_prompts[key]||'';
@@ -26,13 +40,12 @@ const StudioUpscalePrompts=(()=>{
     return `<div class="prompt-preview-meta"><span>任务快照 ${esc(value.snapshot_revision?.slice(0,10)||'')}</span><span>第 ${value.scope?.level||1} 级 · 第 ${(value.scope?.tile||0)+1} 块</span></div><div class="prompt-preview-work"><aside class="prompt-components">${(value.components||[]).map(part=>`<details ${part.enabled?'open':''} class="${part.enabled?'':'disabled'}"><summary>${part.enabled?'已拼接':'未拼接'} · ${esc(part.label)}</summary><pre>${esc(part.text)}</pre></details>`).join('')}</aside><main><h2>完整发送给模型的指令</h2><p class="note">这是工作台实际发送的完整文本，不代表生图工具内部不可见的提示词。</p><pre class="prompt-box">${esc(value.worker_instruction)}</pre>${value.review?`<details class="task-disclosure"><summary>独立视觉验收指令</summary><pre class="prompt-box">${esc(value.review.worker_instruction)}</pre></details>`:''}</main></div>`;
   }
   async function preview(holder,button){
-    const scope=holder.dataset.promptScope,source=holder.dataset.promptSource||(scope==='upscale'?S.upc.src:null),layer=holder.closest('.sheet-layer');
-    const requirements=(scope==='upscale'?$('#cu-inj'):scope==='composer'?null:layer?.querySelector('#up-inj'))?.value??S.settings.upscale.injection;
-    const factor=Number(String(scope==='upscale'?S.upc.factor:scope==='composer'?S.composer.stitch:layer?.dataset.f||'4').replace('×',''));
-    if(!source){openSheet({title:'超分提示拼接顺序',html:`<p class="note">${scope==='composer'?'原图生成后才确定每级图块与尺寸；当前选项会随任务冻结。':'选择原图后可查看填入真实图块尺寸的完整指令。'}</p>${entry(scope)}<div class="prompt-box">${esc(settings.upscale_system_prompts.tile||'')}</div><div class="field-label">任务统一要求</div><div class="prompt-box">${esc(requirements||'无额外要求')}</div>`});return;}
+    const scope=holder.dataset.promptScope,captured=state(scope,holder),{source,...body}=captured,signature=JSON.stringify(captured);
+    if(!source){openSheet({title:'超分提示拼接顺序',html:`<p class="note">${scope==='composer'?'原图生成后才确定每级图块与尺寸；当前选项会随任务冻结。':'选择原图后可查看填入真实图块尺寸的完整指令。'}</p>${entry(scope)}<div class="prompt-box">${esc(settings.upscale_system_prompts.tile||'')}</div>${scope==='composer'?'':`<div class="field-label">任务统一要求</div><div class="prompt-box">${esc(body.upscale_requirements||'无额外要求')}</div>`}`});return;}
     await StudioFeedback.run('up-preview:'+scope,button,async()=>{
-      const body={factor,upscale_requirements:requirements,upscale_policy:policy(scope)},value=await StudioService.api(`/api/assets/${source}/upscale-prompt-preview`,{method:'POST',body});
-      previews.set(scope,{revision:value.snapshot_revision});
+      const value=await StudioService.api(`/api/assets/${source}/upscale-prompt-preview`,{method:'POST',body});
+      if(!holder.isConnected||signature!==JSON.stringify(state(scope,holder))){toast('草稿已改变，请重新查看拼接');return;}
+      previews.set(scope,{revision:value.snapshot_revision,signature});
       openScreen(`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon('back')}</button><h1>超分提示拼接预览</h1></header><div class="scroll prompt-preview-scroll">${previewHTML(value)}</div>`,{cls:'prompt-preview-screen'});
     });
   }
@@ -44,11 +57,12 @@ const StudioUpscalePrompts=(()=>{
       const clone=document.createElement('button');clone.className='secondary';clone.textContent='复制为新超分任务';clone.disabled=!job.options?.source_asset_id&&!job.source_image?.id;clone.onclick=()=>StudioFeedback.run('up-clone:'+job.id,clone,()=>StudioService.cloneUpscale(job.id)).catch(StudioService.report);holder.append(clone);
     }catch(error){if(holder.isConnected)holder.innerHTML=`<p class="form-err">${esc(error.message)}</p>`;}
   }
-  app.addEventListener('click',event=>{const toggle=event.target.closest('[data-upp-policy]'),editButton=event.target.closest('[data-upp-edit]'),previewButton=event.target.closest('[data-upp-preview]');
-    if(toggle){const holder=toggle.closest('[data-prompt-scope]'),scope=holder.dataset.promptScope,next={...policy(scope),[toggle.dataset.uppPolicy]:!policy(scope)[toggle.dataset.uppPolicy]};setPolicy(scope,next);holder.outerHTML=entry(scope,{source:holder.dataset.promptSource});StudioService.saveDraft?.();}
+  app.addEventListener('click',event=>{const toggle=event.target.closest('[data-upp-policy]'),restore=event.target.closest('[data-upp-defaults]'),editButton=event.target.closest('[data-upp-edit]'),previewButton=event.target.closest('[data-upp-preview]');
+    if(toggle){const holder=toggle.closest('[data-prompt-scope]'),scope=holder.dataset.promptScope,next={...policy(scope),[toggle.dataset.uppPolicy]:!policy(scope)[toggle.dataset.uppPolicy]};setPolicy(scope,next);refreshEntries(scope);StudioService.saveDraft?.();}
+    if(restore){const holder=restore.closest('[data-prompt-scope]'),scope=holder.dataset.promptScope;setPolicy(scope,defaults());setRequirements(scope,S.settings.upscale.injection||'');const input=scope==='upscale'?$('#cu-inj'):holder.closest('.sheet-layer')?.querySelector('#up-inj');if(input)input.value=requirements(scope);refreshEntries(scope);StudioService.saveDraft?.();toast('已恢复当前超分默认，其他草稿内容保留');}
     if(editButton)edit(editButton.dataset.uppEdit);
     if(previewButton)preview(previewButton.closest('[data-prompt-scope]'),previewButton).catch(StudioService.report);
   });
-  app.addEventListener('input',event=>{if(event.target.id==='cu-inj')previews.delete('upscale');if(event.target.id==='up-inj'){const scope=event.target.closest('.sheet-layer')?.dataset.promptScope;if(scope)previews.delete(scope);}});
-  return {configure:value=>{settings={...settings,...value};},entry,entryValue,settingsHTML,mountTask,newScope:()=>{const key='sheet-'+uid('prompt');drafts.set(key,{policy:defaults()});return key;},release:scope=>{drafts.delete(scope);previews.delete(scope);}};
+  app.addEventListener('input',event=>{if(event.target.hasAttribute('data-upp-requirements'))setRequirements(event.target.closest('[data-prompt-scope]').dataset.promptScope,event.target.value);if(event.target.id==='cu-inj')setRequirements('upscale',event.target.value);if(event.target.id==='up-inj'){const scope=event.target.closest('.sheet-layer')?.dataset.promptScope;if(scope)setRequirements(scope,event.target.value);}});
+  return {configure:value=>{settings={...settings,...value};},entry,entryValue,settingsHTML,mountTask,newScope:()=>{const key='sheet-'+uid('prompt');drafts.set(key,{policy:defaults(),requirements:S.settings.upscale.injection||''});return key;},release:scope=>{drafts.delete(scope);previews.delete(scope);}};
 })();

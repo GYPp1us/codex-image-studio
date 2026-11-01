@@ -732,7 +732,7 @@ app.addEventListener("click",async e=>{
     case"v-info":infoSheet(V.list[V.i]);break;
     case"v-more":imageMenu(V.list[V.i],true);break;
     case"v-ref":useAsRef(V.list[V.i]);break;
-    case"v-reroll":reroll(V.list[V.i]);break;
+    case"v-reroll":await reroll(V.list[V.i],a);break;
     case"v-redraw":enterRedraw();break;
     case"v-up":upscaleSheet(V.list[V.i]);break;
     case"rd-cancel":back();break;
@@ -748,11 +748,11 @@ app.addEventListener("click",async e=>{
     case"use-prompt":{const im=img(id),c=coll(im.coll);Object.assign(S.composer,{prompt:im.prompt,template:c?.template||null,ratio:StudioService.requestedRatio(im.id),ack:false});await closeOverlays();S.tab==="create"?renderPage():await go("create");flashChip();break;}
     // image menu
     case"im-ref":await back();useAsRef(id);break;
-    case"im-reroll":await back();reroll(id);break;
+    case"im-reroll":{const layer=a.closest('.sheet-layer'),revision=layer?.dataset.revision;if(await reroll(id,a)&&layer?.isConnected&&layer.style.pointerEvents!=='none'&&layer.dataset.revision===revision&&topSheet()===layer)await back();break;}
     case"im-redraw":await back();openViewer(id,S.coll?"coll":"recent",{redraw:true});break;
     case"im-up":await back();upscaleSheet(id);break;
     case"im-info":await back();infoSheet(id);break;
-    case"im-del":{await back();if(V.open&&V.list[V.i]===id){await back();}deleteImage(id);break;}
+    case"im-del":await deleteImage(id,a);break;
   }
   }catch(error){StudioService.report(error);}
 });

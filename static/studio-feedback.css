@@ -42,3 +42,4 @@ html.rm .action-spinner,html[data-motion="reduce"] .action-spinner{animation:non
 .storage-key i{width:7px;height:7px;border-radius:2px;background:var(--sage-ink)}
 .storage-key .available{background:var(--sage-2)}
 .storage-key .other{background:var(--ink-3);opacity:.4}
+.field-save-state{display:flex;align-items:center;gap:6px;min-height:22px;margin:4px 0 8px;color:var(--ink-3);font-size:11px}.field-save-state.error{color:var(--red)}.field-save-state .spin{width:11px;height:11px}

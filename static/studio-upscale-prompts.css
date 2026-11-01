@@ -1,4 +1,6 @@
 .prompt-composition{margin-top:12px;min-width:0}
+.composition-source{display:flex;align-items:center;gap:8px;justify-content:space-between;margin-bottom:8px;color:var(--ink-3);font-size:10px}.composition-source .link-btn{font-size:10px}
+.composition-requirements{display:block;color:var(--ink-2);font-size:11px;margin:10px 0}.composition-requirements .input{display:block;margin-top:6px;font-size:12px}
 .composition-options{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .composition-choice{border:1px solid var(--line);border-radius:12px;padding:10px;display:flex;gap:7px;align-items:flex-start;min-width:0;transition:border-color var(--d2),background var(--d2),transform var(--d1)}
 .composition-choice:active{transform:scale(.98)}.composition-choice.on{background:var(--sage);border-color:var(--sage-ink)}

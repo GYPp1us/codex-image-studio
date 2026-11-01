@@ -5,17 +5,18 @@ const html=fs.readFileSync('static/index.html','utf8');
 const prompt='Generate an image using {prompt}, preserving the requested native dimensions.';
 const baseAsset={id:'asset',width:900,height:1200,name:'山色.png',kind:'generated',bytes:1234,created:1000,job_id:'job',url:'/media/asset',thumbnail:'/media/asset?thumbnail=1',preview:'/media/asset?preview=1',favorite:0,tags:''};
 function makeJob(id,extra={}){return {id,batch_id:'batch',prompt:'静谧山色',status:'queued',created:1000,collection_id:'untemplated',template_id:'',refs:[],references:[],outputs:[],attempt:0,max_attempts:3,error:'',model:'gpt-test',effort:'high',options:{ratio:'1:1',size:'auto',model:'gpt-test',effort:'high',stitch:0},progress:{stage:'queued',label:'等待调度'},...extra};}
-async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',quickGate=null,settingsFail=false,bigFailure=false,chained=false,chainStatus='failed'}={}){
- const {window}=parseHTML(html),{document}=window;const requests=[],timers=new Map();let timerId=0,stateReads=0;
+async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',quickGate=null,settingsFail=false,bigFailure=false,chained=false,chainStatus='failed',defaultInjection='',rerollUpscale=false,savedDraft=null,previewGate=null,accountGate=null,loginGate=null,restoreGate=null,accountFail=false,loginFail=false,restoreFail=false,trashPaged=false,trashPageGate=null,connectGate=null,uploadGate=null,assetGate=null,renameGate=null,avatarGate=null,renameFail=false,passwordFail=false,staleStatusGate=null,settingsGate=null}={}){
+ const {window}=parseHTML(html),{document}=window;const requests=[],timers=new Map(),stored={};let timerId=0,stateReads=0,statusReads=0;
+ if(savedDraft)stored['studio-demo-composer:fixture']=JSON.stringify(savedDraft);
  const asset=huge?{...baseAsset,width:12000,height:8000,tile_template:'/api/assets/asset/tiles/{level}/{x}/{y}'}:baseAsset;
  const dataJobs=[makeJob('job',{status:'succeeded',outputs:[asset]}),...Array.from({length:19},(_,i)=>makeJob('job'+i))];
  const plan={factor:4,input_size:[900,1200],output_size:[1800,2400],budget:{images:3,reviews:1,max_calls:10},stages:[{index:1,input_size:[900,1200],output_size:[1800,2400],columns:1,rows:3,tile_count:3,status:'failed',cuts:{x:[],y:[400,800]},budget:{images:3,reviews:1,max_calls:10},diagnostic_available:true}]};
  if(bigFailure)plan.stages[0].tile_count=5000;
- const up=makeJob('up',{batch_id:'upbatch',status:'failed',options:{stitch:4,source_asset_id:'asset',upscale_requirements:'ORIGINAL-REQUIREMENT',upscale_prompts:{policy:{append_system:false,include_source_context:true},revision:'old-revision'}},source_image:asset,upscale_plan:plan,error:'图块验收失败'});
+ const up=makeJob('up',{batch_id:'upbatch',status:'failed',options:{stitch:4,source_asset_id:'asset',upscale_requirements:'ORIGINAL-REQUIREMENT',upscale_injection:'ORIGINAL-REQUIREMENT',upscale_prompts:{policy:{append_system:false,include_source_context:true},revision:'old-revision'}},source_image:asset,upscale_plan:plan,error:'图块验收失败'});
  const chainParent=makeJob('parent',{batch_id:'chain',status:'succeeded',outputs:[asset],options:{ratio:'1:1',size:'auto',stitch:0,after_upscale:4}});
  const chainChild={...up,id:'child',batch_id:'chain',status:chainStatus,options:{...up.options,parent_job_id:'parent'}};
  const batches=chained?[{id:'chain',created:1000,jobs:[chainParent,chainChild]}]:[{id:'batch',created:1000,jobs:dataJobs},{id:'upbatch',created:999,jobs:[up]}];
- const prefs={defaults:{ratio:'3:2',size:'auto',count:3,transparent:false,polish:false,stitch:0},quick:{keep_spec:true,use_ref:true,use_source_template:true,effort:'high',notify:true},upscale:{factor:4,auto_select:true,default_injection:''},motion:legacyMotion,motion_mode:motion,notify:false,call_prompt:prompt,polish_prompt:prompt,stitch_prompt:prompt,default_call_prompt:prompt,default_polish_prompt:prompt,default_stitch_prompt:prompt};
+ const prefs={defaults:{ratio:'3:2',size:'auto',count:3,transparent:false,polish:false,stitch:0},quick:{keep_spec:true,use_ref:true,use_source_template:true,effort:'high',notify:true},upscale:{factor:4,auto_select:true,default_injection:defaultInjection},motion:legacyMotion,motion_mode:motion,notify:false,call_prompt:prompt,polish_prompt:prompt,stitch_prompt:prompt,default_call_prompt:prompt,default_polish_prompt:prompt,default_stitch_prompt:prompt};
  const keys=['image_call','tile','requirements','source_context','repair','retry','review'];
  prefs.upscale_system_prompts=Object.fromEntries(keys.map(k=>[k,`CUSTOM-${k} {prompt}`]));
  prefs.default_upscale_system_prompts={...prefs.upscale_system_prompts};
@@ -23,16 +24,23 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  prefs.upscale_prompt_variables=Object.fromEntries(keys.map(k=>[k,['prompt']]));
  const state={model:'gpt-test',effort:'high',concurrency:2,max_attempts:3,paused:true,preferences:prefs};
  const storage={bytes:1024,limit_bytes:0,free_bytes:1e9,groups:{database:512},tasks:[],trash:{assets:0,collections:0}};
- const fetch=async(path,opt={})=>{requests.push({path,method:opt.method||'GET',body:typeof opt.body==='string'?JSON.parse(opt.body):opt.body,headers:opt.headers});let d;
+ const fetch=async(path,opt={})=>{requests.push({path,method:opt.method||'GET',body:typeof opt.body==='string'?JSON.parse(opt.body):opt.body,headers:opt.headers,signal:opt.signal});let d;
   if(path==='/api/auth/state')d={initialized:true,authenticated:!unauth,csrf:'csrf-fixture',cache_scope:'fixture'};
   else if(path==='/api/state'){if(failSync&&stateReads++>0)return {ok:false,status:503,json:async()=>({detail:'poll unavailable'})};d=state;}
-  else if(path==='/api/settings'){if(opt.method&&settingsFail)return {ok:false,status:400,json:async()=>({detail:'保存失败：变量不合法'})};d=opt.method?{ok:true}:prefs;}
-  else if(path==='/api/account/avatar')d={avatar_url:opt.method==='DELETE'?'':'/api/account/avatar?v=new'};
-  else if(path==='/api/account')d={username:'tester',session_count:1,avatar_url:avatarURL};
-  else if(path==='/api/setup/status')d={authenticated:true,version:'fixture'};
+  else if(path==='/api/settings'){if(opt.method&&settingsGate)await settingsGate;if(opt.method&&settingsFail)return {ok:false,status:400,json:async()=>({detail:'保存失败：变量不合法'})};d=opt.method?{ok:true}:prefs;}
+  else if(path==='/api/account/avatar'){if(opt.method&&avatarGate)await avatarGate;d={avatar_url:opt.method==='DELETE'?'':'/api/account/avatar?v=new'};}
+  else if(path==='/api/account'){if(opt.method==='PATCH'&&accountGate)await accountGate;if(opt.method==='PATCH'&&accountFail)return {ok:false,status:400,json:async()=>({detail:'ACCOUNT FAILED'})};d={username:'tester',session_count:1,avatar_url:avatarURL};}
+  else if(path==='/api/auth/password'){if(accountGate)await accountGate;if(passwordFail)return {ok:false,status:400,json:async()=>({detail:'PASSWORD FAILED'})};d={ok:true};}
+  else if(path==='/api/auth/login'){if(loginGate)await loginGate;if(loginFail)return {ok:false,status:400,json:async()=>({detail:'LOGIN FAILED'})};d={ok:true,csrf:'csrf-fixture'};}
+  else if(path.endsWith('/restore')){if(restoreGate)await restoreGate;if(restoreFail)return {ok:false,status:400,json:async()=>({detail:'RESTORE FAILED'})};d={ok:true};}
+  else if(path==='/api/setup/status'){statusReads++;if(staleStatusGate&&statusReads>=3){await staleStatusGate;d={authenticated:false,version:'old-status',login:{running:false,output:'STALE-STATUS'}};}else d={authenticated:true,version:'fixture',login:{running:!!staleStatusGate}};}
+  else if(path==='/api/setup/login'){if(connectGate)await connectGate;d={running:false,output:'NEW-AUTH-STATE'};}
+  else if(path==='/api/assets'&&opt.method==='POST'){if(uploadGate)await uploadGate;d={asset};}
+  else if(path==='/api/assets/asset'&&opt.method){if(assetGate)await assetGate;const body=typeof opt.body==='string'?JSON.parse(opt.body):opt.body;if(body?.name==='FIRST-NAME'&&renameGate)await renameGate;if(body?.name==='SAVE-FAILED'&&renameFail)return {ok:false,status:400,json:async()=>({detail:'NAME FAILED'})};d={...asset,...body};}
   else if(path==='/api/models')d={items:[{id:'gpt-test',name:'Fixture model',efforts:['low','high'],default_effort:'low'}]};
   else if(path.startsWith('/api/collections'))d={items:[{id:'untemplated',name:'无模板',image_count:1,active:19,covers:[asset]}],total:1};
   else if(path==='/api/templates')d=[{id:'template',title:'模板',text:'可复用提示词',refs:['asset'],references:[asset],options:{ratio:'9:16',size:'2048',transparent:true,polish:true,stitch:16,model:'gpt-test',effort:'low'}}];
+  else if(path.startsWith('/api/assets?')&&path.includes('deleted=true')&&trashPaged){const query=new URL(path,'http://fixture').searchParams,offset=Number(query.get('offset')||0);if(offset&&trashPageGate)await trashPageGate;const all=Array.from({length:101},(_,i)=>({...asset,id:'trash-'+i,name:'trash-'+i}));d={items:all.slice(offset,offset+100),total:101};}
   else if(path.startsWith('/api/assets?')){const query=new URL(path,'http://fixture').searchParams;let items=gallery?[asset,{...asset,id:'neighbor',name:'相邻作品.png',job_id:null},{...asset,id:'reference',kind:'reference',name:'参考图.png',job_id:null},{...asset,id:'old-favorite',name:'旧收藏.png',job_id:null,favorite:1}]:[asset];if(paginated)items.push(...Array.from({length:80},(_,i)=>({...asset,id:'reference-'+i,kind:'reference',job_id:null})));if(query.get('kind')==='reference')items=items.filter(a=>a.kind==='reference');if(query.get('kind')==='generated')items=items.filter(a=>a.kind==='generated');if(query.get('favorite')==='true')items=items.filter(a=>a.favorite);else items=items.filter(a=>a.id!=='old-favorite');const total=items.length,offset=Number(query.get('offset')||0),limit=Number(query.get('limit')||100);d={items:items.slice(offset,offset+limit),total};}
   else if(path.startsWith('/api/batches'))d={items:batches,total:2};
   else if(path==='/api/upscale/jobs/up')d=up;
@@ -42,7 +50,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
   else if(path==='/api/upscale/jobs/up/prompt-snapshot')d={available:true,snapshot:{revision:'abcdef123456',templates:{tile:'SAVED TEMPLATE'}}};
   else if(path==='/api/upscale/jobs/up/calls')d={total:1,items:[{id:'savedcall',kind:'redraw',scope:{level:1,tile:0}}]};
   else if(path==='/api/upscale/jobs/up/calls/savedcall')d={worker_instruction:'ACTUAL SENT EXACTLY',prompt_metadata:{components:[{enabled:false,label:'disabled template',text:'disabled'}],snapshot_revision:'abcdef123456',scope:{level:1,tile:0}}};
-  else if(path==='/api/assets/asset/upscale-prompt-preview')d={snapshot_revision:'abc123',worker_instruction:'COMPILED SERVER PREVIEW',scope:{level:1,tile:0},components:[{enabled:false,label:'tile',text:'NOT INCLUDED'}],review:{worker_instruction:'REVIEW SERVER PREVIEW'}};
+  else if(path==='/api/assets/asset/upscale-prompt-preview'){if(previewGate)await previewGate;d={snapshot_revision:'abc123',worker_instruction:'COMPILED SERVER PREVIEW',scope:{level:1,tile:0},components:[{enabled:false,label:'tile',text:'NOT INCLUDED'}],review:{worker_instruction:'REVIEW SERVER PREVIEW'}};}
   else if(path==='/api/assets/asset/upscale')d={batch_id:'upbatch',ids:['queued-upscale']};
   else if(path.includes('/upscale-plan'))d=plan;
   else if(path.includes('/diagnostics?'))d={input_size:[900,1200],images:{source:'/source.webp',raw:'/raw.webp',affine:'/affine.webp'},tiles:[{index:4,core:[0,0,900,400],state:'ready',reason:'几何正常'},{index:7,core:[0,400,900,800],state:'coverage',reason:'配准后缺失'},{index:8,core:[0,800,900,1200],state:'missing',reason:'尚未返回'}]};
@@ -51,7 +59,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
   else if(path.endsWith('/quick-edit')){if(quickGate)await quickGate;if(failQuick)return {ok:false,status:503,json:async()=>({detail:'模拟临时失败'})};d={batch_id:'batch',ids:['queued-job']};}
   else if(path==='/api/jobs'&&opt.method)d={batch_id:'batch',ids:['queued-job']};
   else if(path==='/api/storage')d=storage;
-  else if(path.includes('/assets/asset/info')){if(delayInfo)await delayInfo;d={asset:asset,job:dataJobs[0]};}
+  else if(path.includes('/assets/asset/info')){if(delayInfo)await delayInfo;d={asset:asset,job:rerollUpscale?up:dataJobs[0]};}
   else if(path.startsWith('/api/jobs?'))d={items:dataJobs,total:20};
   else d={ok:true};
   if(bigFailure&&path.includes('/diagnostics?'))d.tiles=Array.from({length:5000},(_,i)=>({index:i,core:[(i%100)*9,Math.floor(i/100)*24,(i%100+1)*9,(Math.floor(i/100)+1)*24],state:i===0?'coverage':'ready',reason:'fixture'}));
@@ -64,10 +72,10 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  window.HTMLElement.prototype.getAnimations=function(){return [];};window.HTMLElement.prototype.animate=function(){return {finished:Promise.resolve({cancel(){}}),cancel(){}};};window.HTMLElement.prototype.scrollIntoView=function(){};window.HTMLElement.prototype.scrollTo=function(){};
  window.HTMLElement.prototype.setPointerCapture=function(){};window.HTMLElement.prototype.blur=function(){};
  const mediaListeners=[],media={matches:systemReduce,addEventListener:(type,listener)=>{if(type==='change')mediaListeners.push(listener);}};
- const context=vm.createContext({document,window,console,Headers,FormData,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null,setItem(){}},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
+ const context=vm.createContext({document,window,console,Headers,FormData,AbortController,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>stored[key]??(key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null),setItem(key,value){stored[key]=value;}},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
  for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-tasks.js','studio-upscale-prompts.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
  await vm.runInContext('studioReady',context);
- return {context,document,requests,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
+ return {context,document,requests,stored,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
 
 
@@ -135,7 +143,7 @@ test('all seven editable system templates appear and a rejected save preserves t
 });
 test('composer entry sends its selected policy and task requirements',async()=>{
   const f=await fixture();
-  f.run("S.settings.upscale.injection='COMPOSER-REQUIREMENT';S.composer.prompt='a fixture';S.composer.stitch='4×';S.composer.upscalePolicy={append_system:false,include_source_context:true};document.querySelector('#gen').disabled=false");
+  f.run("S.composer.upscaleRequirements='COMPOSER-REQUIREMENT';S.composer.prompt='a fixture';S.composer.stitch='4×';S.composer.upscalePolicy={append_system:false,include_source_context:true};document.querySelector('#gen').disabled=false");
   await f.service.generate();
   const req=f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST');assert.ok(req);
   assert.equal(req.body.upscale_requirements,'COMPOSER-REQUIREMENT');
@@ -167,7 +175,7 @@ test('standalone upscale entry sends its own policy and task requirements',async
 });
 test('preview and actual-call screens display server text and disclosed disabled components',async()=>{
   const f=await fixture();f.service.upscaleSheet('asset');await tick();await tick();
-  const sheet=f.document.querySelector('.up-entry-sheet');sheet.querySelector('#up-inj').value='PREVIEW-REQUIREMENT';
+  const sheet=f.document.querySelector('.up-entry-sheet');sheet.querySelector('#up-inj').value='PREVIEW-REQUIREMENT';sheet.querySelector('#up-inj').dispatchEvent(new f.context.window.Event('input',{bubbles:true}));
   sheet.querySelector('[data-upp-preview]').click();await tick();await tick();
   const preview=f.document.querySelector('.prompt-preview-screen');assert.ok(preview);
   assert.match(preview.textContent,/COMPILED SERVER PREVIEW/);assert.match(preview.textContent,/REVIEW SERVER PREVIEW/);
@@ -311,4 +319,277 @@ test('collection navigation and logout clear active batch-selection state',async
   await f.service.action('logout',button);await tick();
   assert.equal(f.run('StudioSelection.active()'),false);
   assert.equal(f.document.querySelector('#selection-toolbar'),null);
+});
+
+test('loading a template does not silently replace the draft upscale policy',async()=>{
+  const f=await fixture();
+  f.run("S.composer.prompt='UNSAVED DRAFT';S.composer.upscalePolicy={append_system:false,include_source_context:true}");
+  await f.service.loadTemplate('template');
+  assert.equal(f.run('S.composer.prompt'),'UNSAVED DRAFT');
+  assert.deepEqual(JSON.parse(f.run('JSON.stringify(S.composer.upscalePolicy)')),{append_system:false,include_source_context:true});
+});
+test('changing a default does not silently replace the existing generation draft requirement',async()=>{
+  const f=await fixture({defaultInjection:'OLD-DRAFT-REQUIREMENT'});
+  f.run("S.composer.prompt='UNSAVED DRAFT';S.composer.stitch='4×'");
+  // The settings screen changes a default after the draft was already established.
+  f.run("S.settings.upscale.injection='NEW-DEFAULT';document.querySelector('#gen').disabled=false");
+  await f.service.generate();
+  const req=f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST');assert.ok(req);
+  assert.equal(req.body.upscale_requirements,'OLD-DRAFT-REQUIREMENT');
+});
+
+test('reroll an upscale result uses its own saved policy instead of a different draft',async()=>{
+  const f=await fixture({rerollUpscale:true});
+  f.run("S.upc.policy={append_system:true,include_source_context:false}");
+  await f.service.reroll('asset');
+  const req=f.requests.find(r=>r.path==='/api/assets/asset/upscale'&&r.method==='POST');assert.ok(req);
+  assert.equal(req.body.upscale_requirements,'ORIGINAL-REQUIREMENT');
+  assert.deepEqual(req.body.upscale_policy,{append_system:false,include_source_context:true});
+});
+
+
+
+test('composer requirement edits persist as draft and explicit reset adopts only current upscale defaults',async()=>{
+  const f=await fixture({defaultInjection:'DEFAULT-ONE'});
+  f.run("S.composer.prompt='KEEP ORIGINAL DRAFT';S.composer.stitch='4×';paramsSheet()");
+  const holder=f.document.querySelector('.sheet-layer [data-prompt-scope="composer"]');assert.ok(holder);
+  const input=holder.querySelector('[data-upp-requirements]');input.value='SAVED-DRAFT-REQUIREMENT';input.dispatchEvent(new f.context.window.Event('input',{bubbles:true}));
+  holder.querySelector('[data-upp-policy="append_system"]').click();await tick();f.flushTimers(250);
+  const saved=JSON.parse(f.stored['studio-demo-composer:fixture']);
+  assert.equal(saved.composer.upscaleRequirements,'SAVED-DRAFT-REQUIREMENT');assert.equal(saved.composer.upscalePolicy.append_system,false);
+  const restored=await fixture({defaultInjection:'DEFAULT-TWO',savedDraft:saved});
+  assert.equal(restored.run('S.composer.prompt'),'KEEP ORIGINAL DRAFT');
+  assert.equal(restored.run('S.composer.upscaleRequirements'),'SAVED-DRAFT-REQUIREMENT');
+  assert.equal(restored.run('S.composer.upscalePolicy.append_system'),false);
+  restored.run('paramsSheet()');const current=restored.document.querySelector('.sheet-layer [data-prompt-scope="composer"]');
+  assert.match(current.textContent,/本次草稿选项/);current.querySelector('[data-upp-defaults]').click();await tick();
+  assert.equal(restored.run('S.composer.upscaleRequirements'),'DEFAULT-TWO');
+  assert.equal(restored.run('S.composer.upscalePolicy.append_system'),true);
+  assert.equal(restored.run('S.composer.prompt'),'KEEP ORIGINAL DRAFT');
+});
+test('late preview is discarded when requirements change while request is in flight',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({previewGate:gate});
+  f.service.upscaleSheet('asset');await tick();await tick();
+  const sheet=f.document.querySelector('.up-entry-sheet'),input=sheet.querySelector('#up-inj');
+  input.value='BEFORE';input.dispatchEvent(new f.context.window.Event('input',{bubbles:true}));
+  sheet.querySelector('[data-upp-preview]').click();await tick();
+  input.value='AFTER';input.dispatchEvent(new f.context.window.Event('input',{bubbles:true}));release();await tick();await tick();
+  assert.equal(f.document.querySelector('.prompt-preview-screen'),null);
+  const scope=sheet.dataset.promptScope;f.context.testScope=scope;
+  assert.equal(f.run('StudioUpscalePrompts.entryValue(testScope).expected_prompt_revision'),undefined);
+  const button=sheet.querySelector('[data-act="up-go"]');button.disabled=false;await f.service.action('up-go',button);
+  const submitted=f.requests.find(r=>r.path==='/api/assets/asset/upscale'&&r.method==='POST');
+  assert.equal(submitted.body.upscale_requirements,'AFTER');assert.equal(submitted.body.expected_prompt_revision,undefined);
+});
+test('saved standalone upscale draft keeps its source, requirements and policy after reload',async()=>{
+  const draft={mode:'up',composer:{prompt:'KEEP'},upc:{src:'asset',factor:'4×',inj:'SAVED-UP-REQUIREMENT',policy:{append_system:false,include_source_context:true}}};
+  const f=await fixture({defaultInjection:'NEW-DEFAULT',savedDraft:draft});
+  assert.equal(f.run('S.upc.src'),'asset');assert.equal(f.run('S.upc.inj'),'SAVED-UP-REQUIREMENT');
+  assert.deepEqual(JSON.parse(f.run('JSON.stringify(S.upc.policy)')),{append_system:false,include_source_context:true});
+  assert.equal(f.document.querySelector('#cu-inj').value,'SAVED-UP-REQUIREMENT');
+});
+
+test('two visible composer entry controls stay synchronized when policy and requirements change',async()=>{
+  const f=await fixture({defaultInjection:'INITIAL'});
+  f.run("document.querySelector('#app').insertAdjacentHTML('beforeend','<section id=\\\"mirror-a\\\">'+StudioUpscalePrompts.entry('composer')+'</section><section id=\\\"mirror-b\\\">'+StudioUpscalePrompts.entry('composer')+'</section>')");
+  let first=f.document.querySelector('#mirror-a [data-upp-requirements]');first.value='SHARED DRAFT';first.dispatchEvent(new f.context.window.Event('input',{bubbles:true}));
+  assert.equal(f.document.querySelector('#mirror-b [data-upp-requirements]').value,'SHARED DRAFT');
+  f.document.querySelector('#mirror-a [data-upp-policy="append_system"]').click();await tick();
+  assert.equal(f.document.querySelector('#mirror-b [data-upp-policy="append_system"]').getAttribute('aria-pressed'),'false');
+});
+
+test('reroll ignores duplicate activation while reading the source task',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({delayInfo:gate});
+  const button=f.document.createElement('button');f.document.body.append(button);
+  const first=f.service.reroll('asset',button),second=f.service.reroll('asset',button);await tick();
+  const pending=button.getAttribute('aria-busy');const infoCalls=f.requests.filter(r=>r.path==='/api/assets/asset/info').length;
+  release();await Promise.all([first,second]);
+  assert.equal(infoCalls,1);assert.equal(pending,'true');
+  assert.equal(f.requests.filter(r=>r.path==='/api/jobs'&&r.method==='POST').length,1);
+});
+
+function fakeFormData(f){f.context.FormData=class {constructor(form){this.rows=[...form.querySelectorAll('input[name]')].map(input=>[input.name,input.value]);}[Symbol.iterator](){return this.rows[Symbol.iterator]();}};}
+test('account form shows pending and ignores a repeated submit',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({accountGate:gate});fakeFormData(f);
+  const opener=f.document.createElement('button');opener.dataset.act='account-edit';f.document.body.append(opener);await f.service.action('account-edit',opener);
+  const form=f.document.querySelector('#account-form'),button=form.querySelector('button');assert.ok(form);
+  form.dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+  form.dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+  const calls=f.requests.filter(r=>r.path==='/api/account'&&r.method==='PATCH').length,pending=button.getAttribute('aria-busy');
+  release();await tick();await tick();
+  assert.equal(calls,1);assert.equal(pending,'true');
+});
+test('login form shows pending and ignores a repeated submit',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({unauth:true,loginGate:gate});fakeFormData(f);
+  const form=f.document.querySelector('#login-form'),button=form.querySelector('button');assert.ok(form);
+  form.dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+  form.dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+  const calls=f.requests.filter(r=>r.path==='/api/auth/login'&&r.method==='POST').length,pending=button.getAttribute('aria-busy');
+  release();await tick();await tick();
+  assert.equal(calls,1);assert.equal(pending,'true');
+});
+test('trash restore shows pending and ignores duplicate activation',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({restoreGate:gate});
+  const opener=f.document.createElement('button');opener.dataset.act='trash';f.document.body.append(opener);await f.service.action('trash',opener);
+  const button=f.document.querySelector('[data-restore-img="asset"]');assert.ok(button);button.click();await tick();button.click();await tick();
+  const calls=f.requests.filter(r=>r.path==='/api/assets/asset/restore').length,pending=button.getAttribute('aria-busy');
+  release();await tick();await tick();
+  assert.equal(calls,1);assert.equal(pending,'true');
+});
+
+test('account and login failures preserve typed fields and expose errors',async()=>{
+  const account=await fixture({accountFail:true});fakeFormData(account);
+  const opener=account.document.createElement('button');opener.dataset.act='account-edit';account.document.body.append(opener);await account.service.action('account-edit',opener);
+  const af=account.document.querySelector('#account-form');af.querySelector('[name="username"]').value='KEEP ACCOUNT DRAFT';af.querySelector('[name="current_password"]').value='keep-password';
+  af.dispatchEvent(new account.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();
+  assert.equal(af.querySelector('[name="username"]').value,'KEEP ACCOUNT DRAFT');assert.equal(af.querySelector('[name="current_password"]').value,'keep-password');assert.match(af.querySelector('.form-err').textContent,/ACCOUNT FAILED/);
+  const login=await fixture({unauth:true,loginFail:true});fakeFormData(login);
+  const lf=login.document.querySelector('#login-form');lf.querySelector('[name="username"]').value='KEEP LOGIN DRAFT';lf.querySelector('[name="password"]').value='keep-password';
+  lf.dispatchEvent(new login.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();
+  assert.equal(lf.querySelector('[name="username"]').value,'KEEP LOGIN DRAFT');assert.equal(lf.querySelector('[name="password"]').value,'keep-password');assert.match(lf.querySelector('.form-err').textContent,/LOGIN FAILED/);
+});
+test('failed trash restore keeps its entry and reenables retry',async()=>{
+  const f=await fixture({restoreFail:true}),opener=f.document.createElement('button');opener.dataset.act='trash';f.document.body.append(opener);await f.service.action('trash',opener);
+  const button=f.document.querySelector('[data-restore-img="asset"]');button.click();await tick();await tick();
+  assert.ok(button.isConnected);assert.equal(button.disabled,false);assert.match(f.document.querySelector('#toast').textContent,/RESTORE FAILED/);
+});
+
+test('late account success does not close a newer screen',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({accountGate:gate});fakeFormData(f);
+  const opener=f.document.createElement('button');opener.dataset.act='account-edit';f.document.body.append(opener);await f.service.action('account-edit',opener);
+  const form=f.document.querySelector('#account-form');form.dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+  f.run("openScreen('<h1>NEWER SCREEN</h1>',{cls:'newer-screen'})");release();await tick();await tick();
+  const newer=f.document.querySelector('.newer-screen');assert.ok(newer?.isConnected);assert.match(newer.textContent,/NEWER SCREEN/);
+});
+test('trash pagination is single flight and appends the next page once',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({trashPaged:true,trashPageGate:gate});
+  const opener=f.document.createElement('button');opener.dataset.act='trash';f.document.body.append(opener);await f.service.action('trash',opener);
+  const more=f.document.querySelector('[data-trash-more]');assert.ok(more);more.click();await tick();more.click();await tick();
+  const pending=more.getAttribute('aria-busy'),calls=f.requests.filter(r=>r.path.includes('deleted=true')&&r.path.includes('offset=100')).length;
+  release();await tick();await tick();assert.equal(calls,1);assert.equal(pending,'true');
+  assert.equal(f.document.querySelectorAll('[data-restore-img]').length,101);
+});
+test('successful restore with failed refresh reports accepted action and retains screen',async()=>{
+  const f=await fixture({failSync:true}),opener=f.document.createElement('button');opener.dataset.act='trash';f.document.body.append(opener);await f.service.action('trash',opener);
+  const button=f.document.querySelector('[data-restore-img="asset"]');button.click();await tick();await tick();
+  assert.equal(f.requests.filter(r=>r.path==='/api/assets/asset/restore').length,1);
+  assert.ok(f.document.querySelector('.trash-screen'));assert.match(f.document.querySelector('#toast').textContent,/已恢复.*未刷新/);
+});
+
+test('subscription connection serializes competing actions and shows pending feedback',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({connectGate:gate});
+  const opener=f.document.createElement('button');opener.dataset.act='reconnect-set';f.document.body.append(opener);await f.service.action('reconnect-set',opener);
+  const sheet=f.document.querySelector('.sheet-layer'),first=sheet.querySelector('[data-connect="browser"]'),second=sheet.querySelector('[data-connect="device"]');
+  first.click();await tick();second.click();await tick();
+  const calls=f.requests.filter(r=>r.path==='/api/setup/login').length,pending=first.getAttribute('aria-busy');release();await tick();await tick();
+  assert.equal(calls,1);assert.equal(pending,'true');
+});
+test('picker upload shows real in-flight status and prevents repeat upload',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({uploadGate:gate});
+  await f.service.pickerSheet({});const picker=f.document.querySelector('.reference-picker'),file=picker.querySelector('#pk-file'),button=picker.querySelector('[data-pk="upload"]');
+  Object.defineProperty(file,'files',{configurable:true,value:[new Blob(['fixture'],{type:'image/png'})]});
+  file.dispatchEvent(new f.context.window.Event('change',{bubbles:true}));await tick();file.dispatchEvent(new f.context.window.Event('change',{bubbles:true}));await tick();
+  const calls=f.requests.filter(r=>r.path==='/api/assets'&&r.method==='POST').length,text=picker.textContent;
+  assert.equal(button.disabled,true);release();await tick();await tick();
+  assert.equal(calls,1);assert.match(text,/上传中|正在上传/);
+});
+test('duplicate ordinary image deletion is single-flight with visible waiting state',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({assetGate:gate});
+  const button=f.document.createElement('button');f.document.body.append(button);
+  const a=f.service.deleteImage('asset',button),b=f.service.deleteImage('asset',button);await tick();
+  const count=f.requests.filter(r=>r.path==='/api/assets/asset'&&r.method==='DELETE').length,pending=button.getAttribute('aria-busy');
+  release();await Promise.all([a,b]);assert.equal(count,1);assert.equal(pending,'true');
+});
+test('avatar reset provides a real pending label and prevents repeat actions',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({avatarURL:'/old.png',avatarGate:gate});
+  const opener=f.document.createElement('button');opener.dataset.act='avatar-edit';f.document.body.append(opener);await f.service.action('avatar-edit',opener);
+  const editor=f.document.querySelector('.avatar-editor'),button=editor.querySelector('.avatar-remove'),save=editor.querySelector('.avatar-save');button.click();await tick();button.click();await tick();
+  const calls=f.requests.filter(r=>r.path==='/api/account/avatar'&&r.method==='DELETE').length,text=save.textContent,disabled=button.disabled;
+  release();await tick();await tick();assert.equal(calls,1);assert.equal(disabled,true);assert.match(text,/正在保存/);
+});
+
+test('overlapping image name saves keep the latest user value',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({renameGate:gate});
+  const input=f.document.createElement('input');input.dataset.id='asset';input.dataset.edit='name';f.document.body.append(input);
+  input.value='FIRST-NAME';const first=f.service.editImage(input);await tick();
+  input.value='LATEST-NAME';const second=f.service.editImage(input);await tick();
+  const beforeRelease=f.requests.filter(r=>r.path==='/api/assets/asset'&&r.method==='PATCH').map(r=>r.body.name);
+  release();await Promise.all([first,second]);
+  assert.deepEqual(beforeRelease,['FIRST-NAME']);
+  assert.deepEqual(f.requests.filter(r=>r.path==='/api/assets/asset'&&r.method==='PATCH').map(r=>r.body.name),['FIRST-NAME','LATEST-NAME']);
+  assert.equal(f.run('img("asset").name'),'LATEST-NAME');assert.equal(input.value,'LATEST-NAME');
+});
+
+test('password change displays pending and ignores repeat submission',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({accountGate:gate});fakeFormData(f);
+  const opener=f.document.createElement('button');opener.dataset.act='password';f.document.body.append(opener);await f.service.action('password',opener);
+  const form=f.document.querySelector('#password-form'),button=form.querySelector('button');form.dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();form.dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+  const count=f.requests.filter(r=>r.path==='/api/auth/password').length,pending=button.getAttribute('aria-busy');release();await tick();await tick();
+  assert.equal(count,1);assert.equal(pending,'true');
+});
+
+test('favorite action guards duplicate activation and shows pending',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({assetGate:gate});
+  const button=f.document.createElement('button');button.dataset.act='im-fav';button.dataset.id='asset';f.document.body.append(button);
+  const a=f.service.action('im-fav',button),b=f.service.action('im-fav',button);await tick();
+  const count=f.requests.filter(r=>r.path==='/api/assets/asset'&&r.method==='PATCH').length,pending=button.getAttribute('aria-busy');
+  release();await Promise.all([a,b]);assert.equal(count,1);assert.equal(pending,'true');
+});
+
+test('failed image rename preserves the typed draft for retry',async()=>{
+  const f=await fixture({renameFail:true}),input=f.document.createElement('input');input.dataset.id='asset';input.dataset.edit='name';input.value='SAVE-FAILED';
+  await assert.rejects(f.service.editImage(input),/NAME FAILED/);
+  assert.equal(input.value,'SAVE-FAILED');
+});
+
+test('failed password change preserves typed values for retry',async()=>{
+  const f=await fixture({passwordFail:true});fakeFormData(f);
+  const opener=f.document.createElement('button');opener.dataset.act='password';f.document.body.append(opener);await f.service.action('password',opener);
+  const form=f.document.querySelector('#password-form');form.querySelector('[name="current"]').value='old-password';form.querySelector('[name="password"]').value='new-password';
+  form.dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();
+  assert.equal(form.querySelector('[name="current"]').value,'old-password');assert.equal(form.querySelector('[name="password"]').value,'new-password');assert.match(form.querySelector('.form-err').textContent,/PASSWORD FAILED/);
+});
+
+test('image name save exposes pending state until the request finishes',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({renameGate:gate});
+  const input=f.document.createElement('input');input.dataset.id='asset';input.dataset.edit='name';input.value='FIRST-NAME';f.document.body.append(input);
+  const request=f.service.editImage(input);await tick();const pending=input.getAttribute('aria-busy');release();await request;
+  assert.equal(pending,'true');
+});
+
+
+test('older subscription status response cannot overwrite a newer authorization result',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({staleStatusGate:gate});
+  const opener=f.document.createElement('button');opener.dataset.act='reconnect-set';f.document.body.append(opener);await f.service.action('reconnect-set',opener);
+  const sheet=f.document.querySelector('.sheet-layer');f.flushTimers(1500);await tick();
+  sheet.querySelector('[data-connect="browser"]').click();await tick();await tick();
+  assert.match(sheet.querySelector('#login-status').textContent,/NEW-AUTH-STATE/);
+  release();await tick();await tick();
+  assert.match(sheet.querySelector('#login-status').textContent,/NEW-AUTH-STATE/);
+});
+
+test('closing an uploading picker aborts its request and preserves existing references',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({uploadGate:gate});
+  f.run('StudioService.setComposerRefs(["asset"])');await f.service.pickerSheet({refs:['asset']});
+  const picker=f.document.querySelector('.reference-picker'),file=picker.querySelector('#pk-file');Object.defineProperty(file,'files',{configurable:true,value:[new Blob(['fixture'],{type:'image/png'})]});
+  file.dispatchEvent(new f.context.window.Event('change',{bubbles:true}));await tick();
+  const upload=f.requests.find(r=>r.path==='/api/assets'&&r.method==='POST');assert.ok(upload?.signal);assert.equal(upload.signal.aborted,false);
+  await f.run('back()');assert.equal(upload.signal.aborted,true);release();await tick();await tick();
+  assert.deepEqual(Array.from(f.run('S.composer.refs')),['asset']);
+});
+test('upload and concurrent reference selection do not exceed eight choices',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({gallery:true,uploadGate:gate});
+  const refs=Array.from({length:7},(_,i)=>'old-'+i);await f.service.pickerSheet({refs});
+  const picker=f.document.querySelector('.reference-picker'),file=picker.querySelector('#pk-file');Object.defineProperty(file,'files',{configurable:true,value:[new Blob(['fixture'],{type:'image/png'})]});
+  file.dispatchEvent(new f.context.window.Event('change',{bubbles:true}));await tick();
+  const select=picker.querySelector('[data-pk="select"][data-id="reference"]');assert.ok(select);select.click();await tick();
+  release();await tick();await tick();await tick();assert.match(picker.querySelector('#pk-count').textContent,/8 \/ 8/);
+});
+
+test('queue pause displays pending and ignores repeated activation',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({settingsGate:gate});
+  const button=f.document.createElement('button');button.dataset.act='pause';f.document.body.append(button);
+  const a=f.service.action('pause',button),b=f.service.action('pause',button);await tick();
+  const count=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,pending=button.getAttribute('aria-busy');
+  release();await Promise.all([a,b]);assert.equal(count,1);assert.equal(pending,'true');
 });
