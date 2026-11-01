@@ -1,0 +1,13 @@
+.selecting>.scroll{padding-bottom:90px}
+#page .tile{-webkit-touch-callout:none}
+.selecting .tile{position:relative;-webkit-touch-callout:none}
+.selecting .tile::after{content:"";position:absolute;right:7px;top:7px;width:21px;height:21px;border:2px solid #fff;border-radius:50%;background:#0003;box-shadow:0 1px 5px #0003;transition:background var(--d1),transform var(--d2)}
+.selecting .tile.batch-selected::after{background:var(--sage-ink);transform:scale(1.08)}
+.selecting .tile.batch-selected::before{content:"✓";position:absolute;right:7px;top:7px;width:25px;height:25px;color:var(--on-accent,#fffefa);display:grid;place-items:center;z-index:2;font-size:14px;font-weight:600}
+.selecting .tile.batch-selected{box-shadow:inset 0 0 0 3px var(--sage-ink)}
+.selecting .tile img{transition:transform var(--d2) var(--e-emph),border-radius var(--d2)}
+.selecting .tile.batch-selected img{transform:scale(.9);border-radius:8px}
+.selection-toolbar{position:absolute;bottom:var(--tab-h);left:12px;right:12px;display:flex;align-items:center;gap:9px;min-height:60px;padding:10px 12px;border:1px solid var(--line);border-radius:18px;background:var(--surface);box-shadow:0 6px 24px #0002;z-index:8;animation:drop var(--d2) var(--e-emph)}
+.selection-count{flex:1;font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.selection-toolbar .ghost-btn{padding:6px;font-size:12px}
+.selection-toolbar .pill-btn{display:flex;align-items:center;gap:4px}

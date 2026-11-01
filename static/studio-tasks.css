@@ -1,0 +1,25 @@
+.task-workspace{background:var(--bg)}
+.task-work-scroll{padding:0 16px calc(24px + env(safe-area-inset-bottom,0px));min-width:0}
+.task-section{margin:12px 0;padding:16px;border:1px solid var(--line);border-radius:17px;background:var(--surface);min-width:0}
+.task-section:empty{display:none}
+.task-section h2{font-size:13px;font-weight:600;margin:0 0 12px}
+.task-section .prompt-box{font-size:13px;margin:0;max-height:42dvh;overflow:auto;white-space:pre-wrap}
+.task-disclosure{margin:12px 0 0}.task-disclosure summary{cursor:pointer;font-size:13px;color:var(--ink-2);padding:5px 0 10px}
+.task-disclosure summary .muted{margin-left:8px;font-size:10px}
+.task-disclosure>.secondary{font-size:12px;margin-top:10px}
+.task-status{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:7px 10px;border-radius:9px;background:var(--sage);color:var(--sage-ink);margin-top:8px}
+.task-status.error{background:var(--red-bg);color:var(--red)}
+.task-outputs{display:flex;gap:10px;overflow:auto}.task-outputs button{flex:none;width:140px;display:grid;gap:6px;color:var(--ink-2);font-size:11px}.task-outputs img{width:140px;height:110px;object-fit:cover;border-radius:10px}
+.task-id{font:10px ui-monospace,monospace;overflow-wrap:anywhere}
+.up-check-image{width:100%;max-height:52dvh;object-fit:contain;border-radius:10px;background:var(--surface-2)}
+.up-work-main,.up-work-side,.task-detail-main,.task-detail-side{min-width:0}
+.task-workspace .up-plan{border:0;margin:0}.task-workspace .plan-level{padding:10px 0}.task-workspace .kv{margin-bottom:14px}
+.fail-screen .failure-checkpoints{padding:12px 14px;background:var(--surface);border:1px solid var(--line);border-radius:14px;margin:10px 0 16px}
+.inspection-budget>summary{font-size:13px;font-weight:600;cursor:pointer;padding:10px 0}.inspection-budget .up-plan{margin-top:6px}
+.fx-stage.bounded-map{width:100%;max-height:60dvh;min-height:90px;background:var(--surface-2)}
+.bounded-map img{object-fit:contain;position:absolute;inset:0;width:100%;height:100%}
+.bounded-map canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:pan-x pan-y;cursor:crosshair}
+.bounded-map canvas:focus-visible{outline:2px solid var(--sage-ink);outline-offset:3px;border-radius:14px}
+.fx-pagination{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:12px 0;font-size:11px;color:var(--ink-2)}
+.fx-pagination label{display:flex;gap:6px;align-items:center}.fx-pagination input{width:64px;border:1px solid var(--line);border-radius:7px;padding:5px;background:var(--surface)}
+.task-chain{border-left:2px solid var(--sage-2);padding-left:8px;margin:10px 0 14px;min-width:0}.task-chain .trow{padding-left:0}.chain-step{font-size:10px;color:var(--ink-2);white-space:nowrap}.chain-dependent{font-size:11px;color:var(--ink-3);padding-left:28px;margin:6px 0}.task-chain .bbar{min-width:32px}.task-chain .composite-progress{padding-top:6px}

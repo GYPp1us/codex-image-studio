@@ -1,0 +1,27 @@
+.composite-progress{padding:12px 0 8px;min-width:0}
+.composite-progress>header{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink);margin-bottom:10px;min-height:20px}
+.progress-caption{font-size:10px;color:var(--ink-3);flex:1}
+.progress-follow{color:var(--sage-ink);font-size:11px;border-radius:7px;padding:3px 6px;background:var(--sage)}
+.progress-edge{position:relative;min-width:0}
+.progress-edge::before,.progress-edge::after{content:"";position:absolute;top:0;bottom:0;width:20px;z-index:2;pointer-events:none;opacity:0;transition:opacity var(--d2)}
+.progress-edge::before{left:0;background:linear-gradient(90deg,var(--surface),transparent)}
+.progress-edge::after{right:0;background:linear-gradient(-90deg,var(--surface),transparent)}
+.edge-left .progress-edge::before,.edge-right .progress-edge::after{opacity:1}
+.progress-board-scroll{overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;touch-action:pan-x pan-y;min-height:62px}
+.progress-board-scroll:focus-visible{outline:2px solid var(--sage-ink);outline-offset:2px;border-radius:5px}
+.progress-board-spacer{position:relative;height:62px}
+.progress-board-cells{position:absolute;top:0;left:0;display:flex;gap:6px}
+.progress-column{flex:none;width:30px;display:grid;grid-template-rows:repeat(4,7px) 15px;row-gap:3px;min-width:0}
+.work-cell{display:block;background:var(--surface-2);border:1px solid var(--line);border-radius:2px;transition:background var(--d2),border-color var(--d2)}
+.progress-column>span{font-size:9px;color:var(--ink-3);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.progress-column.whole .merged{grid-row:1 / 5}
+.work-cell[data-state="done"],.progress-legend i[data-state="done"]{background:var(--sage-2);border-color:var(--sage-ink)}
+.work-cell[data-state="running"],.progress-legend i[data-state="running"]{background:var(--sage-ink);border-color:var(--sage-ink);animation:progress-pulse 1.5s ease-in-out infinite}
+.work-cell[data-state="failed"],.progress-legend i[data-state="failed"]{background:var(--red);border-color:var(--red)}
+.work-cell[data-state="cancelled"]{background:var(--surface-2);border-style:dashed}
+.progress-legend{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:9px;color:var(--ink-3);margin-top:3px}
+.progress-legend span{display:flex;align-items:center;gap:4px}.progress-legend i{width:6px;height:6px;border-radius:2px;border:1px solid var(--line)}
+.progress-result{display:flex;align-items:center;gap:6px;color:var(--sage-ink);font-size:12px}
+@keyframes progress-pulse{50%{opacity:.5}}
+.up-short{max-width:100%}
+.up-detail{display:block}.up-levels{margin-bottom:8px}
