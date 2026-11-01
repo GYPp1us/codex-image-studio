@@ -109,7 +109,7 @@ test('pending quick edit rejects a duplicate submit and preserves input on failu
  release();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(input.value,'保留这段文字');assert.ok(form.isConnected);
 });
-test.todo('opened/selected states use the theme accent in light and dark themes');
+// Actual CSS cascade, pseudo-elements and contrast are exercised by tests/android/overhaul/run.ps1 in Android WebView.
 test('viewer reports pending decode, failure, retry and success without discarding thumbnail',async()=>{
  const f=await fixture(),loads=[];f.context.Image=function(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});const loader={decode:()=>promise};loads.push({loader,resolve,reject});return loader;};
  f.run('openViewer("asset","recent")');const slide=f.document.querySelector('.slide[data-o="0"]'),image=slide.querySelector('img');
