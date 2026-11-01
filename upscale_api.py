@@ -46,7 +46,7 @@ class PromptPreview(BaseModel):
     level: int = Field(default=1,ge=1,le=3)
     tile: int = Field(default=0,ge=0)
     upscale_requirements: str = Field(default='',max_length=12000)
-    source_description: str = Field(default='',max_length=24000)
+    source_description: str | None = Field(default=None,max_length=24000)
     upscale_policy: upscale_prompts.PromptPolicy | None = None
 
 
@@ -223,7 +223,7 @@ def register(app,studio):
         tile=next((t for t in current['tiles'] if t['index']==body.tile),None)
         if tile is None:raise HTTPException(400,'图块不存在')
         origin=studio.query('SELECT prompt,polished_prompt FROM jobs WHERE id=?',(source.get('job_id'),),True) if source.get('job_id') else None
-        context=body.source_description or ((origin.get('polished_prompt') or origin['prompt']) if origin else '')
+        context=body.source_description if body.source_description is not None else ((origin.get('polished_prompt') or origin['prompt']) if origin else '')
         options={'upscale_prompts':upscale_prompts.snapshot(studio,body.upscale_policy),'upscale_requirements':body.upscale_requirements,
                  'stitch':body.factor,'source_description':context,'model':studio.setting('model',studio.MODEL),'effort':studio.setting('effort',studio.EFFORT)}
         return upscale_prompts.compile_image(options,current,tile,context,body.level)|{'review':upscale_prompts.compile_review(options,current,context,body.level)}

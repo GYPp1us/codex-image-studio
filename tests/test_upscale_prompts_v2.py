@@ -472,3 +472,23 @@ class UpscalePromptV2Tests(unittest.TestCase):
         record = self.client.get(f"/api/upscale/jobs/{jid}/calls/{calls['items'][0]['id']}").json()
         self.assertEqual(record['worker_instruction'], 'ACTUALLY-RECORDED-LEGACY')
         self.assertIsNone(record['prompt_metadata'])
+
+    def test_explicit_empty_and_omitted_history_match_preview_and_submission(self):
+        jid = self.studio.create_jobs(self.studio.JobInput(prompt='ORIGINAL-HISTORY'))['ids'][0]
+        self.studio.write("UPDATE jobs SET status='running',polished_prompt='POLISHED-HISTORY' WHERE id=?", (jid,))
+        path = Path(self.temp.name) / 'empty-source-parent.png'
+        Image.new('RGB', (128, 96), 'purple').save(path)
+        asset = self.studio.record_generated_image(jid, path)
+        base = {'factor': 4, 'upscale_policy': {'append_system': True, 'include_source_context': True}}
+        for value in (None, ''):
+            body = dict(base)
+            if value is not None: body['source_description'] = value
+            with self.subTest(source=value):
+                preview = self.post(f"/api/assets/{asset['id']}/upscale-prompt-preview", body)
+                self.assertEqual(preview.status_code, 200, preview.text)
+                submitted = self.post(f"/api/assets/{asset['id']}/upscale", {**body, 'expected_prompt_revision': preview.json()['snapshot_revision']})
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                options = self.client.get('/api/jobs/' + submitted.json()['ids'][0]).json()['options']
+                actual = self.compile_image(options, source=options.get('source_description', ''))
+                self.assertEqual(actual['worker_instruction'], preview.json()['worker_instruction'])
+                self.assertEqual('POLISHED-HISTORY' in actual['worker_instruction'], value is None)
