@@ -591,11 +591,11 @@ elif 'exec' in sys.argv:
             self.client.patch('/api/settings',json={'paused':False,'concurrency':2,'max_attempts':3,'stitch_prompt':self.appmod.DEFAULT_STITCH_PROMPT},headers=self.headers)
 
     def test_25_normal_generation_and_redraw_children_obey_one_global_limit(self):
-        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        asset=self.parallel_upscale_asset()
         self.client.patch('/api/settings',json={'paused':True,'concurrency':2,'max_attempts':1},headers=self.headers)
         ids=[]
         try:
-            ids+=self.post('/api/jobs',{'prompt':'TEST_CONCURRENCY mixed tiles','source_asset_id':asset['id'],'stitch':4}).json()['ids']
+            ids+=self.post('/api/jobs',{'prompt':'TEST_CONCURRENCY mixed tiles','upscale_requirements':'TEST_CONCURRENCY','source_asset_id':asset['id'],'stitch':4}).json()['ids']
             ids+=self.post('/api/jobs',{'prompt':'TEST_CONCURRENCY ordinary image'}).json()['ids']
             self.client.patch('/api/settings',json={'paused':False,'concurrency':2,'max_attempts':1},headers=self.headers)
             for jid in ids:
@@ -613,7 +613,7 @@ elif 'exec' in sys.argv:
         self.client.patch('/api/settings',json={'paused':False,'concurrency':4,'max_attempts':1},headers=self.headers)
         jid=None
         try:
-            jid=self.post('/api/jobs',{'prompt':'TEST_PARALLEL_SLOW cancellation','source_asset_id':asset['id'],'stitch':4}).json()['ids'][0]
+            jid=self.post('/api/jobs',{'prompt':'TEST_PARALLEL_SLOW cancellation','upscale_requirements':'TEST_PARALLEL_SLOW','source_asset_id':asset['id'],'stitch':4}).json()['ids'][0]
             deadline=time.time()+20
             while time.time()<deadline:
                 started=[r for r in self.cli_events({jid}) if r['event']=='start' and r['kind']=='redraw']
