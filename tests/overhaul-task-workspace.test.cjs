@@ -290,3 +290,25 @@ test('chained batch keeps completed original visible while its upscale runs',asy
   assert.ok(batch.querySelector('.bbar [data-st="running"]'));
   assert.ok(!batch.querySelector('[data-act="retry-batch"]'));
 });
+
+test('call_wait shows waiting label and queued segment instead of generating',async()=>{
+  const f=await fixture();
+  f.context.waitBatch={id:'wait',prompt:'waiting',created:1000,coll:'untemplated',ratio:'1:1',kind:'image',tasks:[{id:'wait-job',status:'running',stage:0,waitingForSlot:true,raw:{progress:{stage:'call_wait',label:'等待并发名额'},options:{}}}]};
+  const html=f.run('batchHTML(waitBatch)');
+  const box=f.document.createElement('div');box.innerHTML=html;
+  assert.match(box.textContent,/等待并发名额/);
+  assert.doesNotMatch(box.querySelector('.b-sum').textContent,/生成中/);
+  assert.ok(box.querySelector('.bbar [data-st="queued"]'));
+});
+
+test('collection navigation and logout clear active batch-selection state',async()=>{
+  const f=await fixture({gallery:true});await f.run("go('works')");
+  f.run("StudioSelection.begin('asset')");assert.equal(f.run('StudioSelection.active()'),true);
+  await f.run("openColl('untemplated')");await tick();
+  assert.equal(f.run('StudioSelection.active()'),false);assert.equal(f.run('S.coll'),'untemplated');
+  f.run("StudioSelection.begin('asset')");assert.equal(f.run('StudioSelection.active()'),true);
+  const button=f.document.createElement('button');button.dataset.act='logout';f.document.body.append(button);
+  await f.service.action('logout',button);await tick();
+  assert.equal(f.run('StudioSelection.active()'),false);
+  assert.equal(f.document.querySelector('#selection-toolbar'),null);
+});

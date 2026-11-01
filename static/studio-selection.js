@@ -45,5 +45,5 @@ const StudioSelection=(()=>{
       return execute(action,button);
     }).catch(StudioService.report);
   });
-  return {begin,toggle,paint,leave,active:()=>selecting,scope:()=>scope};
+  return {begin,toggle,paint,leave,reset:close,active:()=>selecting,scope:()=>scope};
 })();

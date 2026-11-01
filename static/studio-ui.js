@@ -83,7 +83,7 @@ const tileGrid=(t,big)=>{const lv=t.up.levels[t.up.cur];return `<span class="tg$
 function upLabel(t){return t.raw?.progress?.label||"等待调度";}
 const units=t=>t.up?t.up.levels[t.up.cur].tiles.map(x=>({status:x.state,stage:x.stage})):t.multi?t.multi.parts.map(x=>({status:x.state,stage:x.stage})):[t];
 const pctOf=x=>x.waitingForSlot?0:x.status==="running"?Math.round((Math.min(x.stage,3)+.5)/4*100):x.status==="queued"||x.status==="cancelled"?0:100;
-const segBar=(list,w)=>`<span class="bbar${list.length>10?" dense":""}"${w?` data-layout="width:${w}px"`:""}>${list.map(x=>`<i data-st="${x.status}" data-layout="--p:${pctOf(x)}%"></i>`).join("")}</span>`;
+const segBar=(list,w)=>`<span class="bbar${list.length>10?" dense":""}"${w?` data-layout="width:${w}px"`:""}>${list.map(x=>`<i data-st="${x.waitingForSlot?'queued':x.status}" data-layout="--p:${pctOf(x)}%"></i>`).join("")}</span>`;
 function multiLabel(t){const m=t.multi,n=m.parts.length,done=m.parts.filter(x=>x.state==="done").length,run=m.parts.filter(x=>x.state==="running").length;
   if(t.status==="queued")return S.paused?"已暂停":"等待调度";if(t.status==="cancelled")return"已取消";
   if(t.status==="done")return n>1?`已合成 ${n} 个区域`:"完成";
@@ -285,8 +285,8 @@ function batchHTML(b){
   if(b.tasks.some(t=>t.raw?.options.after_upscale||t.raw?.options.parent_job_id))return chainedBatchHTML(b);
   if(b.kind==="upscale"&&b.tasks.length===1&&b.tasks[0].up)return upBatchHTML(b);
   const s=bstate(b),c=coll(b.coll),open=S.expanded.has(b.id),thumb=b.tasks.find(t=>t.img&&img(t.img)),t0=b.tasks[0],m=t0.multi;
-  const cnt=k=>b.tasks.filter(t=>t.status===k).length,run=cnt("running"),q=cnt("queued");
-  const sum=m?multiLabel(t0):s.active?[`${s.done}/${s.n} 完成`,run&&`${run} 生成中${s.n===1?` · ${taskLabel(t0)}`:""}`,q&&`${q} ${S.paused?"已暂停":"等待"}`].filter(Boolean).join(" · "):s.failed?`${s.failed} 张失败 · ${s.done} 张完成` :`${s.done} 张完成${cnt("cancelled")?` · ${cnt("cancelled")} 已取消`:""}`;
+  const cnt=k=>b.tasks.filter(t=>t.status===k).length,run=b.tasks.filter(t=>t.status==='running'&&!t.waitingForSlot).length,q=b.tasks.filter(t=>t.status==='queued'||t.waitingForSlot).length;
+  const sum=m?multiLabel(t0):s.active?[`${s.done}/${s.n} 完成`,run&&`${run} 生成中${s.n===1?` · ${taskLabel(t0)}`:""}`,q&&`${q} ${S.paused?"已暂停":t0.waitingForSlot&&s.n===1?"等待并发名额":"等待"}`].filter(Boolean).join(" · "):s.failed?`${s.failed} 张失败 · ${s.done} 张完成` :`${s.done} 张完成${cnt("cancelled")?` · ${cnt("cancelled")} 已取消`:""}`;
   const srcIm=b.src&&img(b.src);
   const rows=m?m.parts.map(x=>`<div class="trow"><span class="n">#${x.i+1}</span>${stagesHTML({status:x.state,stage:x.stage})}<span class="lbl">${esc(x.text)}</span><span class="muted small">${x.state==="running"?STAGE[x.stage]:x.state==="done"?"完成":x.state==="failed"?"失败":x.state==="cancelled"?"已取消":"等待"}</span></div>`).join("")
       +(t0.status==="done"&&img(t0.img)?`<div class="trow"><span class="n"></span><span class="lbl">已合成为一张新图，选区外像素保持原图</span><button class="link-btn" data-act="img" data-id="${t0.img}" data-list="batch:${b.id}">查看</button></div>`:m.phase==="merge"?`<div class="trow"><span class="n"></span><span class="spin"></span><span class="lbl">合成中：只替换各选区内像素</span></div>`:"")
@@ -332,6 +332,7 @@ function go(tab){
   return vt("tab",()=>{S.tab=tab;renderPage();});
 }
 function openColl(cid){
+  if(typeof StudioSelection!=='undefined'&&StudioSelection.active())return StudioSelection.leave().then(()=>openColl(cid));
   StudioService.loadCollection(cid).catch(StudioService.report);if(!coll(cid)){StudioService.report(new Error("列表不存在"));return Promise.resolve();}
   const cover=S.tab==="works"&&!S.coll?$(`.coll[data-id="${cid}"] .cover`):null;
   if(cover)cover.style.viewTransitionName="hero";
@@ -725,7 +726,7 @@ app.addEventListener("click",async e=>{
     case"img":openViewer(id,a.dataset.list);break;
     case"goto-batch":goBatch(id);break;
     case"qf":if(S.filter!==a.dataset.f){S.filter=a.dataset.f;$("#batches").dataset.ready="";$("#batches").innerHTML="";updateQueue();$$("#batches .batch").forEach((el,i)=>el.animate([{opacity:0,transform:"translateY(10px)"},{opacity:1,transform:"none"}],{duration:D(300),delay:D(i*30),easing:E.emph,fill:"backwards"}));}break;
-    case"bt":{const el=a.closest(".batch");el.classList.toggle("open");el.classList.contains("open")?S.expanded.add(id):S.expanded.delete(id);break;}
+    case"bt":{const el=a.closest(".batch");el.classList.toggle("open");el.classList.contains("open")?S.expanded.add(id):S.expanded.delete(id);refresh();break;}
     case"tpl":tplSheet(id);break;
     case"v-back":back();break;
     case"v-info":infoSheet(V.list[V.i]);break;
