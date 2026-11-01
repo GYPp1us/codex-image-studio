@@ -173,8 +173,15 @@ const StudioService=(()=>{
     if(L)swapSheet(L,t?'编辑模板':'保存为模板',html);else L=openSheet({title:t?'编辑模板':'新建模板',html});L.dataset.templateRefs=JSON.stringify(refs);
     const read=()=>JSON.parse(L.dataset.templateRefs||'[]'),write=ids=>{L.dataset.templateRefs=JSON.stringify(ids);paint();};
     const paint=()=>{if(!L.isConnected)return;$('#tpl-ref-count',L).textContent=read().length+' / 8';StudioReferences.render($('#tpl-refs',L),{read,write,add:()=>pickerSheet({title:'选择模板参考图',refs:read(),onCommit:write})});};paint();}
+  let templateInspector=null;
   function tplSheet(id){const t=tpl(id),c=S.collections.find(x=>x.template===id);if(!t)return;
     const html=`${t.text?.trim()?`<div class="prompt-box">${esc(t.text)}</div>`:''}<div class="chips" data-layout="margin-top:12px"><span class="chip">${t.ratio}</span><span class="chip">${t.refs} 张参考图</span><span class="chip">${labelSize(t.options.size||'auto')}尺寸</span></div><div class="template-preview-refs">${(t.referenceIds||[]).map(ref=>`<button data-act="tpl-preview-ref" data-id="${ref}" data-template-id="${id}" aria-label="放大参考图"><img src="${src(assets.get(ref))}" alt=""></button>`).join('')}</div><p class="note">用该模板生成的图片归入「${esc(c?.name||t.name)}」列表（${c?.image_count||0} 张）。已有提示词会保留，参考图按现有顺序去重补充（最多 8 张）；模板参数会应用到本次创作。可在创作页解除归属。</p><button class="primary" data-act="tpl-load" data-id="${id}">载入到创作${icon('arrow',18)}</button><div class="btn-row"><button class="secondary" data-act="tpl-edit" data-id="${id}" data-layout="flex:1;justify-content:center">${icon('edit',16)}编辑</button>${c?`<button class="secondary" data-act="open-coll" data-id="${c.id}" data-layout="flex:1;justify-content:center">${icon('layers',16)}查看作品</button>`:''}</div>`;
+    if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide()){
+      const content=`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon('back')}</button><h1>${esc(t.name)}</h1></header><div class="scroll">${html}</div>`;
+      if(templateInspector?.isConnected&&templateInspector.style.pointerEvents!=='none'){templateInspector.innerHTML=content;hydrateIcons(templateInspector);}
+      else templateInspector=openScreen(content,{cls:'template-inspector',onClose:()=>{templateInspector=null;S.templateFocus=null;if($('#tpls'))updateTpls();}});
+      S.templateFocus=id;if($('#tpls'))updateTpls();return templateInspector;
+    }
     return openSheet({title:t.name,html});
   }
 
