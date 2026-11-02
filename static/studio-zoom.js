@@ -11,10 +11,12 @@ const StudioZoom=(()=>{
   const now=()=>performance.now();
   function measure(){
     const previous=metrics?.fit,rect=app.getBoundingClientRect(),width=app.offsetWidth,height=typeof viewerHeight==='function'?viewerHeight():app.offsetHeight;
-    const top=(parseFloat(getComputedStyle(app).getPropertyValue('--safe-top'))||0)+58,area=Math.max(1,height-top-(V.reference?96:200));
-    let w=width,h=w*asset.h/asset.w;if(h>area){h=area;w=h*asset.w/asset.h;}
+    const wide=typeof StudioLandscape!=='undefined'&&StudioLandscape.wide();
+    const top=(parseFloat(getComputedStyle(app).getPropertyValue('--safe-top'))||0)+(wide?52:58),viewport=wide?StudioLandscape.viewport({reference:!!V.reference,select:!!V.reference?.onSelect}):{left:0,right:width,top:0,bottom:height};
+    const area=wide?Math.max(1,viewport.bottom-viewport.top):Math.max(1,height-top-(V.reference?96:200));
+    const fit=fitRect(asset),{w,h}=fit,canvasWidth=wide?Math.max(1,viewport.right-viewport.left):width;
     metrics={width,height,rect,screenScale:rect.width/width||1,dpr:Math.max(1,globalThis.devicePixelRatio||1),
-      fit:{x:(width-w)/2,y:top+(area-h)/2,w,h},area};
+      fit,area,canvasWidth,viewport};
     if(plane&&previous&&(previous.w!==w||previous.h!==h))sizeSurface();
   }
   function ensure(){
@@ -24,7 +26,7 @@ const StudioZoom=(()=>{
   }
   function point(e){return {x:(e.clientX-metrics.rect.left)/metrics.screenScale,y:(e.clientY-metrics.rect.top)/metrics.screenScale};}
   function geometry(){const r=metrics.fit;return {x:r.x+(r.w-r.w*scale)/2+x,y:r.y+(r.h-r.h*scale)/2+y,w:r.w*scale,h:r.h*scale};}
-  function clampPose(){const r=metrics.fit;x=clamp(x,-Math.max(0,(r.w*scale-metrics.width)/2),Math.max(0,(r.w*scale-metrics.width)/2));y=clamp(y,-Math.max(0,(r.h*scale-metrics.area)/2),Math.max(0,(r.h*scale-metrics.area)/2));}
+  function clampPose(){const r=metrics.fit;x=clamp(x,-Math.max(0,(r.w*scale-metrics.canvasWidth)/2),Math.max(0,(r.w*scale-metrics.canvasWidth)/2));y=clamp(y,-Math.max(0,(r.h*scale-metrics.area)/2),Math.max(0,(r.h*scale-metrics.area)/2));}
   function restorePreview(){
     if(!preview||!metrics)return;const r=metrics.fit;
     Object.assign(preview.style,{left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px',transform:''});
@@ -101,7 +103,7 @@ const StudioZoom=(()=>{
   }
   function tileBounds(level,padding=0){
     const g=geometry(),native=g.w/asset.w,maximum=Math.ceil(Math.log2(Math.max(asset.w,asset.h))),span=512*2**(maximum-level);
-    const left=clamp(-g.x/native,0,asset.w),right=clamp((metrics.width-g.x)/native,0,asset.w),top=clamp(-g.y/native,0,asset.h),bottom=clamp((metrics.height-g.y)/native,0,asset.h);
+    const viewport=metrics.viewport,left=clamp((viewport.left-g.x)/native,0,asset.w),right=clamp((viewport.right-g.x)/native,0,asset.w),top=clamp((viewport.top-g.y)/native,0,asset.h),bottom=clamp((viewport.bottom-g.y)/native,0,asset.h);
     return {span,left,right,top,bottom,c0:Math.max(0,Math.floor(left/span)-padding),c1:Math.min(Math.ceil(asset.w/span)-1,Math.floor(right/span)+padding),r0:Math.max(0,Math.floor(top/span)-padding),r1:Math.min(Math.ceil(asset.h/span)-1,Math.floor(bottom/span)+padding)};
   }
   const count=b=>(b.c1-b.c0+1)*(b.r1-b.r0+1);
@@ -190,7 +192,12 @@ const StudioZoom=(()=>{
   function resized(){
     if(!V.open)return;
     if(V.redraw){selCancel();const im=img(currentId()),previous=V.fitRect||fitRect(im),next=fitRect(im);for(const r of V.regions){r.x=next.x+(r.x-previous.x)/previous.w*next.w;r.y=next.y+(r.y-previous.y)/previous.h*next.h;r.w=r.w/previous.w*next.w;r.h=r.h/previous.h*next.h;}const image=curImg();if(image)Object.assign(image.style,{left:next.x+'px',top:next.y+'px',width:next.w+'px',height:next.h+'px'});V.fitRect=next;renderRegions();}
-    else if(ensure()){points.clear();gesture=null;measure();sizeSurface();schedulePaint(true);}
+    else if(ensure()){
+      const old=metrics.fit,anchor=anchorAt({x:old.x+old.w/2,y:old.y+old.h/2}),nativeScale=old.w*scale/asset.w,zoomed=scale>1.0001;
+      cancelTween();points.clear();gesture=null;measure();sizeSurface();
+      if(zoomed){const next=metrics.fit;zoomTo(nativeScale*asset.w/next.w,{x:next.x+next.w/2,y:next.y+next.h/2},anchor);}else{scale=1;x=0;y=0;}
+      schedulePaint(true);
+    }
   }
   const requestResize=()=>{if(resizeFrame===null)resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;resized();});};
   addEventListener('resize',requestResize);globalThis.visualViewport?.addEventListener('resize',requestResize);

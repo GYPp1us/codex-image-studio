@@ -147,6 +147,7 @@ function updatePage(){
   else if(S.tab==="queue")updateQueue();
   else updateTpls();
   if(typeof StudioSelection!=='undefined')StudioSelection.paint();
+  if(typeof StudioLandscape!=='undefined')StudioLandscape.refresh();
 }
 const activeTasks=()=>S.batches.flatMap(b=>b.tasks).filter(t=>t.status==="queued"||t.status==="running");
 let lastBadge=-1,badgeHold=0;
@@ -197,6 +198,7 @@ function genHTML(){const c=S.composer;return `${topBar("创作",modeSeg())}
     <div class="ref-strip" id="refs"></div>
   </section>
 </div>
+<aside class="landscape-only landscape-parameters" id="landscape-parameters"></aside>
 <div class="gen-bar">
   <button class="bp hide" id="bp" data-act="bp"></button>
   <button class="sum" data-act="params"><span class="st"><b id="sum1"></b><span id="sum2"></span></span>${icon("sliders",18)}</button>
@@ -266,7 +268,7 @@ function updateColl(){
 
 /* ---------- queue ---------- */
 function queueHTML(){return `${topBar("任务",`<button class="pause-ctl" data-act="pause"><span>暂停调度</span><span class="switch ${S.paused?"on":""}" id="pause-sw"></span></button>`)}
-<div class="scroll"><div id="paused-note"></div><div class="seg" id="qseg"><span class="ind"></span><button data-act="qf" data-f="active">进行中<em></em></button><button data-act="qf" data-f="done">已完成<em></em></button><button data-act="qf" data-f="failed">失败<em></em></button></div><div id="batches"></div><p class="empty" id="qempty" hidden></p></div>`;}
+<div class="queue-workspace"><div class="scroll queue-scroll"><div id="paused-note"></div><div class="seg" id="qseg"><span class="ind"></span><button data-act="qf" data-f="active">进行中<em></em></button><button data-act="qf" data-f="done">已完成<em></em></button><button data-act="qf" data-f="failed">失败<em></em></button></div><div id="batches"></div><p class="empty" id="qempty" hidden></p></div><aside class="queue-overview" id="queue-overview"></aside></div>`;}
 const stagesHTML=t=>t.status==='done'?'':`<span class="stages" data-st="${t.waitingForSlot?'queued':t.status}" data-s="${Math.max(0,Math.min(t.stage,3))}"><i></i><i></i><i></i><i></i></span>`;
 function bstate(b){const st=b.tasks.map(t=>t.status);return{active:st.some(s=>s==="queued"||s==="running"),failed:st.filter(s=>s==="failed").length,done:st.filter(s=>s==="done").length,n:st.length};}
 const bfilter=(b,f)=>{const s=bstate(b);return f==="active"?s.active:f==="failed"?!s.active&&s.failed>0:!s.active&&!s.failed;};
@@ -358,12 +360,14 @@ function openSheet({title,html,cls="",onMount,stack=false}){
   $("#layers").append(L);hydrateIcons(L);
   const sh=$(".sheet",L),scr=$(".scrim",L);
   scr.animate([{opacity:0},{opacity:1}],{duration:D(220),easing:E.std});
-  sh.animate([{transform:"translateY(100%)"},{transform:"translateY(0)"}],{duration:D(360),easing:E.emph});
+  const wide=typeof StudioLandscape!=='undefined'&&StudioLandscape.wide();
+  sh.animate(wide?[{opacity:0,transform:'translateX(24px) scale(.98)'},{opacity:1,transform:'none'}]:[{transform:"translateY(100%)"},{transform:"translateY(0)"}],{duration:D(wide?280:360),easing:E.emph});
   dragDismiss(L);pushLayer("sheet",()=>dismissSheet(L));onMount&&onMount(L);placeToast();return L;
 }
 function dismissSheet(L){
   L.cleanup?.();L.cleanup=null;L.onclick=null;const sh=$(".sheet",L),scr=$(".scrim",L),y=parseFloat(L.dataset.y||0);L.style.pointerEvents="none";
-  sh.animate([{transform:`translateY(${y}px)`},{transform:`translateY(${sh.offsetHeight+20}px)`}],{duration:D(220),easing:E.exit,fill:"forwards"});
+  const wide=typeof StudioLandscape!=='undefined'&&StudioLandscape.wide();
+  sh.animate(wide?[{opacity:1,transform:'none'},{opacity:0,transform:'translateX(24px) scale(.98)'}]:[{transform:`translateY(${y}px)`},{transform:`translateY(${sh.offsetHeight+20}px)`}],{duration:D(220),easing:E.exit,fill:"forwards"});
   scr.animate([{opacity:getComputedStyle(scr).opacity},{opacity:0}],{duration:D(220),fill:"forwards"}).finished.then(()=>{L.remove();placeToast();});
 }
 function swapSheet(L,title,html,onMount){
@@ -444,7 +448,7 @@ document.addEventListener("focusin",e=>{if(!KB.hold&&V.open&&vw.contains(e.targe
 document.addEventListener("focusout",()=>{if(KB.hold)KB.until=performance.now()+800;});
 // An Enter that only confirms an IME composition must not submit the quick-edit (or any other) form.
 document.addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.isComposing||e.keyCode===229)&&e.target?.form)e.preventDefault();},true);
-function fitRect(im){const W=app.offsetWidth,H=viewerHeight(),top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=V.reference?96:200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
+function fitRect(im){if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide())return StudioLandscape.fit(im,{reference:!!V.reference,select:!!V.reference?.onSelect});const W=app.offsetWidth,H=viewerHeight(),top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=V.reference?96:200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
   let w=aw,h=w/R;if(h>ah){h=ah;w=h*R;}return{x:(W-w)/2,y:top+(ah-h)/2,w,h};}
 // The grid thumbnail is already decoded, so it paints on the first frame; the preview replaces it
 // only once fully decoded, so open, swipe and the fly handoff never show a blank or half-drawn slide.
@@ -708,10 +712,10 @@ app.addEventListener("click",async e=>{
     case"me":meSheet();break;
     case"sheet-close":back();break;
     case"generate":generate();break;
-    case"params":paramsSheet();break;
-    case"opt":{const kk=a.dataset.k;S.composer[kk]=a.dataset.v;$$(`.opt[data-k="${kk}"]`,a.closest(".sheet")).forEach(x=>x.classList.toggle("on",x===a));refresh();break;}
+    case"params":if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide())$('#landscape-parameters')?.scrollTo({top:0,behavior:RM?'auto':'smooth'});else paramsSheet();break;
+    case"opt":{const kk=a.dataset.k;S.composer[kk]=a.dataset.v;$$(`.opt[data-k="${kk}"]`,a.closest(".sheet,.landscape-parameters")||document).forEach(x=>x.classList.toggle("on",x===a));refresh();break;}
     case"sw":{const kk=a.dataset.k;S.composer[kk]=!S.composer[kk];$(".switch",a).classList.toggle("on",S.composer[kk]);refresh();break;}
-    case"cnt":{const c=S.composer;c.count=clamp(c.count+ +a.dataset.d,1,20);const o=$("#cnt");o.textContent=c.count;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});refresh();break;}
+    case"cnt":{const c=S.composer;c.count=clamp(c.count+ +a.dataset.d,1,20);const o=$('output',a.closest('.stepper'));o.textContent=c.count;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});refresh();break;}
     case"tpl-menu":tplMenuSheet();break;
     case"tpl-load":loadTemplate(id);break;
     case"sw-bind":$("#bind-sw").classList.toggle("on");break;
@@ -726,7 +730,7 @@ app.addEventListener("click",async e=>{
     case"img":openViewer(id,a.dataset.list);break;
     case"goto-batch":goBatch(id);break;
     case"qf":if(S.filter!==a.dataset.f){S.filter=a.dataset.f;$("#batches").dataset.ready="";$("#batches").innerHTML="";updateQueue();$$("#batches .batch").forEach((el,i)=>el.animate([{opacity:0,transform:"translateY(10px)"},{opacity:1,transform:"none"}],{duration:D(300),delay:D(i*30),easing:E.emph,fill:"backwards"}));}break;
-    case"bt":{const el=a.closest(".batch");el.classList.toggle("open");el.classList.contains("open")?S.expanded.add(id):S.expanded.delete(id);refresh();break;}
+    case"bt":{const el=a.closest(".batch");el.classList.toggle("open");el.classList.contains("open")?S.expanded.add(id):S.expanded.delete(id);refresh();if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide()){const task=S.batches.find(b=>b.id===id)?.tasks[0];if(task)await StudioService.taskInfo(task.id);}break;}
     case"tpl":tplSheet(id);break;
     case"v-back":back();break;
     case"v-info":infoSheet(V.list[V.i]);break;
@@ -795,7 +799,7 @@ function openScreen(html,{cls="",onMount,onClose}={}){
   const el=document.createElement("section");el.className="screen "+cls;el.innerHTML=html;$("#screens").append(el);hydrateIcons(el);
   el.animate([{transform:"translateX(100%)"},{transform:"none"}],{duration:D(380),easing:E.emph});
   let d=null;
-  el.addEventListener("pointerdown",e=>{const p=local(e);if(p.x<22){d={x:e.clientX,dx:0};el.setPointerCapture(e.pointerId);}});
+  el.addEventListener("pointerdown",e=>{const edge=e.clientX-el.getBoundingClientRect().left;if(edge>=0&&edge<22&&!e.target.closest('button,input,textarea')){d={x:e.clientX,dx:0};el.setPointerCapture(e.pointerId);}});
   el.addEventListener("pointermove",e=>{if(!d)return;d.dx=Math.max(0,(e.clientX-d.x)/sc());el.style.transform=`translateX(${d.dx}px)`;});
   el.addEventListener("pointerup",()=>{if(!d)return;if(d.dx>110){el.dataset.x=d.dx;back();}else{el.animate([{transform:`translateX(${d.dx}px)`},{transform:"none"}],{duration:D(240),easing:E.emph});el.style.transform="";}d=null;});
   pushLayer("screen",()=>{onClose&&onClose();el.style.pointerEvents="none";const x=+(el.dataset.x||0);el.animate([{transform:`translateX(${x}px)`},{transform:"translateX(100%)"}],{duration:D(260),easing:E.exit,fill:"forwards"}).finished.then(()=>{el.remove();placeToast();});});

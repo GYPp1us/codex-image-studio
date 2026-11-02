@@ -48,7 +48,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  window.HTMLElement.prototype.setPointerCapture=function(){};window.HTMLElement.prototype.blur=function(){};
  const mediaListeners=[],media={matches:systemReduce,addEventListener:(type,listener)=>{if(type==='change')mediaListeners.push(listener);}};
  const context=vm.createContext({document,window,console,Headers,FormData,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null,setItem(){}},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:query.includes('min-aspect-ratio')?{matches:false,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
- for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-tasks.js','studio-upscale-prompts.js','studio-failure-map.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
+ for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-tasks.js','studio-upscale-prompts.js','studio-landscape.js','studio-failure-map.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
  await vm.runInContext('studioReady',context);
  return {context,document,requests,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
@@ -110,7 +110,7 @@ test('pending quick edit rejects a duplicate submit and preserves input on failu
  release();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(input.value,'保留这段文字');assert.ok(form.isConnected);
 });
-test.todo('opened/selected states use the theme accent in light and dark themes');
+// Actual CSS cascade, pseudo-elements and contrast are exercised by tests/android/overhaul/run.ps1 in Android WebView.
 test('viewer reports pending decode, failure, retry and success without discarding thumbnail',async()=>{
  const f=await fixture(),loads=[];f.context.Image=function(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});const loader={decode:()=>promise};loads.push({loader,resolve,reject});return loader;};
  f.run('openViewer("asset","recent")');const slide=f.document.querySelector('.slide[data-o="0"]'),image=slide.querySelector('img');
@@ -145,4 +145,48 @@ test('mixed generation and upscale batch distinguishes child progress and preser
  const running=f.run('batchHTML(composite)');assert.match(running,/原图完成/);assert.match(running,/超分进行中/);assert.match(running,/第 1 级/);
  f.context.composite.tasks[1].status='failed';f.context.composite.tasks[1].err='图块验收失败';
  const failed=f.run('batchHTML(composite)');assert.match(failed,/图块验收失败/);assert.match(failed,/failure-job/);assert.match(failed,/原图完成/);
+});
+test('landscape viewport respects safe insets and fits images across short and wide canvases',()=>{
+ const {document}=parseHTML('<html><body><div id="app"><div id="screens"></div></div></body></html>'),app=document.querySelector('#app');let w=667,h=375;Object.defineProperties(app,{offsetWidth:{get:()=>w},offsetHeight:{get:()=>h}});
+ const context=vm.createContext({document,app,viewerHeight:()=>h,matchMedia:()=>({matches:true,addEventListener(){}}),clamp:(v,a,b)=>Math.max(a,Math.min(b,v)),getComputedStyle:()=>({getPropertyValue:key=>({'--safe-left':'24px','--safe-right':'12px','--safe-top':'8px','--safe-bottom':'10px'}[key]||'0px')}),MutationObserver:class{observe(){}},requestAnimationFrame:()=>1,addEventListener(){},$:s=>document.querySelector(s),$$:s=>[...document.querySelectorAll(s)]});
+ vm.runInContext(fs.readFileSync('static/studio-landscape.js','utf8'),context);const land=vm.runInContext('StudioLandscape',context);
+ for(const [width,height] of [[667,375],[844,390],[1024,768],[1440,900]]){w=width;h=height;const v=land.viewport(),fit=land.fit({w:900,h:1200});assert.equal(v.left,40);assert.equal(v.top,60);assert.equal(v.bottom,height-26);assert.ok(fit.x>=v.left-.001&&fit.y>=v.top-.001);assert.ok(fit.x+fit.w<=v.right+.001&&fit.y+fit.h<=v.bottom+.001);assert.ok(Math.abs(fit.w/fit.h-.75)<1e-8);}
+ const readonly=land.viewport({reference:true,select:false}),select=land.viewport({reference:true,select:true});assert.equal(readonly.right-select.right,190);
+});
+test('redraw regions preserve normalized coordinates and text when viewport rotates',()=>{
+ const {document,window}=parseHTML('<html><body><div id="app"><div id="viewer"><div id="stage"><div id="track"><img id="preview"></div></div></div></div></body></html>'),app=document.querySelector('#app'),vw=document.querySelector('#viewer'),stage=document.querySelector('#stage'),track=document.querySelector('#track'),preview=document.querySelector('#preview');let fit={x:0,y:100,w:390,h:520},frame;const events={};
+ const old={...fit},region={x:old.x+old.w*.2,y:old.y+old.h*.25,w:old.w*.3,h:old.h*.35,text:'保留文字'},V={open:true,redraw:true,list:['asset'],i:0,fitRect:old,regions:[region]};
+ const context=vm.createContext({document,window,app,vw,stage,track,V,img:()=>({id:'asset',w:900,h:1200}),curImg:()=>preview,fitRect:()=>({...fit}),renderRegions(){},selCancel(){},addEventListener:(name,fn)=>events[name]=fn,requestAnimationFrame:fn=>{frame=fn;return 1},cancelAnimationFrame(){},setTimeout,clearTimeout,performance,devicePixelRatio:1,clamp:(v,a,b)=>Math.max(a,Math.min(b,v)),$:(s,r=document)=>r.querySelector(s)});
+ vm.runInContext(fs.readFileSync('static/studio-zoom.js','utf8'),context);fit={x:80,y:52,w:210,h:280};events.resize();frame(16);
+ assert.ok(Math.abs((region.x-fit.x)/fit.w-.2)<1e-9);assert.ok(Math.abs((region.y-fit.y)/fit.h-.25)<1e-9);assert.ok(Math.abs(region.w/fit.w-.3)<1e-9);assert.ok(Math.abs(region.h/fit.h-.35)<1e-9);assert.equal(region.text,'保留文字');
+});
+
+function rotatingZoomFixture({dpr=1,width=12017,height=8003}={}){
+ const {document,window}=parseHTML('<html><body><div id="app"><div id="viewer"><div id="stage"><div id="track"><div class="slide" data-o="0"><img id="preview"></div></div></div></div></div></body></html>');
+ const app=document.querySelector('#app'),vw=document.querySelector('#viewer'),stage=document.querySelector('#stage'),track=document.querySelector('#track'),preview=document.querySelector('#preview');
+ let fit={x:0,y:200,w:390,h:260},viewport={w:390,h:844};const frames=new Map(),timers=new Map(),requests=[],loading=new Set(),writes=[];let clock=0,next=0,reads=0,maxLoading=0;
+ const asset={id:'large',w:width,h:height,tile_template:'/api/assets/large/tiles/{level}/{x}/{y}'},V={open:true,list:['large'],i:0,redraw:false};
+ function watch(node){const style=node.style,proxy=new Proxy(style,{set(target,key,value){writes.push({node,key,value});target[key]=value;return true;}});Object.defineProperty(node,'style',{configurable:true,get:()=>proxy});return node;}
+ watch(preview);const create=document.createElement.bind(document);document.createElement=function(...args){return watch(create(...args));};
+ Object.defineProperty(app,'offsetWidth',{get(){reads++;return viewport.w;}});Object.defineProperty(app,'offsetHeight',{get(){reads++;return viewport.h;}});app.getBoundingClientRect=()=>{reads++;return {left:0,top:0,width:viewport.w,height:viewport.h};};stage.setPointerCapture=()=>{};
+ const events={};const context=vm.createContext({document,console,Image:function(){const image=document.createElement('img');Object.defineProperty(image,'naturalWidth',{value:512});Object.defineProperty(image,'naturalHeight',{value:512});Object.defineProperty(image,'src',{get:()=>image.getAttribute('src')||'',set(value){image.setAttribute('src',value);requests.push(value);loading.add(image);maxLoading=Math.max(maxLoading,loading.size);}});image.decode=()=>Promise.resolve();return image;},
+   app,vw,stage,track,V,img:()=>asset,curImg:()=>preview,$:(s,r=document)=>r.querySelector(s),clamp:(n,a,b)=>Math.max(a,Math.min(b,n)),fitRect:()=>({...fit}),renderRegions(){},getComputedStyle:()=>{reads++;return {getPropertyValue:()=> '0px'};},performance:{now:()=>clock},devicePixelRatio:dpr,
+   requestAnimationFrame:fn=>{frames.set(++next,fn);return next;},cancelAnimationFrame:id=>frames.delete(id),setTimeout:(fn,ms)=>{timers.set(++next,{fn,at:clock+ms});return next;},clearTimeout:id=>timers.delete(id),addEventListener:(type,fn)=>{events[type]=fn;},drag:null});
+ vm.runInContext(fs.readFileSync('static/studio-zoom.js','utf8'),context);const zoom=vm.runInContext('StudioZoom',context);
+ function pointer(type,x,y,id=1){const e=new window.Event(type,{bubbles:true});Object.assign(e,{clientX:x,clientY:y,pointerId:id,button:0});stage.dispatchEvent(e);}
+ function wheel(deltaY){const e=new window.Event('wheel',{bubbles:true,cancelable:true});Object.assign(e,{clientX:190,clientY:350,deltaY,deltaMode:0});stage.dispatchEvent(e);}
+ function frame(){clock+=16.67;const next=[...frames.values()];frames.clear();next.forEach(fn=>fn(clock));}
+ async function loaded(){for(let rounds=0;rounds<100&&(loading.size||zoom.cacheUsage().active);rounds++){const batch=[...loading];loading.clear();batch.forEach(image=>image.onload?.());await Promise.resolve();await Promise.resolve();}}
+ async function native(){zoom.toggleNative();frame();await loaded();writes.length=0;reads=0;}
+ async function pan(dx,dy=0){pointer('pointerdown',100,350);pointer('pointermove',100+dx,350+dy);pointer('pointerup',100+dx,350+dy);frame();await loaded();}
+ return {setView(nextFit,nextViewport){fit=nextFit;viewport=nextViewport;},document,context,zoom,asset,V,stage,preview,requests,loading,writes,events,frames,pointer,wheel,frame,loaded,native,pan,get reads(){return reads;},clear(){reads=0;writes.length=0;},get maxLoading(){return maxLoading;},advance(ms){clock+=ms;for(const [id,t] of [...timers])if(t.at<=clock){timers.delete(id);t.fn();}}};
+}
+test('rotation preserves native pixel scale and the visible source anchor in zoom mode',async()=>{
+ const f=rotatingZoomFixture();await f.native();await f.pan(200,60);
+ const old={x:0,y:200,w:390,h:260},parse=()=>f.document.querySelector('.zoom-plane').style.transform.match(/translate3d\(([-\d.]+)px,([-\d.]+)px,0\) scale\(([-\d.]+)\)/),before=parse();
+ const nativeScale=Number(before[3])*old.w/f.asset.w,anchorX=(old.x+old.w/2-Number(before[1]))/(old.w*Number(before[3])),anchorY=(old.y+old.h/2-Number(before[2]))/(old.h*Number(before[3]));
+ const next={x:40,y:52,w:400,h:266.6666666667};f.setView(next,{w:667,h:375});f.events.resize();f.frame();f.frame();const after=parse();
+ assert.ok(Math.abs(Number(after[3])*next.w/f.asset.w-nativeScale)<1e-9);
+ assert.ok(Math.abs((next.x+next.w/2-Number(after[1]))/(next.w*Number(after[3]))-anchorX)<1e-9);
+ assert.ok(Math.abs((next.y+next.h/2-Number(after[2]))/(next.h*Number(after[3]))-anchorY)<1e-9);
 });

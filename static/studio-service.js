@@ -173,8 +173,15 @@ const StudioService=(()=>{
     if(L)swapSheet(L,t?'编辑模板':'保存为模板',html);else L=openSheet({title:t?'编辑模板':'新建模板',html});L.dataset.templateRefs=JSON.stringify(refs);
     const read=()=>JSON.parse(L.dataset.templateRefs||'[]'),write=ids=>{L.dataset.templateRefs=JSON.stringify(ids);paint();};
     const paint=()=>{if(!L.isConnected)return;$('#tpl-ref-count',L).textContent=read().length+' / 8';StudioReferences.render($('#tpl-refs',L),{read,write,add:()=>pickerSheet({title:'选择模板参考图',refs:read(),onCommit:write})});};paint();}
+  let templateInspector=null;
   function tplSheet(id){const t=tpl(id),c=S.collections.find(x=>x.template===id);if(!t)return;
     const html=`${t.text?.trim()?`<div class="prompt-box">${esc(t.text)}</div>`:''}<div class="chips" data-layout="margin-top:12px"><span class="chip">${t.ratio}</span><span class="chip">${t.refs} 张参考图</span><span class="chip">${labelSize(t.options.size||'auto')}尺寸</span></div><div class="template-preview-refs">${(t.referenceIds||[]).map(ref=>`<button data-act="tpl-preview-ref" data-id="${ref}" data-template-id="${id}" aria-label="放大参考图"><img src="${src(assets.get(ref))}" alt=""></button>`).join('')}</div><p class="note">用该模板生成的图片归入「${esc(c?.name||t.name)}」列表（${c?.image_count||0} 张）。已有提示词会保留，参考图按现有顺序去重补充（最多 8 张）；模板参数会应用到本次创作。可在创作页解除归属。</p><button class="primary" data-act="tpl-load" data-id="${id}">载入到创作${icon('arrow',18)}</button><div class="btn-row"><button class="secondary" data-act="tpl-edit" data-id="${id}" data-layout="flex:1;justify-content:center">${icon('edit',16)}编辑</button>${c?`<button class="secondary" data-act="open-coll" data-id="${c.id}" data-layout="flex:1;justify-content:center">${icon('layers',16)}查看作品</button>`:''}</div>`;
+    if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide()){
+      const content=`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon('back')}</button><h1>${esc(t.name)}</h1></header><div class="scroll">${html}</div>`;
+      if(templateInspector?.isConnected&&templateInspector.style.pointerEvents!=='none'){templateInspector.innerHTML=content;hydrateIcons(templateInspector);}
+      else templateInspector=openScreen(content,{cls:'template-inspector',onClose:()=>{templateInspector=null;S.templateFocus=null;if($('#tpls'))updateTpls();}});
+      S.templateFocus=id;if($('#tpls'))updateTpls();return templateInspector;
+    }
     return openSheet({title:t.name,html});
   }
 
@@ -413,8 +420,9 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   app.addEventListener('input',e=>{if(e.target.id==='accent-custom'){S.settings.appearance.accent=e.target.value;StudioTheme.apply(S.settings.appearance);paintAccent();}});
   app.addEventListener('change',e=>{if(e.target.id==='accent-custom')settingChanged('appearance.accent');});
   globalThis.studioBack=()=>{if(/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName||'')){document.activeElement.blur();return true;}if(layers.length){back();return true;}return false;};
-  function keyboardViewport(){const v=globalThis.visualViewport,editing=/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName||'');if(v&&editing&&innerHeight-v.height>120){app.style.setProperty('--studio-vh',v.height+'px');app.style.setProperty('--studio-vv-top',Math.max(0,v.offsetTop)+'px');}else{app.style.removeProperty('--studio-vh');app.style.removeProperty('--studio-vv-top');}}
-  globalThis.visualViewport?.addEventListener('resize',keyboardViewport);globalThis.visualViewport?.addEventListener('scroll',keyboardViewport);document.addEventListener('focusin',keyboardViewport);document.addEventListener('focusout',()=>requestAnimationFrame(keyboardViewport));
+  let keyboardBaseline={width:0,height:0};
+  function keyboardViewport(){const v=globalThis.visualViewport,editing=/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName||'');if(!editing||keyboardBaseline.width!==innerWidth)keyboardBaseline={width:innerWidth,height:innerHeight};else keyboardBaseline.height=Math.max(keyboardBaseline.height,innerHeight);const keyboard=!!(v&&editing&&Math.max(innerHeight-v.height,keyboardBaseline.height-v.height,(typeof KB!=='undefined'&&KB.hold&&KB.w===app.offsetWidth?KB.h-app.offsetHeight:0))>120);app.classList.toggle('keyboard-visible',keyboard);if(keyboard){app.style.setProperty('--studio-vh',v.height+'px');app.style.setProperty('--studio-vv-top',Math.max(0,v.offsetTop)+'px');}else{app.style.removeProperty('--studio-vh');app.style.removeProperty('--studio-vv-top');}}
+  if(typeof ResizeObserver==='function')new ResizeObserver(()=>requestAnimationFrame(()=>{app.classList.toggle('compact-redraw',app.offsetWidth>=600&&app.offsetHeight<=240);keyboardViewport();})).observe(app);globalThis.addEventListener('resize',()=>requestAnimationFrame(keyboardViewport));globalThis.visualViewport?.addEventListener('resize',keyboardViewport);globalThis.visualViewport?.addEventListener('scroll',keyboardViewport);document.addEventListener('focusin',keyboardViewport);document.addEventListener('focusout',()=>requestAnimationFrame(keyboardViewport));
   addEventListener('online',()=>refreshData().catch(report));addEventListener('offline',()=>{S.offline=true;updateChrome();});
   addEventListener('beforeinstallprompt' ,e=>{e.preventDefault();installPrompt=e;});
   app.addEventListener('input',saveDraft);app.addEventListener('click',()=>setTimeout(saveDraft,0));
