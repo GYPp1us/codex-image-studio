@@ -4,6 +4,7 @@ param(
   [string]$SdkRoot=$env:ANDROID_HOME,
   [switch]$PrepareOnly,
   [string]$PreparedProject,
+  [switch]$FullLive,
   [int]$LiveFixturePort,
   [string]$LiveFixtureToken,
   [string]$LiveNormalId,
@@ -74,7 +75,8 @@ if ($LASTEXITCODE -ne 0) { throw 'QA install failed; existing app data was not c
 & $adb -s $DeviceSerial shell am force-stop site.arcol.imagestudio.qa
 if ($LiveFixturePort) {
   if (!$LiveFixtureToken -or !$LiveNormalId -or !$LiveUpscaleId -or !$LiveAssetId) { throw 'Live fixture requires its synthetic token and three IDs.' }
-  $result=& $adb -s $DeviceSerial shell am instrument -w -e live 1 -e port $LiveFixturePort -e token $LiveFixtureToken -e normal $LiveNormalId -e upscale $LiveUpscaleId -e asset $LiveAssetId site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
+  $fullValue=if ($FullLive) { '1' } else { '0' }
+  $result=& $adb -s $DeviceSerial shell am instrument -w -e live 1 -e full $fullValue -e port $LiveFixturePort -e token $LiveFixtureToken -e normal $LiveNormalId -e upscale $LiveUpscaleId -e asset $LiveAssetId site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
 } else {
   $result=& $adb -s $DeviceSerial shell am instrument -w site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
 }
