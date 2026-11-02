@@ -70,3 +70,12 @@
 @media(min-width:1100px) and (min-aspect-ratio:4/3){
   .task-workspace:not(.task-details-workspace) .task-work-scroll{gap:26px}.settings .set-scroll{max-width:1060px}.g-card{border-radius:18px}.task-outputs button{width:180px}.task-outputs img{width:180px;height:140px}
 }
+
+@media(min-width:600px) and (min-aspect-ratio:4/3){
+  :is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .v-redraw{top:4px;bottom:4px;padding:8px;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto minmax(48px,1fr);gap:5px 8px;align-items:stretch}
+  :is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .v-hint{grid-column:1 / -1}
+  :is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .rd-chips,:is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .rd-shared,:is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .rd-note{display:none!important}
+  :is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw #rd-text{min-height:48px;height:100%;grid-column:1}
+  :is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .rd-row{grid-column:2;align-self:end}
+  :is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .rd-submit{margin:0;width:auto;min-height:44px;white-space:nowrap}
+}
