@@ -728,7 +728,7 @@ elif 'exec' in sys.argv:
 
     def test_32_retry_upgrades_legacy_masks_without_regenerating_cached_tiles(self):
         from stitch_engine import REGISTRATION_VERSION
-        source=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        source=self.parallel_upscale_asset()
         jid=self.post('/api/jobs',{'prompt':'Legacy affine mask migration','source_asset_id':source['id'],'stitch':4,'upscale_policy':{'include_source_context':True}}).json()['ids'][0]
         job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
         folder=self.stitch_folder(jid);plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'))
@@ -757,7 +757,7 @@ elif 'exec' in sys.argv:
 
     def test_33_rectangular_tile_repair_keeps_other_pixels_and_the_accepted_affine(self):
         import numpy as np
-        source=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        source=self.parallel_upscale_asset()
         jid=self.post('/api/jobs',{'prompt':'Bounded tile content repair fixture','source_asset_id':source['id'],'stitch':4}).json()['ids'][0]
         job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
         folder=self.stitch_folder(jid);before=np.array(Image.open(folder/'redraw/0.png'))
