@@ -143,6 +143,8 @@ def invalidate(folder,indices,repair_id):
                 import shutil
                 shutil.copyfile(source,destination)
             source.unlink()
+        provenance=folder/'redraw'/f'{index}.prompt.json'
+        if provenance.exists():provenance.replace(history/f'{index}.prompt.json')
         for sub,name in [('registered',f'{index}.png'),('corrected',f'{index}.png'),('masks',f'valid-{index}.png'),
                          ('masks',f'seam-{index}.png'),('diagnostics',f'alignment-{index}.json'),
                          ('diagnostics',f'alignment-rejected-{index}.json'),('diagnostics',f'return-{index}.json')]:

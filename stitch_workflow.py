@@ -14,6 +14,7 @@ from call_errors import authentication_status_error
 
 from PIL import Image
 from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json, refresh_registered_tile
+from task_progress import mapping
 
 ENGINE_LOCK = asyncio.Semaphore(1)
 _LEGACY_VERBATIM_PROMPT = """将 reference-1.png 中的局部图重绘为 {target_size} 的高细节图像。reference-2.png 是完整原图，仅供保持风格、光照和景深一致。
@@ -43,19 +44,49 @@ class WorkflowError(RuntimeError):
 
 def progress(studio, jid, phase, done=0, units=1, **extra):
     index=PHASES.index(phase)
+    row=studio.query('SELECT progress_detail FROM jobs WHERE id=?',(jid,),True)
+    previous=mapping(row['progress_detail']) if row else {}
+    context=getattr(studio,'upscale_progress',None) or {}
+    level=context.get('index',previous.get('level',1));count=context.get('count',previous.get('levels',1))
+    same_level=previous.get('level',1)==level
+    children=extra.pop('children',previous.get('children',[]) if same_level else [])
+    level_states=previous.get('level_states',{})
+    level_state=level_states.get(str(level),{})
+    steps=level_state.get('phases',{})
+    if PHASES.index(level_state.get('phase','base'))>index:
+        # An explicit retry may return to an earlier phase. Keep tile checkpoints,
+        # but do not present the failed inspection as completed in the new run.
+        steps={key:value for key,value in steps.items() if key in PHASES[:index]}
+    for key in PHASES[:index]:
+        steps[key]={**steps.get(key,{}),'status':'succeeded'}
+    steps[phase]={'status':'succeeded' if done>=max(1,units) else 'running','done':done,'units':units,'updated':time.time()}
     value={"stage":phase,"label":LABELS[index],"done":done,"units":units,"step":index+1,"total":len(PHASES),
-           "fraction":(index+min(1,done/max(1,units)))/len(PHASES),"updated":time.time(),"source":"server"}
+           "fraction":(index+min(1,done/max(1,units)))/len(PHASES),"updated":time.time(),"source":"server",
+           'children':children,'level':level,'levels':count}
     value.update(extra)
-    context=getattr(studio,'upscale_progress',None)
     if context:
         value['level_fraction']=value['fraction']
-        value['fraction']=(context['index']-1+value['fraction'])/context['count']
-        value.update(level=context['index'],levels=context['count'])
-        value['label']=f"第 {context['index']}/{context['count']} 级 · "+value['label']
-    previous=studio.query('SELECT progress_detail FROM jobs WHERE id=?',(jid,),True)
-    if previous:
-        with contextlib.suppress(ValueError,TypeError):value['fraction']=max(value['fraction'],json.loads(previous['progress_detail'] or '{}').get('fraction',0))
+        value['fraction']=(level-1+value['fraction'])/count
+        value['label']=f"第 {level}/{count} 级 · "+value['label']
+    level_states[str(level)]={'index':level,'status':'succeeded' if phase=='receiving' and done>=units else 'running',
+                              'phase':phase,'fraction':value.get('level_fraction',value['fraction']),
+                              'tiles':children,'phases':steps,'updated':value['updated']}
+    value['level_states']=level_states
     studio.write("UPDATE jobs SET progress_detail=?,stage=?,stage_updated=? WHERE id=? AND status='running'",(json.dumps(value,ensure_ascii=False),"stitch:"+phase,time.time(),jid))
+    if recorder:=getattr(studio,'record_level_progress',None):recorder(level_states[str(level)])
+
+
+def finish_progress(studio,jid,status,error=''):
+    row=studio.query('SELECT progress_detail FROM jobs WHERE id=?',(jid,),True)
+    value=mapping(row['progress_detail']) if row else {}
+    states=value.get('level_states',{});current=states.get(str(value.get('level',1)))
+    if current:
+        current.update(status=status,error=error,updated=time.time())
+        phase=current.get('phase')
+        if phase in current.get('phases',{}):current['phases'][phase].update(status=status,error=error)
+    value.update(waiting=False,updated=time.time(),error=error)
+    studio.write("UPDATE jobs SET progress_detail=? WHERE id=?",(json.dumps(value,ensure_ascii=False),jid))
+    return states
 
 
 def ensure_active(studio,jid):
@@ -72,7 +103,7 @@ def find_image(studio,thread_id,directory):
     return candidate if candidate.is_file() and not candidate.is_symlink() else None
 
 
-async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False,kind=None):
+async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False,kind=None,prompt_metadata=None):
     ensure_active(studio,jid)
     directory=folder/"calls"/name;directory.mkdir(parents=True,exist_ok=True,mode=0o700)
     (directory/"output.png").unlink(missing_ok=True)
@@ -83,7 +114,7 @@ async def cli_call(studio,jid,folder,name,instruction,references,model,effort,ph
         destination=directory/f"reference-{index+1}.png";shutil.copyfile(path,destination);args += ["-i",str(destination)]
     args += ["-"]
     kind=kind or ('redraw' if expected_size else 'image' if image else 'inspection')
-    save_json(directory/"request.json",{"job_id":jid,"kind":kind,"expected_size":expected_size,"worker_instruction":instruction,"references":[p.name for p in references],"model":model,"effort":effort})
+    save_json(directory/"request.json",{"job_id":jid,"kind":kind,"expected_size":expected_size,"worker_instruction":instruction,"references":[p.name for p in references],"model":model,"effort":effort,"created":time.time(),"prompt_metadata":prompt_metadata})
     thread_id="";messages=[];errors=[]
     def notify(label,active=True,source='server'):
         if on_progress:on_progress(label,active,source)

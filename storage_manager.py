@@ -14,23 +14,27 @@ class StorageFull(RuntimeError):
     pass
 
 
+def linked(path):
+    return path.is_symlink() or getattr(path,'is_junction',lambda:False)()
+
+
 def tree_bytes(path,seen=None):
     seen=seen if seen is not None else set()
     path=Path(path)
     try:metadata=path.lstat()
     except OSError:return 0
-    if S_ISLNK(metadata.st_mode):return 0
+    if S_ISLNK(metadata.st_mode) or linked(path):return 0
     if S_ISREG(metadata.st_mode):
         identity=(metadata.st_dev,metadata.st_ino)
         if identity in seen:return 0
         seen.add(identity);return metadata.st_size
     total=0
     for root,dirs,files in os.walk(path,followlinks=False):
-        dirs[:]=[d for d in dirs if not (Path(root)/d).is_symlink()]
+        dirs[:]=[d for d in dirs if not linked(Path(root)/d)]
         for name in files:
             item=Path(root)/name
             with contextlib.suppress(FileNotFoundError,PermissionError):
-                if not item.is_symlink():
+                if not linked(item):
                     stat=item.stat();identity=(stat.st_dev,stat.st_ino)
                     if identity not in seen:total+=stat.st_size;seen.add(identity)
     return total
@@ -46,12 +50,14 @@ class Storage:
     def usage(self,fresh=False):
         with self.lock:
             if not fresh and self._cached and time.monotonic()-self._time<5:
-                return {**self._cached,'limit_bytes':self.get_limit()}
+                limit=self.get_limit();cached=self._cached
+                return {**cached,'limit_bytes':limit,'available_bytes':min(cached['free_bytes'],max(0,limit-cached['bytes'])) if limit else cached['free_bytes']}
             seen=set();groups={name:tree_bytes(self.root/name,seen) for name in ('assets','thumbs','previews','jobs','tmp')}
             groups['database']=sum(tree_bytes(self.root/name) for name in ('studio.sqlite3','studio.sqlite3-wal','studio.sqlite3-shm'))
             groups['runtime_images']=tree_bytes(self.root/'codex'/'generated_images',seen)
-            total=sum(groups.values());free=shutil.disk_usage(self.root).free
-            value={'bytes':total,'limit_bytes':self.get_limit(),'free_bytes':free,'groups':groups}
+            total=sum(groups.values());disk=shutil.disk_usage(self.root);limit=self.get_limit()
+            value={'bytes':total,'limit_bytes':limit,'free_bytes':disk.free,'disk_total_bytes':disk.total,'disk_used_bytes':disk.used,
+                   'available_bytes':min(disk.free,max(0,limit-total)) if limit else disk.free,'groups':groups}
             self._cached=value;self._time=time.monotonic()
             return value
 
@@ -71,9 +77,13 @@ class Storage:
 
     def remove(self,path):
         path=Path(path)
-        if path.is_symlink():
+        if linked(path):
             # Never follow directory symlinks during recursive cleanup.
-            self.inside(path.parent);path.unlink();self.invalidate();return 0
+            parent=path.parent.resolve()
+            if parent!=self.root and not parent.is_relative_to(self.root):raise ValueError('拒绝操作存储目录之外的路径')
+            if getattr(path,'is_junction',lambda:False)():path.rmdir()
+            else:path.unlink()
+            self.invalidate();return 0
         resolved=self.inside(path);size=tree_bytes(resolved)
         if resolved.is_dir():shutil.rmtree(resolved)
         elif resolved.exists():resolved.unlink()
