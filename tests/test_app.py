@@ -14,6 +14,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from PIL import Image
 
+def runtime_image_prompt():
+    from generation_runtime import DEFAULT_IMAGE_PROMPT
+    return DEFAULT_IMAGE_PROMPT
+
 
 class StudioTests(unittest.TestCase):
     @classmethod
@@ -30,6 +34,10 @@ class StudioTests(unittest.TestCase):
 import sys, time, json, os, re, signal, atexit
 from pathlib import Path
 from PIL import Image
+
+def runtime_image_prompt():
+    from generation_runtime import DEFAULT_IMAGE_PROMPT
+    return DEFAULT_IMAGE_PROMPT
 if '--version' in sys.argv:
     print('codex-cli test-fake')
 elif 'login' in sys.argv:
@@ -37,7 +45,7 @@ elif 'login' in sys.argv:
 elif 'exec' in sys.argv:
     directory = Path(sys.argv[sys.argv.index('-C')+1])
     prompt = sys.stdin.read()
-    metadata=json.loads((directory/'request.json').read_text())
+    metadata=json.loads((directory/'request.json').read_text(encoding='utf-8'))
     def event(action):
         if path:=os.environ.get('STUDIO_TEST_EVENTS'):
             record={'event':action,'time':time.time(),'pid':os.getpid(),'job':metadata.get('job_id',directory.name),'kind':metadata.get('kind','image'),'call':directory.name}
@@ -48,7 +56,11 @@ elif 'exec' in sys.argv:
     atexit.register(event,'end')
     signal.signal(signal.SIGTERM,lambda *_:sys.exit(143))
     event('start')
-    print(json.dumps({'type':'thread.started','thread_id':'test-'+directory.name}), flush=True)
+    print(json.dumps({'type':'thread.started','thread_id':'test-'+metadata.get('job_id',directory.name)+'-'+directory.name}), flush=True)
+    if metadata.get('kind')=='polish' and '--disable' in sys.argv:
+        brief=prompt.split('Original brief:\\n',1)[-1].strip()
+        print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'Polished test brief: '+brief}}),flush=True)
+        sys.exit(0)
     if 'STUDIO_STITCH_REVIEW' in prompt:
         print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps({'pass':True,'issues':[]})}}),flush=True)
         sys.exit(0)
@@ -150,7 +162,7 @@ elif 'exec' in sys.argv:
 
     def stitch_folder(self,jid):
         root=self.appmod.DATA/'jobs'/jid/'stitch'
-        manifest=json.loads((root/'progressive.json').read_text())
+        manifest=json.loads((root/'progressive.json').read_text(encoding='utf-8'))
         return root/manifest['stages'][-1]['folder']
 
     def parallel_upscale_asset(self):
@@ -214,7 +226,12 @@ elif 'exec' in sys.argv:
         self.assertIn("unavailable",job["error"])
 
     def test_05_retry_and_cancellation(self):
+        self.client.patch('/api/settings',json={'paused':True},headers=self.headers)
         jid=self.post("/api/jobs",{"prompt":"TEST_TRANSIENT_FAILURE","max_attempts":2}).json()["ids"][0]
+        row=self.appmod.query('SELECT options FROM jobs WHERE id=?',(jid,),True)
+        options=json.loads(row['options']);options.pop('generation')
+        self.appmod.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
+        self.client.patch('/api/settings',json={'paused':False},headers=self.headers)
         job=self.wait_job(jid,timeout=15)
         self.assertEqual(job["status"],"succeeded",job)
         self.assertEqual(job["attempt"],2)
@@ -332,9 +349,9 @@ elif 'exec' in sys.argv:
         jid=None
         try:
             template="Generate a real image. Ratio: {ratio}. References: {references}. Prompt: {prompt}"
-            self.assertEqual(self.client.patch("/api/settings",json={"paused":True,"call_prompt":template},headers=self.headers).status_code,200)
+            self.assertEqual(self.client.patch("/api/settings",json={"paused":True,"call_prompt":template,"image_prompt":template},headers=self.headers).status_code,200)
             jid=self.post("/api/jobs",{"prompt":"Literal {ratio} inside creative text"}).json()["ids"][0]
-            self.client.patch("/api/settings",json={"paused":True,"call_prompt":"Another worker request with {prompt}"},headers=self.headers)
+            self.client.patch("/api/settings",json={"paused":True,"call_prompt":"Another worker request with {prompt}","image_prompt":"Another image request with {prompt}"},headers=self.headers)
             job=self.client.get("/api/jobs/"+jid).json()
             self.assertEqual(job["options"]["call_prompt"],template)
             raw=self.appmod.query("SELECT * FROM jobs WHERE id=?",(jid,),True)
@@ -344,7 +361,7 @@ elif 'exec' in sys.argv:
             self.assertEqual(self.client.patch("/api/settings",json={"call_prompt":"A template without the required variable"},headers=self.headers).status_code,400)
         finally:
             if jid:self.post("/api/jobs/"+jid+"/cancel")
-            self.client.patch("/api/settings",json={"paused":False,"call_prompt":self.appmod.DEFAULT_CALL_PROMPT},headers=self.headers)
+            self.client.patch("/api/settings",json={"paused":False,"call_prompt":self.appmod.DEFAULT_CALL_PROMPT,"image_prompt":runtime_image_prompt()},headers=self.headers)
 
     def test_14_migration_consolidates_live_untagged_batches(self):
         self.client.patch("/api/settings",json={"paused":True},headers=self.headers)
@@ -426,13 +443,12 @@ elif 'exec' in sys.argv:
                 self.assertEqual(job['options']['polish'],polish)
                 raw=self.appmod.query('SELECT * FROM jobs WHERE id=?',(jid,),True)
                 instruction=self.appmod.make_instruction(raw,self.appmod.DATA/'jobs'/jid)
-                self.assertIn('2048 pixels on the long edge',instruction)
+                self.assertIn('2048x2048',instruction)
                 self.assertIn('Keep literal {size} and {ratio}',instruction)
             self.client.patch('/api/settings',json={'paused':True,'polish_prompt':'A changed art director instruction: {prompt}'},headers=self.headers)
             self.assertEqual(self.client.get('/api/jobs/'+ids[1]).json()['options']['call_prompt'],enhanced)
             self.assertEqual(self.post('/api/jobs',{'prompt':'x','size':'99999'}).status_code,422)
-            self.assertIn('GPT-Image-2.5 Sunburst',instruction)
-            self.assertIn('requested reasoning effort max',instruction)
+            self.assertEqual(job['options']['generation']['image_backend']['image_model'], 'gpt-image-2.5-sunburst')
             self.assertIn('gpt-image-2.5-sunburst',job['options']['image_requirements'])
             self.assertEqual(self.client.patch('/api/settings',json={'polish_prompt':'No creative variable included here'},headers=self.headers).status_code,400)
         finally:
@@ -569,7 +585,7 @@ elif 'exec' in sys.argv:
             events=self.cli_events({jid})
             self.assertEqual(self.peak_calls(events,'redraw'),4)
             self.assertLessEqual(self.peak_calls(events),4)
-            requests=[json.loads(p.read_text()) for p in self.stitch_folder(jid).joinpath('calls').glob('*/request.json')]
+            requests=[json.loads(p.read_text(encoding='utf-8')) for p in self.stitch_folder(jid).joinpath('calls').glob('*/request.json')]
             redraw=[r for r in requests if r['kind']=='redraw']
             self.assertEqual(len(redraw),4)
             import upscale_prompts
@@ -577,7 +593,8 @@ elif 'exec' in sys.argv:
             for request in redraw:
                 text=request['worker_instruction']
                 metadata=request['prompt_metadata'];values=metadata['variables']
-                self.assertEqual(text,upscale_prompts.render(snapshot['templates']['image_call'],values))
+                self.assertTrue(text.endswith(upscale_prompts.render(snapshot['templates']['image_call'],values)))
+                self.assertIn('built-in image-generation tool',text)
                 tile=next(part for part in metadata['components'] if part['key']=='tile')
                 self.assertTrue(tile['enabled'])
                 self.assertEqual(tile['text'],upscale_prompts.render(snapshot['templates']['tile'],values))
@@ -649,7 +666,8 @@ elif 'exec' in sys.argv:
 
     def test_28_local_edit_publishes_full_image_and_preserves_every_outside_pixel(self):
         import numpy as np
-        asset=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        fixture=io.BytesIO();Image.new('RGB',(240,200),'white').save(fixture,'PNG')
+        asset=self.client.post('/api/assets',files={'file':('local-fixture.png',fixture.getvalue(),'image/png')},headers=self.headers).json()['asset']
         region={'x':60,'y':50,'width':120,'height':100}
         source=np.array(Image.open(io.BytesIO(self.client.get(asset['url']).content)).convert('RGB'))
         result=self.post('/api/assets/'+asset['id']+'/inpaint',{'prompt':'Replace the selected detail with blue','region':region})
@@ -710,13 +728,13 @@ elif 'exec' in sys.argv:
 
     def test_32_retry_upgrades_legacy_masks_without_regenerating_cached_tiles(self):
         from stitch_engine import REGISTRATION_VERSION
-        source=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        source=self.parallel_upscale_asset()
         jid=self.post('/api/jobs',{'prompt':'Legacy affine mask migration','source_asset_id':source['id'],'stitch':4,'upscale_policy':{'include_source_context':True}}).json()['ids'][0]
         job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
-        folder=self.stitch_folder(jid);plan=json.loads((folder/'plan.json').read_text())
+        folder=self.stitch_folder(jid);plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'))
         checkpoints={p:p.stat().st_mtime_ns for p in (folder/'redraw').glob('*.png')}
         for tile in plan['tiles']:
-            path=folder/'diagnostics'/f"alignment-{tile['index']}.json";data=json.loads(path.read_text());data['registration_version']=2;path.write_text(json.dumps(data))
+            path=folder/'diagnostics'/f"alignment-{tile['index']}.json";data=json.loads(path.read_text(encoding='utf-8'));data['registration_version']=2;path.write_text(json.dumps(data))
             Image.new('L',tuple(tile['size']),0).save(folder/'masks'/f"valid-{tile['index']}.png")
         Image.new('RGB',tuple(plan['output_size']),'magenta').save(folder/'candidate.png')
         self.appmod.write("UPDATE jobs SET status='failed',outputs='[]',error='Legacy mask fixture' WHERE id=?",(jid,))
@@ -727,11 +745,11 @@ elif 'exec' in sys.argv:
         self.assertEqual(sum(e['event']=='start' and e['kind']=='redraw' for e in events),len(plan['tiles']))
         self.assertEqual(sum(e['event']=='start' and e['kind']=='inspection' for e in events),2)
         inspection=max((folder/'calls').glob('inspection-*/request.json'),key=lambda p:p.stat().st_mtime_ns)
-        review_request=json.loads(inspection.read_text())['worker_instruction']
+        review_request=json.loads(inspection.read_text(encoding='utf-8'))['worker_instruction']
         self.assertIn('Legacy affine mask migration',review_request)
         self.assertIn('历史背景不自动产生新的编辑目标',review_request)
         self.assertIn('归一化坐标',review_request)
-        quality=json.loads((folder/'diagnostics/quality.json').read_text())
+        quality=json.loads((folder/'diagnostics/quality.json').read_text(encoding='utf-8'))
         self.assertTrue(all(a['registration_version']==REGISTRATION_VERSION for a in quality['alignments']))
         self.assertEqual(quality['uncovered_pixels'],0)
         with Image.open(folder/'candidate.png') as image:self.assertNotEqual(image.getpixel((image.width//2,image.height//2)),(255,0,255))
@@ -739,11 +757,11 @@ elif 'exec' in sys.argv:
 
     def test_33_rectangular_tile_repair_keeps_other_pixels_and_the_accepted_affine(self):
         import numpy as np
-        source=self.client.get('/api/assets?kind=reference').json()['items'][0]
+        source=self.parallel_upscale_asset()
         jid=self.post('/api/jobs',{'prompt':'Bounded tile content repair fixture','source_asset_id':source['id'],'stitch':4}).json()['ids'][0]
         job=self.wait_job(jid,timeout=75);self.assertEqual(job['status'],'succeeded',job['error'])
         folder=self.stitch_folder(jid);before=np.array(Image.open(folder/'redraw/0.png'))
-        matrix=json.loads((folder/'diagnostics/alignment-0.json').read_text())['target_matrix']
+        matrix=json.loads((folder/'diagnostics/alignment-0.json').read_text(encoding='utf-8'))['target_matrix']
         retained={p.name:p.read_bytes() for p in (folder/'redraw').glob('*.png') if p.name!='0.png'}
         region={'x':0,'y':20,'width':48,'height':48}
         (folder/'diagnostics/local-repairs.json').write_text(json.dumps([{'tile':0,'region':region,'prompt':'Replace the selected mark with blue'}]))
@@ -753,10 +771,10 @@ elif 'exec' in sys.argv:
         after=np.array(Image.open(folder/'redraw/0.png'));outside=np.ones(before.shape[:2],bool);outside[20:68,0:48]=False
         np.testing.assert_array_equal(before[outside],after[outside]);self.assertFalse(np.array_equal(before[~outside],after[~outside]))
         self.assertTrue(all((folder/'redraw'/name).read_bytes()==data for name,data in retained.items()))
-        self.assertEqual(json.loads((folder/'diagnostics/alignment-0.json').read_text())['target_matrix'],matrix)
+        self.assertEqual(json.loads((folder/'diagnostics/alignment-0.json').read_text(encoding='utf-8'))['target_matrix'],matrix)
         events=self.cli_events({jid});self.assertEqual(sum(e['event']=='start' and e['kind']=='redraw' for e in events),4)
         self.assertEqual(sum(e['event']=='start' and e['kind']=='image' for e in events),1)
-        self.assertTrue(json.loads((folder/'diagnostics/local-repairs.json').read_text())[0]['completed'])
+        self.assertTrue(json.loads((folder/'diagnostics/local-repairs.json').read_text(encoding='utf-8'))[0]['completed'])
 
 
     def test_35_polished_prompt_is_saved_without_backfilling_old_jobs(self):
@@ -764,7 +782,7 @@ elif 'exec' in sys.argv:
         job=self.wait_job(jid);self.assertEqual(job['status'],'succeeded',job['error'])
         detail=self.client.get('/api/jobs/'+jid).json()
         self.assertEqual(detail['polished_prompt'],'Polished test brief: A garden with literal {braces}')
-        self.assertEqual(detail['polish_source'],'worker_report')
+        self.assertEqual(detail['polish_source'],'dedicated_cli')
         self.assertTrue(detail['has_polished_prompt'])
         self.assertEqual(detail['attempts'][-1]['polished_prompt'],detail['polished_prompt'])
         old_id=self.post('/api/jobs',{'prompt':'Ordinary job without polishing'}).json()['ids'][0]

@@ -57,7 +57,7 @@ const DEFAULT_PROMPTS={
   call:"使用内置生图工具生成一张图片。\n画面要求：{prompt}\n画幅：{ratio} · 尺寸：{size}\n只返回图片，不执行其他操作。",
   polish:"先为下面的画面补全构图、层次、光线、配色与风格标签，再调用生图工具：\n{prompt}",
   tile:"这是超分第 {tile_index}/{tile_count} 块，范围 {bounds}，目标尺寸 {target_size}。\n只增加细节，保持所有边界与元素位置不变。\n原始要求：{prompt}\n统一约束：{injection}"};
-const PROMPT_META={call:["外层调用提示词",["{prompt}","{ratio}","{size}"]],polish:["帮我润色提示词",["{prompt}"]],tile:["超分 · 分块重绘提示词",["{prompt}","{target_size}","{tile_index}","{tile_count}","{bounds}","{injection}"]]};
+const PROMPT_META={call:["生图提示格式",["{prompt}","{ratio}","{size}"]],polish:["独立润色提示词",["{prompt}"]],tile:["超分 · 分块重绘提示词",["{prompt}","{target_size}","{tile_index}","{tile_count}","{bounds}","{injection}"]]};
 const S={tab:"create",coll:null,filter:"active",expanded:new Set(),paused:false,offline:false,worksScroll:0,worksTab:"generated",worksScrolls:{},
   images:[],batches:[],templates:[],collections:[],library:[],
   composer:{prompt:"",template:null,refs:[],ratio:"3:2",count:3,size:"自动",polish:false,transparent:false,stitch:"关",effort:"xhigh",ack:false},
@@ -82,7 +82,8 @@ function upIssues(t){const bad=t.up?.levels[t.up.cur]?.tiles.filter(x=>x.state!=
 const tileGrid=(t,big)=>{const lv=t.up.levels[t.up.cur];return `<span class="tg${big?" big":""}" data-layout="grid-template-columns:repeat(${lv.grid[0]},1fr)">${lv.tiles.map(x=>`<i data-s="${x.state}"></i>`).join("")}</span>`;};
 function upLabel(t){return t.raw?.progress?.label||"等待调度";}
 const units=t=>t.up?t.up.levels[t.up.cur].tiles.map(x=>({status:x.state,stage:x.stage})):t.multi?t.multi.parts.map(x=>({status:x.state,stage:x.stage})):[t];
-const pctOf=x=>x.waitingForSlot?0:x.status==="running"?Math.round((Math.min(x.stage,3)+.5)/4*100):x.status==="queued"||x.status==="cancelled"?0:100;
+const legacyPctOf=x=>x.waitingForSlot?0:x.status==="running"?Math.round((Math.min(x.stage,3)+.5)/4*100):x.status==="queued"||x.status==="cancelled"?0:100;
+const pctOf=x=>x.raw?.progress?.steps?.length&&x.status==='running'?Math.max(0,Math.round((x.raw.progress.step-.5)/x.raw.progress.total*100)):legacyPctOf(x);
 const segBar=(list,w)=>`<span class="bbar${list.length>10?" dense":""}"${w?` data-layout="width:${w}px"`:""}>${list.map(x=>`<i data-st="${x.waitingForSlot?'queued':x.status}" data-layout="--p:${pctOf(x)}%"></i>`).join("")}</span>`;
 function multiLabel(t){const m=t.multi,n=m.parts.length,done=m.parts.filter(x=>x.state==="done").length,run=m.parts.filter(x=>x.state==="running").length;
   if(t.status==="queued")return S.paused?"已暂停":"等待调度";if(t.status==="cancelled")return"已取消";
@@ -221,7 +222,7 @@ function updateCreate(){
   $("#ref-count").textContent=`${c.refs.length} / 8`;
   StudioReferences.render($("#refs"),{read:()=>S.composer.refs,write:refs=>StudioService.setComposerRefs(refs),add:()=>pickerSheet()});
   $("#sum1").textContent=`${c.ratio} · ${c.count} 张`;
-  $("#sum2").textContent=[c.size==="自动"?"自动尺寸":c.size+" 长边",c.polish&&"润色",c.transparent&&"透明",c.stitch!=="关"&&"生成后 "+c.stitch+" 超分",StudioService.modelName(c.model)+" · "+c.effort].filter(Boolean).join(" · ");
+  $("#sum2").textContent=[c.size==="自动"?"自动尺寸":c.size+" 长边",c.polish&&"润色",c.transparent&&"透明",c.stitch!=="关"&&"生成后 "+c.stitch+" 超分",(StudioService.backendLabel?.()||StudioService.modelName(c.model))+(c.polish?" · 润色 "+StudioService.modelName(c.model):"")].filter(Boolean).join(" · ");
   updBp();
 }
 function updBp(){
@@ -269,7 +270,8 @@ function updateColl(){
 /* ---------- queue ---------- */
 function queueHTML(){return `${topBar("任务",`<button class="pause-ctl" data-act="pause"><span>暂停调度</span><span class="switch ${S.paused?"on":""}" id="pause-sw"></span></button>`)}
 <div class="queue-workspace"><div class="scroll queue-scroll"><div id="paused-note"></div><div class="seg" id="qseg"><span class="ind"></span><button data-act="qf" data-f="active">进行中<em></em></button><button data-act="qf" data-f="done">已完成<em></em></button><button data-act="qf" data-f="failed">失败<em></em></button></div><div id="batches"></div><p class="empty" id="qempty" hidden></p></div><aside class="queue-overview" id="queue-overview"></aside></div>`;}
-const stagesHTML=t=>t.status==='done'?'':`<span class="stages" data-st="${t.waitingForSlot?'queued':t.status}" data-s="${Math.max(0,Math.min(t.stage,3))}"><i></i><i></i><i></i><i></i></span>`;
+const legacyStagesHTML=t=>t.status==='done'?'':`<span class="stages" data-st="${t.waitingForSlot?'queued':t.status}" data-s="${Math.max(0,Math.min(t.stage,3))}"><i></i><i></i><i></i><i></i></span>`;
+function stagesHTML(t){const steps=t.raw?.progress?.steps;if(!steps?.length)return legacyStagesHTML(t);if(t.status==='done')return '';return `<span class="generation-stages" aria-label="${esc(t.raw.progress.label||'任务阶段')}">${steps.map(step=>`<i data-state="${step.state}" title="${esc(step.label)}"></i>`).join('')}</span>`;}
 function bstate(b){const st=b.tasks.map(t=>t.status);return{active:st.some(s=>s==="queued"||s==="running"),failed:st.filter(s=>s==="failed").length,done:st.filter(s=>s==="done").length,n:st.length};}
 const bfilter=(b,f)=>{const s=bstate(b);return f==="active"?s.active:f==="failed"?!s.active&&s.failed>0:!s.active&&!s.failed;};
 function chainedBatchHTML(b){

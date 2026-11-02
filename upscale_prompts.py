@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA = 2
+SCHEMA = 3
 DEFAULTS = {
     'image_call': '''You are an image refinement worker. Produce exactly ONE real image with the built-in image-generation tool.
 {image_requirements}
@@ -52,6 +52,12 @@ VARIABLES = {
 REQUIRED = {'image_call': ('prompt', 'target_size'), 'tile': ('target_size',), 'requirements': ('task_requirements',),
             'source_context': ('source_description',), 'repair': ('repair_request',), 'retry': ('feedback',), 'review': ('requirements',)}
 TOKEN = re.compile(r'\{([A-Za-z][A-Za-z0-9_]*)\}')
+LEGACY_IMAGE_CALL = DEFAULTS['image_call']
+DEFAULTS['image_call'] = '''Refine the first reference image as a complete local tile. The second reference is the full-stage input for style and spatial context only.
+Requested native output: {target_size}. Preserve the entire local tile and its boundaries. Do not redraw the full image inside the tile. Transparent background: {transparent}.
+Creative brief:
+{prompt}'''
+LABELS['image_call'] = '图块图像提示格式'
 
 
 class PromptPolicy(BaseModel):
@@ -91,6 +97,8 @@ def load_templates(studio):
     if not isinstance(stored, dict):
         stored = {}
     templates.update({key: value for key, value in stored.items() if key in DEFAULTS and isinstance(value, str)})
+    if templates['image_call'] == LEGACY_IMAGE_CALL:
+        templates['image_call'] = DEFAULTS['image_call']
     if 'tile' not in stored:
         legacy = studio.setting('stitch_prompt', None)
         if isinstance(legacy, str) and legacy != studio.DEFAULT_STITCH_PROMPT:
@@ -110,12 +118,12 @@ def snapshot(studio, policy=None):
     if isinstance(policy, BaseModel):
         policy = policy.model_dump()
     data = {'schema': SCHEMA, 'templates': load_templates(studio), 'policy': PromptPolicy(**(policy or {})).model_dump(),
-            'image_requirements': studio.IMAGE_REQUIREMENTS}
+            'image_requirements': ''}
     return {**data, 'revision': digest(data), 'created': time.time()}
 
 
 def is_versioned(options):
-    return options.get('upscale_prompts', {}).get('schema') == SCHEMA
+    return options.get('upscale_prompts', {}).get('schema') in (2, SCHEMA)
 
 
 def render(template, values):
@@ -131,7 +139,8 @@ def execution_identity(options):
     frozen = options.get('upscale_prompts', {})
     return digest({'snapshot': frozen.get('revision'), 'requirements': task_requirements(options),
                    'context': options.get('source_description', '') if frozen.get('policy', {}).get('include_source_context') else '',
-                   'model': options.get('model'), 'effort': options.get('effort'), 'transparent': options.get('transparent', False)})
+                   'model': options.get('model'), 'effort': options.get('effort'), 'transparent': options.get('transparent', False),
+                   **({'generation': options['generation']} if options.get('generation') else {})})
 
 
 def repair_for(options, level, index):
@@ -160,7 +169,7 @@ def compile_image(options, plan, tile, source_description='', level=1, feedback=
         components.append({'key': key, 'label': LABELS[key], 'enabled': bool(enabled), 'scope': scope, 'text': render(template, values)})
     values['prompt'] = '\n\n'.join(item['text'] for item in components if item['enabled'])
     instruction = render(templates['image_call'], values)
-    return {'schema': SCHEMA, 'snapshot_revision': frozen['revision'], 'execution_identity': execution_identity(options),
+    return {'schema': frozen['schema'], 'snapshot_revision': frozen['revision'], 'execution_identity': execution_identity(options),
             'worker_instruction': instruction, 'components': components, 'policy': copy.deepcopy(policy),
             'scope': {'level': level, 'tile': tile['index'], 'repair_id': repair.get('id') if repair else None},
             'variables': values, 'template_sources': {'base': 'task_snapshot', 'repair': repair.get('source') if repair else None}}
@@ -180,5 +189,5 @@ def compile_review(options, plan, source_description='', level=1):
     output_size = plan.get('output_size') or [value * 2 if value else None for value in input_size]
     values = {'requirements': json.dumps(requirements, ensure_ascii=False), 'input_size': str(input_size),
               'output_size': str(output_size), 'level': level, 'levels': {4: 1, 16: 2, 64: 3}.get(options.get('stitch'), 1)}
-    return {'schema': SCHEMA, 'snapshot_revision': frozen['revision'], 'worker_instruction': render(frozen['templates']['review'], values),
+    return {'schema': frozen['schema'], 'snapshot_revision': frozen['revision'], 'worker_instruction': render(frozen['templates']['review'], values),
             'scope': {'level': level, 'kind': 'inspection'}, 'requirements': requirements, 'policy': copy.deepcopy(policy)}

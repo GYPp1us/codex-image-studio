@@ -9,7 +9,7 @@ const StudioTasks=(()=>{
     return `${header('任务详情',fmtTime(j.created*1000))}<div class="scroll task-work-scroll"><main class="task-detail-main"><div data-task-status>${status(j)}</div><section class="task-section"><h2>提示词</h2><div class="prompt-box">${esc(j.prompt)}</div>${j.polished_prompt?`<details class="task-disclosure"><summary>润色后的提示词</summary><div class="prompt-box">${esc(j.polished_prompt)}</div></details>`:''}</section>
       ${j.outputs?.length?`<section class="task-section"><h2>结果</h2><div class="task-outputs">${j.outputs.map(im=>`<button data-act="img" data-id="${im.id}" data-list="batch:${j.batch_id}" aria-label="查看结果"><img src="${esc(im.thumbnail||im.url)}" alt=""><span>${im.width} × ${im.height}</span></button>`).join('')}</div></section>`:''}
       <section class="task-section"><h2>执行日志</h2><div data-task-log><pre class="prompt-box task-log" data-log-content>正在读取日志…</pre><button class="secondary" data-log-refresh>刷新日志</button><details class="task-disclosure"><summary>原始 JSONL</summary><pre class="prompt-box task-log" data-log-raw></pre></details></div></section></main>
-      <aside class="task-detail-side"><section class="task-section"><h2>任务参数</h2><dl class="kv"><dt>模型</dt><dd>${esc(a.modelName(j.model))} · ${esc(j.effort)}</dd><dt>尝试</dt><dd>${j.attempt} / ${j.max_attempts}</dd><dt>创建</dt><dd>${fmtTime(j.created*1000)}</dd><dt>任务 ID</dt><dd class="task-id">${esc(j.id)}</dd></dl>${j.error?`<p class="form-err">${esc(j.error)}</p>`:''}${j.options.stitch?`<button class="secondary" data-act="up-detail" data-id="${j.id}">${icon('grid',16)}超分检查 · 尺寸、预算与修复</button>`:''}</section><section class="task-section" data-task-prompts></section></aside></div>`;
+      <aside class="task-detail-side"><section class="task-section"><h2>任务参数</h2><dl class="kv"><dt>文本模型</dt><dd>${esc(a.modelName(j.model))} · ${esc(j.effort)}</dd><dt>尝试</dt><dd>${j.attempt} / ${j.max_attempts}</dd><dt>创建</dt><dd>${fmtTime(j.created*1000)}</dd><dt>任务 ID</dt><dd class="task-id">${esc(j.id)}</dd></dl>${j.error?`<p class="form-err">${esc(j.error)}</p>`:''}${j.options.stitch?`<button class="secondary" data-act="up-detail" data-id="${j.id}">${icon('grid',16)}超分检查 · 尺寸、预算与修复</button>`:''}</section><section class="task-section" data-task-prompts></section></aside></div>`;
   }
   function upscaleHTML(j,a){
     const t=a.task(j),im=j.source_image||a.asset(j.options.source_asset_id),plan=j.upscale_plan;
@@ -26,6 +26,7 @@ const StudioTasks=(()=>{
   function mount(c,showLog){
     const a=c.adapter;c.el.innerHTML=c.mode==='upscale'?upscaleHTML(c.job,a):detailsHTML(c.job,a);hydrateIcons(c.el);StudioProgress.hydrate(c.el);
     c.el.querySelector('[data-task-refresh]').onclick=()=>reload(c);
+    if(typeof StudioGeneration!=='undefined'){const main=c.el.querySelector('.task-detail-main,.up-work-main'),section=document.createElement('section');section.className='task-section generation-workspace';section.dataset.generationWorkspace='';main?.prepend(section);StudioGeneration.mount(section,c.job,a);}
     const disclosure=c.el.querySelector('[data-task-log]');
     if(disclosure){readLog(c);c.el.querySelector('[data-log-refresh]').onclick=e=>readLog(c,e.currentTarget);if(showLog)requestAnimationFrame(()=>disclosure.scrollIntoView({block:'start',behavior:RM?'auto':'smooth'}));}
     if(typeof StudioUpscalePrompts!=='undefined'&&c.job.options.stitch)StudioUpscalePrompts.mountTask(c.el.querySelector('[data-task-prompts]'),c.job,a.api);
@@ -50,6 +51,7 @@ const StudioTasks=(()=>{
   function update(){
     const c=current;if(!c||!c.job||!alive(c))return;const latest=c.adapter.latest(c.id);if(!latest)return;
     const previous=c.job.status;c.job={...c.job,...latest,options:{...c.job.options,...latest.options}};
+    if(typeof StudioGeneration!=='undefined')StudioGeneration.update(c.el.querySelector('[data-generation-workspace]'),c.job);
     const holder=c.el.querySelector('[data-task-status]');if(holder)holder.innerHTML=status(c.job);
     if(c.mode==='upscale'){
       const board=c.el.querySelector('[data-task-board]'),t=c.adapter.task(c.job);if(board&&t.up){setHTML(board,StudioProgress.html(t,{all:true,key:'inspector'}));StudioProgress.hydrate(board);}

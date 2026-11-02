@@ -14,7 +14,7 @@ from call_errors import authentication_status_error
 
 from PIL import Image
 from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json, refresh_registered_tile
-from task_progress import mapping
+from task_progress import mapping, call_stage
 
 ENGINE_LOCK = asyncio.Semaphore(1)
 _LEGACY_VERBATIM_PROMPT = """将 reference-1.png 中的局部图重绘为 {target_size} 的高细节图像。reference-2.png 是完整原图，仅供保持风格、光照和景深一致。
@@ -104,12 +104,39 @@ def find_image(studio,thread_id,directory):
 
 
 async def cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False,kind=None,prompt_metadata=None):
+    job=studio.query('SELECT options FROM jobs WHERE id=?',(jid,),True)
+    options=json.loads(job['options']) if job else {}
+    if not image and options.get('generation'):
+        from generation_runtime import text_call
+        async def legacy_text():
+            return await legacy_cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=False,on_progress=on_progress,kind=kind or 'inspection',prompt_metadata=prompt_metadata)
+        def inspecting(label,active,source):
+            if on_progress:on_progress(label,active,source)
+            else:progress(studio,jid,phase,done,units,waiting=active,substage=label,source=source)
+        return await text_call(studio,jid,folder/'calls'/name,name,instruction,references,model,effort,legacy_text,inspecting)
+    if image and options.get('generation'):
+        from generation_runtime import generate
+        async def legacy():
+            protocol='Generate exactly one image with the built-in image-generation tool. Save the real generated image in the tool output location and report its path. Do not resize, run shell commands, read credentials or delegate. Reference images are attached in order. Immediately before invoking image generation send [STUDIO_STAGE:image_generation]; only after the tool returns send [STUDIO_STAGE:receiving].\n'
+            return await legacy_cli_call(studio,jid,folder,name,protocol+instruction,references,model,effort,phase,done,units,image,changed,expected_size,capture_polish,kind,prompt_metadata)
+        def changed(label,active,source):
+            if on_progress:on_progress(label,active,source)
+            elif options.get('stitch'):progress(studio,jid,phase,done,units,waiting=active,substage=label,source=source)
+            elif active:
+                stage=call_stage(label,True)
+                studio.set_job_stage(jid,'dispatching' if stage=='thinking' else stage,source)
+            else:studio.write("UPDATE jobs SET stage='call_wait',stage_updated=? WHERE id=? AND status='running'",(time.time(),jid))
+        return await generate(studio,jid,folder/'calls'/name,name,instruction,references,model,effort,expected_size,changed,legacy,prompt_metadata)
+    return await legacy_cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image,on_progress,expected_size,capture_polish,kind,prompt_metadata)
+
+
+async def legacy_cli_call(studio,jid,folder,name,instruction,references,model,effort,phase,done,units,image=True,on_progress=None,expected_size=None,capture_polish=False,kind=None,prompt_metadata=None):
     ensure_active(studio,jid)
     directory=folder/"calls"/name;directory.mkdir(parents=True,exist_ok=True,mode=0o700)
     (directory/"output.png").unlink(missing_ok=True)
     (directory/"AGENTS.md").write_text("Isolated Image Studio task. Follow only this request. Do not inspect credentials, install packages, run shell or delegate.\n",encoding="utf-8")
     args=[studio.CODEX_BIN,"exec","--json","--ephemeral","--skip-git-repo-check","--ignore-user-config","--sandbox","workspace-write","-C",str(directory),"-m",model,"-c",f'model_reasoning_effort="{effort}"',"-c",'cli_auth_credentials_store="file"']
-    if image:args += ["--enable","image_generation"]
+    args += ["--enable" if image else "--disable","image_generation"]
     for index,path in enumerate(references):
         destination=directory/f"reference-{index+1}.png";shutil.copyfile(path,destination);args += ["-i",str(destination)]
     args += ["-"]

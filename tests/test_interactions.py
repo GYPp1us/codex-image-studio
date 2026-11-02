@@ -62,7 +62,7 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(job['refs'],[self.asset['id']])
         row = self.studio.query('SELECT * FROM jobs WHERE id=?',(job['id'],),True)
         instruction = self.studio.make_instruction(row,Path(self.temp.name))
-        self.assertIn('501x337 pixels',instruction)
+        self.assertIn('501x337',instruction)
         self.assertIn('把背景改为夜晚',instruction)
         self.assertEqual(job['source_image']['id'],self.asset['id'])
 
@@ -93,7 +93,7 @@ class InteractionTests(unittest.TestCase):
                         if not use_ref:
                             self.assertNotIn('Edit reference-1.png', instruction)
                         if keep_spec:
-                            self.assertIn('501x337 pixels', instruction)
+                            self.assertIn('501x337', instruction)
         finally:
             self.studio.set_setting('quick', previous)
 

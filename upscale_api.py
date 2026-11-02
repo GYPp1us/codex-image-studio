@@ -432,6 +432,7 @@ def register(app,studio):
                                         json.dumps([a for a in json.loads(row['outputs']) if a not in removed]),row['id']))
                 for asset in assets:connection.execute('DELETE FROM assets WHERE id=?',(asset['id'],))
                 for job in removed_jobs:
+                    connection.execute('DELETE FROM generation_calls WHERE job_id=?',(job['id'],))
                     connection.execute('DELETE FROM attempts WHERE job_id=?',(job['id'],));connection.execute('DELETE FROM jobs WHERE id=?',(job['id'],))
                 connection.execute('DELETE FROM collections WHERE deleted=1 AND NOT EXISTS(SELECT 1 FROM jobs WHERE jobs.collection_id=collections.id)')
             for asset in assets:

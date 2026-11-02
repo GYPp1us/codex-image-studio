@@ -6,6 +6,7 @@ import json
 import math
 import mmap
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -34,7 +35,16 @@ def save_json(path, value):
     path = Path(path)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+    # On Windows a concurrent reader can briefly hold the destination open.
+    # Keep replacement atomic and surface persistent permission failures.
+    for attempt in range(5):
+        try:
+            os.replace(temporary, path)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.025)
 
 
 def report(folder, phase, done=0, total=1, **extra):
