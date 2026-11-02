@@ -1,6 +1,6 @@
 # 出图链路调研：codex exec 之外的两种做法
 
-调研日期：2026-11-01。仅文档，不改代码。
+调研日期：2026-11-01；2026-11-02 补充验证与实现。历史调研如下，新数据流见 [DIRECT_BACKEND.md](DIRECT_BACKEND.md)。
 
 参考对象：
 
@@ -10,11 +10,11 @@
 
 ## 结论（TL;DR）
 
-1. **我们设置的模型 / 强度 / 比例，在工具层面都没有生效。** Codex 0.164.0 的内置 `imagegen` 工具把模型写死为 `gpt-image-2`，`size`、`quality` 写死为 `auto`，工具参数里也没有这些字段。`IMAGE_REQUIREMENTS` 里的 “GPT-Image-2.5 Sunburst / effort max” 只能变成提示词文字。
+1. **模型 / 质量 / 比例没有作为可控工具参数传递。** Codex 0.164.0 的内置 `imagegen` 工具把模型写死为 `gpt-image-2`，`size`、`quality` 写死为 `auto`，工具参数里也没有这些字段。`IMAGE_REQUIREMENTS` 里的 “GPT-Image-2.5 Sunburst / effort max” 只能变成提示词文字；这不证明自然语言比例要求完全无效。
 2. **这段文字还会被塞进图像提示词本身**（我们明确要求 agent “Include this exact model and effort request in the prompt passed to the image-generation tool”），对每一张图都是噪声，甚至可能被画成字。
 3. **每张图前面都多跑一轮 `gpt-6.1-sol` / `xhigh` 的 agent**，慢、耗额度，失败只能从 agent 日志里猜。
-4. 两个参考项目都绕开了 agent，直接用订阅 OAuth 调 ChatGPT 后端：dsh 调 `codex/images/generations`，pi 调 `codex/responses` + 托管 `image_generation` 工具。两者都能把模型、尺寸作为真正的参数传过去。
-5. 订阅端是否真的按请求返回 2.5 模型 / 指定尺寸，**目前只有 dsh 自己的一次实测**，需要用一个已登录的 ChatGPT 订阅做小规模探测才能定案（见文末）。
+4. 两个项目绕过本地 Codex CLI，直接用订阅 OAuth 调 ChatGPT 后端：dsh 调 `codex/images/generations`，pi 调 `codex/responses` + 托管 `image_generation` 工具。后者仍有派发模型回合；`thinking=off` 只省略显式 reasoning 设置。两者可以传递结构化图片参数，不代表后端执行了这些参数。
+5. 本项目的有限订阅探测也观察到请求与返回差异（见末节）。实际底层模型仍不能确认；公共 API 文档不是订阅后端的协议保证。
 
 ## 现状：codex-image-studio 怎么出图
 
@@ -103,3 +103,18 @@ model: IMAGE_MODEL, quality: Some(ImageQuality::Auto), size: Some("auto")
 4. `responses` + 托管 `image_generation`，`size` 显式、`partial_images: 2`，观察是否有 partial 事件。
 
 结果决定 P0 是“只省掉 agent 开销”，还是同时能真正提供 Sunburst 与指定比例。
+
+## 2026-11-02 验证附记与实现
+
+服务端实际 CLI 为 0.164.0。初轮四个合成请求均返回 200，但复用了一个 turn ID，仅作探索。之后两次补测分别生成新的 turn UUID，去掉非必要的 `n`，使用同一无比例文字的合成提示词：
+
+| 请求 | 记录的服务回显 | Pillow 识别的 PNG 头尺寸 |
+| --- | --- | --- |
+| `gpt-image-2`、`1024x1536`、`auto` | `1536x1024`、`low` | 1536×1024 |
+| `gpt-image-2.5-sunburst`、`1024x1024`、`max` | `1536x1024`、`low` | 1536×1024 |
+
+`auto→low` 合法，`max→low` 是显式请求与回显的差异。解析器未发现顶层 model，不能据此确认实际模型。两个参数组合同时变化，也不能单独归因于某一字段。原始响应、PNG、turn 原值和 partial 帧未留存，不能事后重新计算图片哈希或验收画面；首次 Responses 解析器的 partial 计数为 2，但未保留精确事件 type，因此不当作完整显影能力验收。
+
+以上只代表本账号的有限观察，不证明后端对所有请求总忽略参数。订阅接口与公共 API 仍需区分。
+
+本 PR 已按这个边界实现 `image_backend.py` 与 `generation_runtime.py`：图片直连默认路径、可选 Responses 托管工具、受限的 CLI 降级、独立文本润色、真实 partial 预览、请求/回显/图片属性分开记录。历史任务继续按原快照使用 `IMAGE_REQUIREMENTS`；schema 3 新任务不再把它当图像正文。实现与验证边界见 [DIRECT_BACKEND.md](DIRECT_BACKEND.md)，审阅处理见 [PR_REVIEW_FOLLOWUP.md](PR_REVIEW_FOLLOWUP.md)。
