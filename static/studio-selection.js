@@ -23,7 +23,7 @@ const StudioSelection=(()=>{
     await StudioFeedback.run('asset-selection',button,async()=>{
       if(op==='reference'){
         const next=[...new Set([...S.composer.refs,...chosen])];if(next.length>8)throw new Error('参考图合计最多 8 张，请减少选择');
-        StudioService.setComposerRefs(next);await back();await leave();toast(`已加入 ${chosen.length} 张参考图`,{action:'去创作',run:()=>go('create')});return;
+        StudioService.setComposerRefs(next);await back();await leave();toast(`已加入 ${chosen.length} 张参考图`,S.tab==='create'?{}:{action:'去创作',run:()=>go('create')});return;
       }
       const result=await StudioService.bulkAssets(op,chosen);result.succeeded.forEach(id=>ids.delete(id));
       await back();paint();
