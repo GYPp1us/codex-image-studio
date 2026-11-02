@@ -593,3 +593,10 @@ test('queue pause displays pending and ignores repeated activation',async()=>{
   const count=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,pending=button.getAttribute('aria-busy');
   release();await Promise.all([a,b]);assert.equal(count,1);assert.equal(pending,'true');
 });
+
+
+test('advanced prompt controls start collapsed and preview requires a source',async()=>{
+  const f=await fixture();f.run("S.upc.src=null;document.querySelector('#app').insertAdjacentHTML('beforeend',StudioUpscalePrompts.entry('upscale'))");
+  const holder=f.document.querySelector('.prompt-composition[data-prompt-scope=upscale]');assert.ok(holder);assert.equal(holder.querySelector('.composition-advanced').hasAttribute('open'),false);assert.equal(holder.querySelector('[data-upp-preview]').hasAttribute('disabled'),true);
+  assert.ok(holder.querySelector('[data-upp-policy=append_system]'));
+});
