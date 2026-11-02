@@ -10,6 +10,7 @@ import json
 
 CALL_STAGES = ('sending', 'thinking', 'generating', 'receiving')
 CALL_LABELS = dict(zip(CALL_STAGES, ('正在传递', '主模型正在思考', '等待生图返回', '正在回传')))
+DIRECT_LABELS = {'polishing': '独立润色', 'sending': '发送请求', 'dispatching': '派发生图工具', 'generating': '生成与显影', 'receiving': '接收图片', 'saving': '保存结果', 'fallback': '切换 CLI 通道'}
 TERMINAL = ('succeeded', 'failed', 'cancelled')
 
 
@@ -27,6 +28,8 @@ def call_stage(label, active=True, previous='sending'):
         return 'queued'
     if label in CALL_STAGES:
         return label
+    if label in DIRECT_LABELS:
+        return label
     return next((stage for stage, text in CALL_LABELS.items() if text == label), previous if previous in CALL_STAGES else 'sending')
 
 
@@ -35,6 +38,8 @@ def call_fraction(item):
     if status in ('succeeded', 'done'):
         return 1.0
     stage = item.get('stage')
+    if stage in ('dispatching', 'polishing', 'saving'):
+        return {'dispatching': .375, 'polishing': .1, 'saving': .95}[stage]
     return (CALL_STAGES.index(stage) + .5) / 4 if stage in CALL_STAGES else 0.0
 
 
@@ -125,6 +130,20 @@ def project(job, paused=False):
             value.update(waiting=False, indeterminate=False)
         value['percent'] = max(0, min(100, round(value.get('fraction', 0) * 100)))
         return value
+    if options.get('generation'):
+        current = mapping(job.get('generation_detail'))
+        mode = current.get('transport') or options['generation'].get('image_backend', {}).get('transport', 'images')
+        keys = (['polishing'] if options.get('polish') else []) + ['sending'] + (['dispatching'] if mode in ('responses','cli') else []) + ['generating','receiving','saving']
+        stage = job.get('stage') or 'sending'
+        if stage == 'thinking': stage = 'dispatching'
+        position = keys.index(stage) if stage in keys else 0
+        waiting = stage == 'call_wait' or status in ('queued', 'retrying')
+        steps = [{'key': key, 'label': DIRECT_LABELS[key], 'state': 'done' if status == 'succeeded' or (not waiting and index < position) else
+                  'failed' if index == position and status == 'failed' else 'cancelled' if index == position and status == 'cancelled' else 'running' if index == position and status == 'running' and not waiting else 'queued'} for index,key in enumerate(keys)]
+        label = {'queued':'等待调度','retrying':'等待重试','succeeded':'已完成','failed':'生成失败','cancelled':'已取消'}.get(status,
+                 ('调度已暂停' if paused else '等待并发名额') if waiting else DIRECT_LABELS.get(stage, '正在处理'))
+        return {**common, 'kind':'image', 'stage':status if status in TERMINAL else stage, 'call_stage':stage, 'steps':steps, 'label':label, 'step':0 if waiting else len(keys) if status=='succeeded' else position+1,
+                'total':len(keys), 'percent':100 if status=='succeeded' else None, 'indeterminate':status=='running' and not waiting}
     labels = {'queued': '等待调度', 'retrying': '等待重试', 'succeeded': '已完成', 'failed': '生成失败', 'cancelled': '已取消'}
     if status != 'running':
         return {**common, 'kind': 'image', 'stage': status, 'label': labels.get(status, status), 'step': 4 if status == 'succeeded' else 0,

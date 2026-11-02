@@ -38,6 +38,7 @@ from prompt_capture import extract as extract_polished_prompt,REPORT_INSTRUCTION
 from interaction_api import Appearance, GenerationDefaults, QuickDefaults, UpscaleDefaults, preferences, validate_regions, quick_model, enqueue_after_upscale
 import account_profile
 import upscale_prompts
+import generation_runtime
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -153,6 +154,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS collections(id TEXT PRIMARY KEY,name TEXT,prompt TEXT,created REAL,updated REAL);
         CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY,text TEXT,title TEXT,favorite INTEGER DEFAULT 0,created REAL,updated REAL,refs TEXT NOT NULL DEFAULT '[]',options TEXT NOT NULL DEFAULT '{}');
         """)
+        generation_runtime.initialize(c)
         prompt_columns = {r[1] for r in c.execute("PRAGMA table_info(prompts)")}
         new_prompt_refs = "refs" not in prompt_columns
         if new_prompt_refs:
@@ -479,7 +481,7 @@ def revoke_sessions(session=Depends(require_user)):
 
 @app.get("/api/call-settings")
 def call_settings(session=Depends(require_user)):
-    return {"call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "default_call_prompt": DEFAULT_CALL_PROMPT, "polish_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT), "default_polish_prompt": DEFAULT_POLISH_PROMPT, "stitch_prompt": setting("stitch_prompt", DEFAULT_STITCH_PROMPT), "default_stitch_prompt": DEFAULT_STITCH_PROMPT, "variables": ["{prompt}", "{ratio}", "{size}", "{transparent}", "{references}"]} | upscale_prompts.settings_payload(sys.modules[__name__])
+    return {"call_prompt": setting("call_prompt", DEFAULT_CALL_PROMPT), "default_call_prompt": DEFAULT_CALL_PROMPT, "polish_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT), "default_polish_prompt": DEFAULT_POLISH_PROMPT, "stitch_prompt": setting("stitch_prompt", DEFAULT_STITCH_PROMPT), "default_stitch_prompt": DEFAULT_STITCH_PROMPT, "variables": ["{prompt}", "{ratio}", "{size}", "{transparent}", "{references}"]} | upscale_prompts.settings_payload(sys.modules[__name__]) | generation_runtime.settings_payload(sys.modules[__name__])
 
 
 def model_catalog():
@@ -529,6 +531,9 @@ class Settings(BaseModel):
     effort: str | None = Field(default=None, max_length=20)
     call_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
     polish_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
+    image_backend: generation_runtime.ImageSettings | None = None
+    image_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
+    polish_text_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
     stitch_prompt: str | None = Field(default=None, min_length=20, max_length=24000)
     storage_limit_bytes: int | None = Field(default=None,ge=0)
     defaults: GenerationDefaults | None = None
@@ -546,7 +551,7 @@ def settings(body: Settings, session=Depends(require_user)):
     validate_model_choice(body.model or setting("model", MODEL), body.effort or setting("effort", EFFORT))
     if body.quick:
         quick_model(sys.modules[__name__], body.quick, body.model, body.effort)
-    for template in (body.call_prompt, body.polish_prompt, body.stitch_prompt):
+    for template in (body.call_prompt, body.polish_prompt, body.stitch_prompt, body.image_prompt, body.polish_text_prompt):
         if template is not None and "{prompt}" not in template:
             raise HTTPException(400, "调用提示词必须包含 {prompt} 变量")
     updated_prompts=None
@@ -915,8 +920,11 @@ def serialize_job(j,full=False):
     j["outputs"] = [serialize_asset(a) for aid in j["output_ids"] if (a := query("SELECT * FROM assets WHERE id=? AND deleted=0", (aid,), True))]
     j["references"] = [serialize_asset(a) for aid in j["refs"] if (a := query("SELECT * FROM assets WHERE id=?", (aid,), True))]
     j["progress"] = job_progress(j)
+    j['generation'] = json.loads(j.pop('generation_detail', '{}') or '{}')
     j['has_polished_prompt']=bool(j.pop('polished_prompt',''))
     if not full:
+        if frozen_generation:=j['options'].get('generation'):
+            j['options']['generation']={key:frozen_generation[key] for key in ('schema','image_backend') if key in frozen_generation}
         frozen=j['options'].pop('upscale_prompts',None)
         if frozen:j['options']['upscale_prompt_summary']={key:frozen.get(key) for key in ('schema','revision','policy')}
         for key in ('call_prompt','redraw_call_prompt','stitch_prompt','source_description','repair_scopes'):j['options'].pop(key,None)
@@ -924,7 +932,7 @@ def serialize_job(j,full=False):
     return j
 
 
-STAGES = {"sending": "正在传递", "thinking": "主模型正在思考", "generating": "等待生图返回", "receiving": "正在回传"}
+STAGES = {"polishing": "独立润色提示词", "sending": "正在传递", "dispatching": "正在派发生图工具", "thinking": "主模型正在思考", "generating": "等待生图返回", "receiving": "正在回传", "saving": "正在保存结果"}
 
 
 def job_progress(job):
@@ -1001,6 +1009,7 @@ def _create_jobs(body):
     if body.template_id and not template:
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
+    options['generation'] = generation_runtime.snapshot(sys.modules[__name__])
     options.update(stitch=body.stitch,after_upscale=body.after_upscale,source_asset_id=body.source_asset_id,upscale_injection=body.upscale_injection,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch or body.after_upscale else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch or body.after_upscale else '')
     if body.stitch or body.after_upscale:
         frozen=upscale_prompts.snapshot(sys.modules[__name__],body.upscale_policy)
@@ -1221,7 +1230,7 @@ def get_job(jid: str, session=Depends(require_user)):
         scale=int(options.get('stitch',0)**.5) if options.get('stitch') else 1
         dimensions['target']={k:source[k]*scale for k in ('width','height')}
     if value['outputs']:dimensions['result']={k:value['outputs'][0][k] for k in ('width','height')}
-    return value | {"attempts": query("SELECT * FROM attempts WHERE job_id=? ORDER BY number", (jid,)), "call_instruction": instruction,'source_image':source,'image_dimensions':dimensions,
+    return value | {'generation_calls': generation_runtime.calls(sys.modules[__name__], jid), "attempts": query("SELECT * FROM attempts WHERE job_id=? ORDER BY number", (jid,)), "call_instruction": instruction,'source_image':source,'image_dimensions':dimensions,
                     'polished_prompt':j.get('polished_prompt') or None,'polish_source':j.get('polish_source') or None}
 
 
@@ -1230,11 +1239,15 @@ def get_log(jid: str, session=Depends(require_user)):
     if not re.fullmatch("[a-f0-9]{32}", jid):
         raise HTTPException(404)
     path = DATA / "jobs" / jid / "events.jsonl"
-    if not path.exists():
+    summary = generation_runtime.log_text(sys.modules[__name__], jid)
+    text = ''
+    if path.exists():
+        with path.open("rb") as f:
+            f.seek(max(0, path.stat().st_size - 32000))
+            text = f.read().decode(errors="replace")
+    text = '\n'.join(part for part in (summary, text) if part)
+    if not text:
         return {"text": "任务尚未开始"}
-    with path.open("rb") as f:
-        f.seek(max(0, path.stat().st_size - 32000))
-        text = f.read().decode(errors="replace")
     # Avoid exposing credentials accidentally echoed by a tool.
     text = re.sub(r"(?:sk-[\w-]+|eyJ[\w-]+\.[\w-]+\.[\w-]+)", "[REDACTED]", text)
     return {"text": text}
@@ -1307,6 +1320,8 @@ def job_cancelled(jid):
 
 def make_instruction(j, directory):
     opts = json.loads(j["options"])
+    if opts.get('generation'):
+        return generation_runtime.image_brief(opts, j['prompt'])
     template = opts.get("call_prompt", DEFAULT_CALL_PROMPT)
     if opts.get('polish'):template=REPORT_INSTRUCTION+'\n'+template
     image_requirements = opts.get("image_requirements", IMAGE_REQUIREMENTS)
@@ -1382,6 +1397,9 @@ async def run_job(jid):
     if options.get('stitch'):
         from upscale_workflow import run
         await run(sys.modules[__name__],jid)
+        return
+    if options.get('generation'):
+        await generation_runtime.run_job(sys.modules[__name__], jid)
         return
     model, effort = options.get("model", MODEL), options.get("effort", EFFORT)
     directory = DATA / "jobs" / jid
@@ -1494,6 +1512,7 @@ async def run_job(jid):
         WAKE.set()
 
 
+generation_runtime.register(app, sys.modules[__name__])
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 

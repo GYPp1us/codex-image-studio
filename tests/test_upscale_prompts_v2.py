@@ -103,7 +103,7 @@ class UpscalePromptV2Tests(unittest.TestCase):
         self.assertFalse(components['tile']['enabled'])
         self.assertNotIn(components['tile']['text'], instruction)
         self.assertIn('FIXED-MARKER', instruction)
-        self.assertIn('reference-1.png', instruction)
+        self.assertIn('first reference image', instruction)
         self.assertEqual(result['snapshot_revision'], options['upscale_prompts']['revision'])
 
     def test_selected_repair_and_call_feedback_do_not_leak_to_other_tiles_or_levels(self):
@@ -174,7 +174,7 @@ class UpscalePromptV2Tests(unittest.TestCase):
             self.studio.set_setting('upscale_system_prompts', edited)
             options = self.options(include_source=True)
             frozen = options['upscale_prompts']
-            self.assertEqual(frozen['schema'], 2)
+            self.assertEqual(frozen['schema'], 3)
             self.assertEqual(frozen['templates'], edited)
             image = self.compile_image(options, feedback='RETRY-FEEDBACK')
             for key in ('image_call', 'tile', 'requirements', 'source_context', 'retry'):
@@ -187,6 +187,17 @@ class UpscalePromptV2Tests(unittest.TestCase):
             self.assertEqual(review['snapshot_revision'], frozen['revision'])
         finally:
             self.studio.set_setting('upscale_system_prompts', old)
+
+    def test_schema_two_frozen_image_template_remains_unchanged(self):
+        import upscale_prompts
+        options = self.options()
+        options['upscale_prompts']['schema'] = 2
+        options['upscale_prompts']['templates']['image_call'] = upscale_prompts.LEGACY_IMAGE_CALL
+        frozen = copy.deepcopy(options['upscale_prompts'])
+        result = self.compile_image(options)
+        self.assertEqual(options['upscale_prompts'], frozen)
+        self.assertEqual(result['worker_instruction'], upscale_prompts.render(upscale_prompts.LEGACY_IMAGE_CALL, result['variables']))
+        self.assertIn('reference-1.png', result['worker_instruction'])
 
     def test_template_validation_rejects_missing_required_and_unknown_variables(self):
         import upscale_prompts
@@ -336,7 +347,9 @@ class UpscalePromptV2Tests(unittest.TestCase):
                 finally:
                     self.studio.PROCESSES.pop(jid + ':fixture-call', None)
         self.client.portal.call(execute)
-        self.assertEqual(sent, [compiled['worker_instruction']])
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0].endswith(compiled['worker_instruction']))
+        self.assertIn('built-in image-generation tool', sent[0])
         calls = self.client.get(f'/api/upscale/jobs/{jid}/calls')
         self.assertEqual(calls.status_code, 200, calls.text)
         self.assertEqual(calls.json()['total'], 1)

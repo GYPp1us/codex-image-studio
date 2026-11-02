@@ -66,7 +66,7 @@ async def run(studio, jid):
             except Exception as error:
                 detail = str(getattr(error, 'detail', error))[:2000]
                 update(index, status='failed', error=detail, label='区域重绘失败')
-                if attempt == job['max_attempts'] or authentication_status_error(detail) or any(token in detail.lower() for token in
+                if getattr(error, 'retryable', True) is False or attempt == job['max_attempts'] or authentication_status_error(detail) or any(token in detail.lower() for token in
                         ('unauthorized', 'authentication', 'unavailable', 'usage limit', 'quota', '登录', '额度')):
                     raise WorkflowError(f'区域 {index + 1}：{detail}') from error
                 await asyncio.sleep(min(5 * attempt, 30))
