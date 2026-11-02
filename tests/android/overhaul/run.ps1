@@ -3,7 +3,12 @@ param(
   [string]$SigningDir,
   [string]$SdkRoot=$env:ANDROID_HOME,
   [switch]$PrepareOnly,
-  [string]$PreparedProject
+  [string]$PreparedProject,
+  [int]$LiveFixturePort,
+  [string]$LiveFixtureToken,
+  [string]$LiveNormalId,
+  [string]$LiveUpscaleId,
+  [string]$LiveAssetId
 )
 $ErrorActionPreference='Stop'
 if (-not $SdkRoot) { $SdkRoot=Join-Path $env:LOCALAPPDATA 'Android/Sdk' }
@@ -23,6 +28,9 @@ if ($PreparedProject) {
   New-Item -ItemType Directory -Force $raw | Out-Null
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'VisualInstrumentation.java') -Destination (Join-Path $native 'src/site/arcol/imagestudio/')
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'theme_matrix.js'),(Join-Path $PSScriptRoot 'incremental_qa.js') -Destination $raw
+  Copy-Item -LiteralPath (Join-Path $repo 'tests/generation-visual-qa.js') -Destination (Join-Path $raw 'generation_visual_qa.js')
+  Copy-Item -LiteralPath (Join-Path $repo 'tests/generation-browser-qa.js') -Destination (Join-Path $raw 'generation_browser_qa.js')
+  Copy-Item -LiteralPath (Join-Path $repo 'tests/generation-integrated-qa.js') -Destination (Join-Path $raw 'generation_integrated_qa.js')
   Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'fixtures') -Filter '*.json' | Copy-Item -Destination $raw
   $hashes=@()
   Get-ChildItem -LiteralPath (Join-Path $repo 'static') -File | Where-Object { $_.Extension -in '.js','.css','.html' } | ForEach-Object {
@@ -35,7 +43,7 @@ if ($PreparedProject) {
     $hashes += "$sourceHash  static/$($_.Name)"
   }
   $hashes | Sort-Object | Set-Content -Encoding utf8 (Join-Path $qa 'static.sha256')
-  $manifest=[IO.File]::ReadAllText((Join-Path $repo 'android/AndroidManifest.xml')).Replace('package="site.arcol.imagestudio"','package="site.arcol.imagestudio.qa"').Replace('android:name=".MainActivity"','android:name="site.arcol.imagestudio.MainActivity"').Replace('</manifest>','<instrumentation android:name="site.arcol.imagestudio.VisualInstrumentation" android:targetPackage="site.arcol.imagestudio.qa" /></manifest>')
+  $manifest=[IO.File]::ReadAllText((Join-Path $repo 'android/AndroidManifest.xml')).Replace('android:usesCleartextTraffic="false"','android:usesCleartextTraffic="true"').Replace('package="site.arcol.imagestudio"','package="site.arcol.imagestudio.qa"').Replace('android:name=".MainActivity"','android:name="site.arcol.imagestudio.MainActivity"').Replace('</manifest>','<instrumentation android:name="site.arcol.imagestudio.VisualInstrumentation" android:targetPackage="site.arcol.imagestudio.qa" /></manifest>')
   [IO.File]::WriteAllText((Join-Path $native 'AndroidManifest.xml'),$manifest)
   # The QA activity waits for the local intercepted fixture instead of loading HOME.
   $activity=Join-Path $native 'src/site/arcol/imagestudio/MainActivity.java'
@@ -64,8 +72,13 @@ $adb=Join-Path $SdkRoot 'platform-tools/adb.exe'
 & $adb -s $DeviceSerial install -r (Join-Path $qa 'output/image-studio.apk')
 if ($LASTEXITCODE -ne 0) { throw 'QA install failed; existing app data was not cleared.' }
 & $adb -s $DeviceSerial shell am force-stop site.arcol.imagestudio.qa
-$result=& $adb -s $DeviceSerial shell am instrument -w site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
+if ($LiveFixturePort) {
+  if (!$LiveFixtureToken -or !$LiveNormalId -or !$LiveUpscaleId -or !$LiveAssetId) { throw 'Live fixture requires its synthetic token and three IDs.' }
+  $result=& $adb -s $DeviceSerial shell am instrument -w -e live 1 -e port $LiveFixturePort -e token $LiveFixtureToken -e normal $LiveNormalId -e upscale $LiveUpscaleId -e asset $LiveAssetId site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
+} else {
+  $result=& $adb -s $DeviceSerial shell am instrument -w site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
+}
 $result
-if (($result -join "`n") -notmatch 'PASS: WebView theme captures') { throw 'WebView visual and incremental checks failed.' }
+if (($result -join "`n") -notmatch 'PASS: (WebView theme captures|live SQLite pages and screenshots)') { throw 'WebView visual and incremental checks failed.' }
 Write-Output "Fixture hashes: $(Join-Path $qa 'static.sha256')"
 Write-Output 'The script does not start or stop a device; shut down any agent-started emulator immediately after active testing.'

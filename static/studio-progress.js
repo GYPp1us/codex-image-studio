@@ -9,7 +9,7 @@ const StudioProgress=(()=>{
     const level=task.up.levels[index],raw=level.raw||{};
     const history=task.raw?.progress?.timeline?.find(p=>p.index===(raw.index||index+1))||raw.progress||{};
     const children=history.tiles?.length?history.tiles:task.raw?.progress?.level===index+1?task.raw.progress.children||[]:[];
-    return {task,level,index,history,children,count:children.length||raw.tile_count||level.tiles.length,complete:success(raw.status),key:`${task.id}:${index}`};
+    return {task,level,index,history,children,count:children.length||raw.tile_count||level.tiles.length,complete:success(raw.status),calls:task.raw?.options?.generation?(task.raw.options.generation.image_backend?.transport==='images'?['sending','generating','receiving']:['sending','dispatching','generating','receiving']):calls,key:`${task.id}:${index}`};
   }
   function short(task,width){
     if(task.status==='done')return '';
@@ -20,12 +20,12 @@ const StudioProgress=(()=>{
     const levels=all?task.up.levels.map((_,i)=>i):[task.up.cur];
     return levels.map(index=>{
       const m=model(task,index),id=key+':'+m.key;models.set(id,m);
-      return `<section class="composite-progress" data-progress-board="${id}" aria-label="第 ${index+1} 级各图块与合成阶段"><header><span>第 ${index+1} 级</span><span class="progress-caption">${m.count} 块 · 发送 / 思考 / 生图 / 回传</span><button class="progress-follow" type="button">跟随当前</button></header><div class="progress-edge"><div class="progress-board-scroll" tabindex="0" aria-label="横向滚动查看所有图块"><div class="progress-board-spacer" data-layout="width:${(m.count+8)*WIDTH}px"><div class="progress-board-cells"></div></div></div></div><div class="progress-legend"><span><i data-state="done"></i>检查点</span><span><i data-state="running"></i>进行中</span><span><i data-state="failed"></i>失败</span><span>整列表示全图处理步骤</span></div></section>`;
+      return `<section class="composite-progress" data-progress-board="${id}" data-layout="--call-rows:${m.calls.length}" aria-label="第 ${index+1} 级各图块与合成阶段"><header><span>第 ${index+1} 级</span><span class="progress-caption">${m.count} 块 · ${m.calls.map(x=>({sending:"发送",thinking:"思考",dispatching:"派发",generating:"生图",receiving:"回传"})[x]).join(" / ")}</span><button class="progress-follow" type="button">跟随当前</button></header><div class="progress-edge"><div class="progress-board-scroll" tabindex="0" aria-label="横向滚动查看所有图块"><div class="progress-board-spacer" data-layout="width:${(m.count+8)*WIDTH}px"><div class="progress-board-cells"></div></div></div></div><div class="progress-legend"><span><i data-state="done"></i>检查点</span><span><i data-state="running"></i>进行中</span><span><i data-state="failed"></i>失败</span><span>整列表示全图处理步骤</span></div></section>`;
     }).join('');
   }
   function tileState(tile,row,m){
     if(m.complete||success(tile.state||tile.status))return 'done';
-    const stage=calls.indexOf(tile.stage),state=tile.state||tile.status;
+    let key=tile.stage;if(m.task.raw?.options?.generation){if(key==='thinking')key='dispatching';if(key==='saving')key='receiving';if(m.calls.length===3&&['dispatching','polishing'].includes(key))key='generating';}const stage=m.calls.indexOf(key),state=tile.state||tile.status;
     if(stage<0)return state==='failed'&&row===0?'failed':'queued';
     if(row<stage)return 'done';
     if(row>stage)return 'queued';
@@ -36,7 +36,7 @@ const StudioProgress=(()=>{
     if(phase){const [key,label]=phase,state=m.complete?'done':m.history.phases?.[key]?.status||'queued',normalized=success(state)?'done':state==='cancelled'?'cancelled':state==='failed'?'failed':state==='running'?'running':'queued';
       return `<div class="progress-column whole" data-phase="${key}" title="${label} · ${normalized==='done'?'已完成':normalized==='failed'?'失败':normalized==='running'?'进行中':'等待'}"><i class="work-cell merged" data-state="${normalized}"></i><span>${label}</span></div>`;}
     const i=index-2,tile=m.children[i]||{index:i+1},number=tile.index||i+1;
-    return `<div class="progress-column" data-tile="${number-1}">${calls.map((stage,row)=>{const state=tileState(tile,row,m);return `<i class="work-cell" data-stage="${stage}" data-state="${state}" title="第 ${number} 块 · ${callNames[row]} · ${state==='done'?'已完成':state==='failed'?'失败':state==='running'?'进行中':'等待'}"></i>`;}).join('')}<span title="第 ${number} 块">${number}</span></div>`;
+    return `<div class="progress-column" data-tile="${number-1}">${m.calls.map((stage,row)=>{const state=tileState(tile,row,m);return `<i class="work-cell" data-stage="${stage}" data-state="${state}" title="第 ${number} 块 · ${({sending:"发送",thinking:"思考",dispatching:"派发",generating:"生图",receiving:"回传"})[stage]} · ${state==='done'?'已完成':state==='failed'?'失败':state==='running'?'进行中':'等待'}"></i>`;}).join('')}<span title="第 ${number} 块">${number}</span></div>`;
   }
   function activeColumn(m){
     const phase=m.history.phase||taskPhase(m.task);
