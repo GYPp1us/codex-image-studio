@@ -1,0 +1,289 @@
+[
+  {
+    "case": "polish",
+    "started_s": 0.0,
+    "partials": [],
+    "stages": [
+      {
+        "stage": "polishing",
+        "arrival_s": 0.002
+      }
+    ],
+    "request": {
+      "transport": "responses",
+      "response_model": "gpt-6.1-sol",
+      "prompt": "A simple blue triangle on a plain white background, no text."
+    },
+    "x-codex-image-turn-id_sha256": "83209752fc8838186a024eb559a1ea0feb62678717a842a9222395175633c523",
+    "session_id_sha256": "d2b61a28feac3eed74184c614fd845deadd29d3c4ec9504e6809046919f2a288",
+    "x-client-request-id_sha256": "d2b61a28feac3eed74184c614fd845deadd29d3c4ec9504e6809046919f2a288",
+    "http_status": 200,
+    "http_headers": {},
+    "headers_at_s": 1.038,
+    "event_types": [
+      "response.created",
+      "response.in_progress",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.output_text.delta",
+      "response.metadata",
+      "response.output_text.done",
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed"
+    ],
+    "id_sha256": [
+      "74248b1b55b229b3575e8a25fc2f77adc8fd4f215db56c7fc4b12c39567112cf",
+      "74248b1b55b229b3575e8a25fc2f77adc8fd4f215db56c7fc4b12c39567112cf",
+      "ae0fbc030a5d35350359b69ec2e3597608239986aa8a1609380df651f904ff04",
+      "ae0fbc030a5d35350359b69ec2e3597608239986aa8a1609380df651f904ff04",
+      "74248b1b55b229b3575e8a25fc2f77adc8fd4f215db56c7fc4b12c39567112cf",
+      "ae0fbc030a5d35350359b69ec2e3597608239986aa8a1609380df651f904ff04"
+    ],
+    "requested": {
+      "response_model": "gpt-6.1-sol",
+      "reference_count": 0,
+      "effort": null
+    },
+    "provider_reported": {
+      "response_model": "gpt-6.1-sol"
+    },
+    "usage": {
+      "input_tokens": 37,
+      "output_tokens": 18,
+      "total_tokens": 55
+    },
+    "text_sha256": "04cd12856611331e874f958b48c66984034d00e60b69bf173ac745097822b586",
+    "text_chars": 73,
+    "outcome": "success",
+    "finished_s": 4.295,
+    "elapsed_s": 4.295
+  },
+  {
+    "case": "images",
+    "started_s": 4.295,
+    "partials": [],
+    "stages": [
+      {
+        "stage": "sending",
+        "arrival_s": 4.296
+      },
+      {
+        "stage": "generating",
+        "arrival_s": 6.142
+      },
+      {
+        "stage": "receiving",
+        "arrival_s": 22.754
+      }
+    ],
+    "request": {
+      "transport": "images",
+      "image_model": "gpt-image-2",
+      "size": "1024x1536",
+      "quality": "auto",
+      "partial_images": 2,
+      "response_model": null,
+      "prompt": "A simple blue triangle on a plain white background, no text."
+    },
+    "x-codex-image-turn-id_sha256": "4c292759ec832fa21d81aa1fd9e9911b9627f1aa604d4b1f4992927591b4cdb8",
+    "session_id_sha256": "b1849e9a63bfe0b9f3eb3b15b4262eaab8ba4457d9e73ada2ff3d2149b72ca97",
+    "x-client-request-id_sha256": "b1849e9a63bfe0b9f3eb3b15b4262eaab8ba4457d9e73ada2ff3d2149b72ca97",
+    "http_status": 200,
+    "http_headers": {
+      "content-type": "text/event-stream; charset=utf-8"
+    },
+    "headers_at_s": 6.142,
+    "event_types": [
+      "keepalive",
+      "image_generation.completed"
+    ],
+    "generation_id_sha256": [
+      "d99bfe209ac228ddcc13b2a0902e78e702fca6ffd81f0bfc4d8054bea70558bd"
+    ],
+    "final": {
+      "format": "PNG",
+      "width": 1536,
+      "height": 1024,
+      "file": "images-final.png",
+      "sha256": "66a3a1a2177e96c92f6cc750607f9189817226e7d17b116515c38b9ba003c2f9",
+      "bytes": 990130
+    },
+    "requested": {
+      "image_model": "gpt-image-2",
+      "response_model": null,
+      "quality": "auto",
+      "size": "1024x1536",
+      "background": "auto",
+      "output_format": null,
+      "transport": "images",
+      "partial_images": 2,
+      "effort": null,
+      "stream": true,
+      "tool_choice": null,
+      "reference_count": 0
+    },
+    "provider_reported": {
+      "size": "1536x1024",
+      "quality": "low",
+      "background": "opaque",
+      "output_format": "png"
+    },
+    "actual_image": {
+      "width": 1536,
+      "height": 1024,
+      "format": "png",
+      "bytes": 990130
+    },
+    "usage": {
+      "input_tokens": 19,
+      "output_tokens": 343,
+      "total_tokens": 362
+    },
+    "outcome": "success",
+    "finished_s": 22.785,
+    "elapsed_s": 18.49
+  },
+  {
+    "case": "responses",
+    "started_s": 22.785,
+    "partials": [
+      {
+        "event_type": "response.image_generation_call.partial_image",
+        "index": 0,
+        "arrival_s": 35.676,
+        "format": "PNG",
+        "width": 1347,
+        "height": 1167,
+        "file": "responses-partial-1.png",
+        "sha256": "6e347b622557aadb5aefeeb31d17e0cf935f0a545d3d604c141b3e4919fe1b03",
+        "bytes": 1008196
+      },
+      {
+        "event_type": "response.image_generation_call.partial_image",
+        "index": 1,
+        "arrival_s": 39.626,
+        "format": "PNG",
+        "width": 1347,
+        "height": 1167,
+        "file": "responses-partial-2.png",
+        "sha256": "3b45a249e8f209fab72ecad94c74c950542d9dcbc0250888d4561190b2dbde4f",
+        "bytes": 1006324
+      }
+    ],
+    "stages": [
+      {
+        "stage": "sending",
+        "arrival_s": 22.786
+      },
+      {
+        "stage": "dispatching",
+        "arrival_s": 23.373
+      },
+      {
+        "stage": "generating",
+        "arrival_s": 24.608
+      },
+      {
+        "stage": "receiving",
+        "arrival_s": 45.192
+      }
+    ],
+    "request": {
+      "transport": "responses",
+      "image_model": "gpt-image-2",
+      "size": "1024x1536",
+      "quality": "auto",
+      "partial_images": 2,
+      "response_model": "gpt-6.1-sol",
+      "prompt": "A simple blue triangle on a plain white background, no text."
+    },
+    "x-codex-image-turn-id_sha256": "57b3e405e87843e07bed0cff5cff337f0690aa57b22f63ec65983c84c8256f15",
+    "session_id_sha256": "ad8aebbbae20916460c14d9fb3bd0cfaf2fef0a8217cf2f4eac8cb0efc028f41",
+    "x-client-request-id_sha256": "ad8aebbbae20916460c14d9fb3bd0cfaf2fef0a8217cf2f4eac8cb0efc028f41",
+    "http_status": 200,
+    "http_headers": {},
+    "headers_at_s": 23.372,
+    "event_types": [
+      "response.created",
+      "response.in_progress",
+      "response.output_item.added",
+      "response.image_generation_call.in_progress",
+      "response.image_generation_call.generating",
+      "response.image_generation_call.completed",
+      "response.output_item.done",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.metadata",
+      "response.output_text.done",
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed"
+    ],
+    "id_sha256": [
+      "47d387991f0195dde06d112e46613f3060db4f0a4d2e5455428509dd87390df3",
+      "47d387991f0195dde06d112e46613f3060db4f0a4d2e5455428509dd87390df3",
+      "4aaaaf7a80f5305e76cb770713482283f3fc3fbdb2c19ef8850f20df37ddaafb",
+      "4aaaaf7a80f5305e76cb770713482283f3fc3fbdb2c19ef8850f20df37ddaafb",
+      "cea220d50a6692b99abe7f7d19906bbcb0e1c0656f359c2c069a620f0c5e36d3",
+      "cea220d50a6692b99abe7f7d19906bbcb0e1c0656f359c2c069a620f0c5e36d3",
+      "47d387991f0195dde06d112e46613f3060db4f0a4d2e5455428509dd87390df3"
+    ],
+    "final": {
+      "format": "PNG",
+      "width": 1347,
+      "height": 1167,
+      "file": "responses-final.png",
+      "sha256": "889dd65e39ed2de1e0077f37da7b52ca3e3080de5e95a2a543c1a5938a896e52",
+      "bytes": 1006978
+    },
+    "requested": {
+      "image_model": "gpt-image-2",
+      "response_model": "gpt-6.1-sol",
+      "quality": "auto",
+      "size": "1024x1536",
+      "background": "auto",
+      "output_format": "png",
+      "transport": "responses",
+      "partial_images": 2,
+      "effort": null,
+      "stream": true,
+      "tool_choice": "image_generation",
+      "reference_count": 0
+    },
+    "provider_reported": {
+      "response_model": "gpt-6.1-sol",
+      "size": "1347x1167",
+      "quality": "low",
+      "background": "opaque",
+      "output_format": "png"
+    },
+    "actual_image": {
+      "width": 1347,
+      "height": 1167,
+      "format": "png",
+      "bytes": 1006978
+    },
+    "usage": {
+      "input_tokens": 6142,
+      "output_tokens": 63,
+      "total_tokens": 6205
+    },
+    "outcome": "success",
+    "finished_s": 45.226,
+    "elapsed_s": 22.441
+  }
+]
