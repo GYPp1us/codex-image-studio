@@ -1,0 +1,45 @@
+/* Pending feedback adds no layout width and never substitutes button content. */
+[data-pending="1"]{position:relative;cursor:wait!important;opacity:.8!important}
+[data-pending="1"]>.action-spinner{position:absolute;right:8px;top:50%;width:14px;height:14px;margin-top:-7px;border:1.7px solid currentColor;border-right-color:transparent;border-radius:50%;opacity:0;animation:action-spin .85s linear infinite,action-reveal 1ms 120ms forwards;pointer-events:none}
+.icon-btn[data-pending="1"]>svg,.qe-send[data-pending="1"]>svg{opacity:0}
+.icon-btn[data-pending="1"]>.action-spinner,.qe-send[data-pending="1"]>.action-spinner{right:50%;margin-right:-7px}
+.pause-ctl[data-pending="1"]>.switch{opacity:0}
+.pause-ctl[data-pending="1"]>.action-spinner{right:12px}
+@keyframes action-spin{to{transform:rotate(360deg)}}
+@keyframes action-reveal{to{opacity:1}}
+html.rm .action-spinner,html[data-motion="reduce"] .action-spinner{animation:none;border-style:dotted;opacity:1}
+.switch.on,.pick.on .ck,.pill-btn.strong,.primary,.gen-btn,.qe-sheet .qe-send,.fx-row.on .fx-ck,.hit.on .hc{background:var(--sage-ink);color:var(--on-accent,#fffefa)}
+.switch.on::after{background:var(--on-accent,#fffefa)}
+.opt.on{border-color:var(--sage-ink);box-shadow:inset 0 0 0 1px var(--sage-ink);color:var(--sage-ink)}
+.mini-seg button.on,.fx-row.on .fx-ck{border-color:var(--sage-ink);color:var(--sage-ink)}
+.mini-seg button.on,.seg button.on,.mode-seg button.on,.tab.active{color:var(--sage-ink)}
+.fx-row.on .fx-ck{color:var(--on-accent,#fffefa)}
+.cache-bar i{background:var(--sage-ink)}
+.rd-chip.on,.rd-submit{background:var(--sage-2);color:var(--sage-ink)}
+.sel.on{border-color:var(--sage-ink);box-shadow:0 0 0 3px var(--sage)}.sel.on .no{background:var(--sage-ink);color:var(--on-accent)}
+.qe-bar,.viewer.qe-on .qe-bar{background:var(--glass-tint,rgba(24,34,21,.82));border-color:rgba(255,255,255,.26);box-shadow:0 3px 18px rgba(0,0,0,.14)}
+.qe-chips button,.qe-meta{background:var(--glass-tint,rgba(24,34,21,.82));color:rgba(255,255,255,.9)}
+.qe-bar input::placeholder{color:rgba(255,255,255,.75)}
+.qe-sheet .qe-bar{background:var(--surface-2);box-shadow:none;border-color:var(--line)}
+.qe-sheet .qe-meta{background:none;color:var(--ink-2)}
+.preview-loading{position:absolute;left:16px;top:calc(var(--safe-top) + 62px);display:flex;gap:7px;align-items:center;padding:6px 9px;border-radius:20px;background:var(--glass-tint,rgba(24,34,21,.82));color:#fff;font-size:11px;pointer-events:none;z-index:3}
+.preview-loading .spin{width:12px;height:12px}
+.slide:not([data-loading="1"]):not([data-loading="error"])>.preview-loading{display:none}
+.preview-loading .retry-label{display:none}
+.slide[data-loading="error"]>.preview-loading{pointer-events:auto}
+.slide[data-loading="error"]>.preview-loading .spin,.slide[data-loading="error"]>.preview-loading .loading-label{display:none}
+.slide[data-loading="error"]>.preview-loading .retry-label{display:block}
+.storage-meter{display:grid;gap:11px;padding:4px 16px 16px}
+.storage-scale{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2)}
+.storage-scale b{font-size:12px;font-weight:550;margin-left:auto;color:var(--ink)}
+.storage-track{height:10px;border-radius:6px;background:var(--surface-2);overflow:hidden;display:flex;margin-top:6px}
+.storage-track i{height:100%;display:block;min-width:0;transition:width .4s var(--e-std)}
+.storage-track .used{background:var(--sage-ink)}
+.storage-track .available{background:var(--sage-2)}
+.storage-track .other{background:var(--ink-3);opacity:.4}
+.storage-key{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--ink-2)}
+.storage-key span{display:flex;gap:5px;align-items:center}
+.storage-key i{width:7px;height:7px;border-radius:2px;background:var(--sage-ink)}
+.storage-key .available{background:var(--sage-2)}
+.storage-key .other{background:var(--ink-3);opacity:.4}
+.field-save-state{display:flex;align-items:center;gap:6px;min-height:22px;margin:4px 0 8px;color:var(--ink-3);font-size:11px}.field-save-state.error{color:var(--red)}.field-save-state .spin{width:11px;height:11px}

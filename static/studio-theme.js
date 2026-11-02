@@ -19,6 +19,7 @@ const StudioTheme=(()=>{
     const strong=mix(dark?[23,25,22]:[255,254,250],rgb,dark?.42:.26);
     for(const [name,color] of Object.entries({'--sage':surface,'--sage-2':strong,'--sage-ink':ink,'--accent':rgb}))root.style.setProperty(name,hex(color));
     root.style.setProperty('--on-accent',dark?'#141612':'#fffefa');
+    root.style.setProperty('--glass-tint',hex(mix(rgb,[0,0,0],.78))+'df');
     if(save)try{localStorage.setItem(key,JSON.stringify(preference));}catch{}
     refreshChrome();document.dispatchEvent(new window.Event('studio-theme-change'));
     return {...preference};

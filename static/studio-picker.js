@@ -4,8 +4,9 @@ const StudioPicker=(()=>{
     const single=!!opt.single,selected=new Set(single?[]:(opt.refs||S.composer.refs));
     const initialCount=selected.size;
     const pages={lib:{ids:[],offset:0,total:0,ready:false,busy:false},works:{ids:[],offset:0,total:0,ready:false,busy:false}};
-    let tab=single?'works':'lib',disposed=false,observer=null,uploading=false;
-    const L=openSheet({stack:true,cls:'reference-picker',title:opt.title||'选择参考图',html:`<div class="seg" id="pk-seg"><span class="ind"></span><button data-pk="tab" data-v="lib">参考图库</button><button data-pk="tab" data-v="works">作品</button></div><button class="secondary pk-upload" data-pk="upload">${icon('upload',16)}从相册上传</button><input type="file" id="pk-file" hidden accept="image/png,image/jpeg,image/webp,image/tiff" ${single?'':'multiple'}><div class="pk-scroll"><p class="note pk-hint">点图片放大预览${single?'':'，点右上角勾选'}</p><div class="pick-grid" id="pk-grid"></div><p class="empty" id="pk-empty" hidden></p><button class="secondary load-more" data-pk="more">加载更多</button></div><footer class="pk-footer"><span id="pk-count" aria-live="polite"></span><button class="primary" id="pk-ok" data-pk="ok" ${single?'hidden':''}>加入</button></footer>`});
+    let tab=single?'works':'lib',disposed=false,observer=null,uploading=false,uploadIndex=0,uploadTotal=0,uploadController=null;
+    const uploadKey='reference-upload:'+uid('operation');
+    const L=openSheet({stack:true,cls:'reference-picker',title:opt.title||'选择参考图',html:`<div class="seg" id="pk-seg"><span class="ind"></span><button data-pk="tab" data-v="lib">参考图库</button><button data-pk="tab" data-v="works">作品</button></div><button class="secondary pk-upload" data-pk="upload">${icon('upload',16)}<span class="pk-upload-label">从相册上传</span></button><input type="file" id="pk-file" hidden accept="image/png,image/jpeg,image/webp,image/tiff" ${single?'':'multiple'}><div class="pk-scroll"><p class="note pk-hint">点图片放大预览${single?'':'，点右上角勾选'}</p><div class="pick-grid" id="pk-grid"></div><p class="empty" id="pk-empty" hidden></p><button class="secondary load-more" data-pk="more">加载更多</button></div><footer class="pk-footer"><span id="pk-count" aria-live="polite"></span><button class="primary" id="pk-ok" data-pk="ok" ${single?'hidden':''}>加入</button></footer>`});
     const grid=$('#pk-grid',L),scroll=$('.pk-scroll',L),more=$('[data-pk="more"]',L),file=$('#pk-file',L);
     function paint(){
       if(disposed)return;const page=pages[tab];
@@ -13,9 +14,10 @@ const StudioPicker=(()=>{
       for(const tile of grid.children){tile.classList.toggle('on',selected.has(tile.dataset.id));tile.querySelector('.ck')?.setAttribute('aria-pressed',String(selected.has(tile.dataset.id)));}
       const empty=$('#pk-empty',L);empty.hidden=!!page.ids.length;empty.textContent=page.busy?'正在读取图片…':page.error?'图片未能加载，请重试':page.ready?'这里还没有图片':'';
       more.hidden=page.ready&&page.offset>=page.total&&!page.error;more.disabled=page.busy;more.textContent=page.busy?'正在加载…':page.error?'重试加载':'加载更多';
-      $('#pk-count',L).textContent=single?'预览后选择要使用的图片':`已选 ${selected.size} / 8 张`;
+      $('#pk-count',L).textContent=uploading?`正在上传 ${uploadIndex} / ${uploadTotal} 张`:(single?'预览后选择要使用的图片':`已选 ${selected.size} / 8 张`);
       const ok=$('#pk-ok',L);ok.disabled=uploading||!selected.size&&!initialCount;ok.textContent=selected.size?`加入选中 · ${selected.size} 张`:initialCount?'移除全部参考图':'加入';
       $('[data-pk="upload"]',L).disabled=uploading;
+      $('.pk-upload-label',L).textContent=uploading?`正在上传 ${uploadIndex} / ${uploadTotal} 张`:'从相册上传';grid.inert=uploading&&single;
       $$('#pk-seg button',L).forEach(b=>b.classList.toggle('on',b.dataset.v===tab));placeInd($('#pk-seg',L),true);
     }
     async function load(which=tab){
@@ -42,16 +44,19 @@ const StudioPicker=(()=>{
     }
     L.addEventListener('click',click);
     file.addEventListener('change',async()=>{
-      const files=[...file.files];if(!files.length)return;uploading=true;paint();let count=0;
-      try{for(const item of files){if(disposed)break;if(!single&&selected.size>=8){toast('已选满 8 张，请先移除部分图片');break;}
-        const body=new FormData();body.append('file',item);const data=await store.api('/api/assets',{method:'POST',body});if(disposed)return;
-        const image=store.remember(data.asset);store.project();count++;if(single){await choose(image.id);return;}selected.add(image.id);
-      }
-      if(!disposed&&count){tab='lib';pages.lib={ids:[],offset:0,total:0,ready:false,busy:false};scroll.scrollTop=0;await load('lib');toast(`已上传 ${count} 张，可预览后加入`);}
-      }catch(error){store.report(error);}finally{uploading=false;file.value='';paint();}
+      const files=[...file.files];if(disposed||uploading||!files.length)return;if(!single&&selected.size>=8){toast('已选满 8 张，请先移除部分图片');file.value='';return;}
+      uploading=true;uploadIndex=1;uploadTotal=single?1:files.length;uploadController=new AbortController();let count=0;
+      try{await StudioFeedback.run(uploadKey,$('[data-pk="upload"]',L),async()=>{
+        for(const item of files){if(disposed)break;if(!single&&selected.size>=8){toast('已选满 8 张，请先移除部分图片');break;}
+          uploadIndex=count+1;paint();const body=new FormData();body.append('file',item);
+          const data=await store.api('/api/assets',{method:'POST',body,signal:uploadController.signal});if(disposed)return;
+          const image=store.remember(data.asset);store.project();count++;if(single){await choose(image.id);return;}if(selected.size<8)selected.add(image.id);
+        }
+        if(!disposed&&count){tab='lib';pages.lib={ids:[],offset:0,total:0,ready:false,busy:false};scroll.scrollTop=0;await load('lib');toast(`已上传 ${count} 张，可预览后加入`);}
+      });}catch(error){if(!disposed)store.report(error);}finally{uploading=false;uploadController=null;file.value='';paint();}
     });
     if(typeof IntersectionObserver!=='undefined'){observer=new IntersectionObserver(entries=>{if(entries.some(x=>x.isIntersecting)&&!pages[tab].error)load();},{root:scroll,rootMargin:'160px'});observer.observe(more);}
-    L.cleanup=()=>{disposed=true;observer?.disconnect();L.removeEventListener('click',click);};
+    L.cleanup=()=>{disposed=true;uploadController?.abort();observer?.disconnect();L.removeEventListener('click',click);};
     paint();await load();return L;
   }
   return {open};
