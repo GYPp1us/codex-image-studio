@@ -8,6 +8,7 @@ const StudioReferences=(()=>{
     if(b.press)return;
     const ids=options.read();
     syncList(box,[...ids.map(id=>({id})),{id:'__add'}],x=>x.id,x=>x.id==='__add'?`<button class="ref-add" data-reference="add" aria-label="添加参考图">${icon('plus',22)}</button>`:`<div class="ref" data-ref-id="${x.id}"><button class="ref-preview" data-reference="view" data-id="${x.id}" aria-label="放大参考图 ${ids.indexOf(x.id)+1}；长按或 Alt 加左右键排序" aria-roledescription="可排序参考图"><img draggable="false" src="${src(img(x.id))}" alt="参考图 ${ids.indexOf(x.id)+1}"></button><button class="rm" data-reference="remove" data-id="${x.id}" aria-label="移除参考图">${icon('x',12)}</button><span class="ref-number">${ids.indexOf(x.id)+1}</span></div>`);
+    ids.forEach((id,index)=>{const el=box.querySelector(`[data-ref-id="${id}"]`),number=el?.querySelector('.ref-number'),view=el?.querySelector('.ref-preview'),image=view?.querySelector('img');if(number)number.textContent=String(index+1);if(view)view.setAttribute('aria-label',`放大参考图 ${index+1}；长按或 Alt 加左右键排序`);if(image)image.alt=`参考图 ${index+1}`;});
   }
   function bind(box,b){
     let frame=0,lastFrame=0;
@@ -18,6 +19,7 @@ const StudioReferences=(()=>{
       const order=others.map(el=>el.dataset.refId),i=next?order.indexOf(next.dataset.refId):order.length;order.splice(i,0,d.id);
       if(order.join()===d.order.join())return;
       const before=new Map(others.map(el=>[el,el.getBoundingClientRect().left]));box.insertBefore(d.el,next||box.querySelector('.ref-add'));d.order=order;
+      order.forEach((id,index)=>{const el=box.querySelector(`[data-ref-id="${id}"]`),number=el?.querySelector('.ref-number'),view=el?.querySelector('.ref-preview'),image=view?.querySelector('img');if(number)number.textContent=String(index+1);if(view)view.setAttribute('aria-label',`放大参考图 ${index+1}；长按或 Alt 加左右键排序`);if(image)image.alt=`参考图 ${index+1}`;});
       for(const el of others){const dx=before.get(el)-el.getBoundingClientRect().left;if(dx){el.getAnimations().forEach(a=>a.cancel());el.animate([{transform:`translateX(${dx}px)`},{transform:'none'}],{duration:D(180),easing:E.emph});}}
     };
     const paint=now=>{

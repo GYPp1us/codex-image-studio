@@ -393,7 +393,7 @@ function toast(msg,o={}){
   const host=$("#toast");host.innerHTML=`<div class="toast"><span>${esc(msg)}</span>${o.action?`<button>${esc(o.action)}</button>`:""}</div>`;
   const el=host.firstChild;el.animate([{opacity:0,transform:"translateY(16px) scale(.97)"},{opacity:1,transform:"none"}],{duration:D(280),easing:E.emph});
   const hide=()=>{el.animate([{opacity:1},{opacity:0,transform:"translateY(8px)"}],{duration:D(180),easing:E.exit,fill:"forwards"}).finished.then(()=>el.remove());};
-  if(o.action)el.querySelector("button").onclick=()=>{clearTimeout(toastT);hide();o.run();};
+  if(o.action)el.querySelector("button").onclick=()=>{clearTimeout(toastT);el.remove();o.run();};
   clearTimeout(toastT);toastT=setTimeout(hide,o.ms||3400);placeToast();
 }
 function placeToast(){const t=$("#toast"),sheet=topSheet(),scr=typeof topScreen==="function"&&topScreen();
@@ -618,7 +618,7 @@ function goBatch(bid){const b=S.batches.find(x=>x.id===bid);if(!b)return;
   closeOverlays().then(()=>vt("tab",()=>{S.tab="queue";renderPage();})).then(()=>{const el=$(`.batch[data-id="${bid}"]`);if(el){el.scrollIntoView({block:"center",behavior:RM?"auto":"smooth"});el.classList.add("hl");setTimeout(()=>el.classList.remove("hl"),1700);}});}
 function flashChip(){setTimeout(()=>{const c=$("#into-chip")||$(".into-chip");if(c){c.classList.remove("flash");void c.offsetWidth;c.classList.add("flash");}},D(260));}
 function useAsRef(id){const c=S.composer;if(!c.refs.includes(id)){if(c.refs.length>=8)return toast("最多 8 张参考图");c.refs.push(id);}
-  toast(`已加入参考图（${c.refs.length}/8）`,{action:"去创作",run:()=>closeOverlays().then(()=>{S.mode="gen";if(S.tab==="create")renderPage();else return go("create");})});}
+  toast(`已加入参考图（${c.refs.length}/8）`,S.tab==="create"?{}:{action:"去创作",run:()=>closeOverlays().then(()=>{S.mode="gen";return go("create");})});}
 function reroll(...args){return StudioService.reroll(...args);}
 function deleteImage(...args){return StudioService.deleteImage(...args);}
 function loadTemplate(...args){return StudioService.loadTemplate(...args);}
@@ -662,7 +662,7 @@ function tplSheet(...args){return StudioService.tplSheet(...args);}
 /* ---- dispatcher ---- */
 let lp=null,lpFired=false;
 app.addEventListener("pointerdown",e=>{const t=e.target.closest("#page .tile");if(!t||e.button>0)return;
-  lp={t,x:e.clientX,y:e.clientY,timer:setTimeout(()=>{lpFired=true;t.classList.remove("pressing");t.animate([{transform:"scale(.94)"},{transform:"scale(1.03)"},{transform:"scale(1)"}],{duration:D(320),easing:E.std});navigator.vibrate?.(10);if(S.tab==='works')StudioSelection.begin(t.dataset.id);else imageMenu(t.dataset.id);lp=null;},480)};t.classList.add("pressing");});
+  lp={t,x:e.clientX,y:e.clientY,timer:setTimeout(()=>{lpFired=true;t.classList.remove("pressing");t.animate([{transform:"scale(.94)"},{transform:"scale(1.03)"},{transform:"scale(1)"}],{duration:D(320),easing:E.std});navigator.vibrate?.(10);if(S.tab==='works')StudioSelection.begin(t.dataset.id);else imageMenu(t.dataset.id);lp=null;},420)};t.classList.add("pressing");});
 const lpCancel=()=>{if(lp){clearTimeout(lp.timer);lp.t.classList.remove("pressing");lp=null;}};
 app.addEventListener("pointermove",e=>{if(lp&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)>10)lpCancel();});
 app.addEventListener("pointerup",lpCancel);app.addEventListener("pointercancel",lpCancel);

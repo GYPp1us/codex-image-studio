@@ -8,7 +8,7 @@ const StudioTasks=(()=>{
   function detailsHTML(j,a){
     return `${header('任务详情',fmtTime(j.created*1000))}<div class="scroll task-work-scroll"><main class="task-detail-main"><div data-task-status>${status(j)}</div><section class="task-section"><h2>提示词</h2><div class="prompt-box">${esc(j.prompt)}</div>${j.polished_prompt?`<details class="task-disclosure"><summary>润色后的提示词</summary><div class="prompt-box">${esc(j.polished_prompt)}</div></details>`:''}</section>
       ${j.outputs?.length?`<section class="task-section"><h2>结果</h2><div class="task-outputs">${j.outputs.map(im=>`<button data-act="img" data-id="${im.id}" data-list="batch:${j.batch_id}" aria-label="查看结果"><img src="${esc(im.thumbnail||im.url)}" alt=""><span>${im.width} × ${im.height}</span></button>`).join('')}</div></section>`:''}
-      <section class="task-section"><h2>执行日志</h2><details class="task-disclosure" data-task-log><summary>查看日志 <span class="muted small">${j.status==='running'?'持续更新':'保留原始执行记录'}</span></summary><pre class="prompt-box task-log" data-log-content>展开后读取日志…</pre><button class="secondary" data-log-refresh>刷新日志</button></details></section></main>
+      <section class="task-section"><h2>执行日志</h2><div data-task-log><pre class="prompt-box task-log" data-log-content>正在读取日志…</pre><button class="secondary" data-log-refresh>刷新日志</button><details class="task-disclosure"><summary>原始 JSONL</summary><pre class="prompt-box task-log" data-log-raw></pre></details></div></section></main>
       <aside class="task-detail-side"><section class="task-section"><h2>任务参数</h2><dl class="kv"><dt>模型</dt><dd>${esc(a.modelName(j.model))} · ${esc(j.effort)}</dd><dt>尝试</dt><dd>${j.attempt} / ${j.max_attempts}</dd><dt>创建</dt><dd>${fmtTime(j.created*1000)}</dd><dt>任务 ID</dt><dd class="task-id">${esc(j.id)}</dd></dl>${j.error?`<p class="form-err">${esc(j.error)}</p>`:''}${j.options.stitch?`<button class="secondary" data-act="up-detail" data-id="${j.id}">${icon('grid',16)}超分检查 · 尺寸、预算与修复</button>`:''}</section><section class="task-section" data-task-prompts></section></aside></div>`;
   }
   function upscaleHTML(j,a){
@@ -18,16 +18,16 @@ const StudioTasks=(()=>{
       <aside class="up-work-side"><section class="task-section"><h2>尺寸与调用预算</h2>${a.planHTML(im,j.options.stitch+'×',plan)}<p class="note">已调用 ${a.budget(plan?.calls)} · 缓存 ${a.bytes(j.cache_bytes||0)}</p></section><section class="task-section"><h2>任务统一要求</h2><p class="prompt-box">${esc(j.options.upscale_requirements||j.options.upscale_injection||'按原图保真增强')}</p><div class="btn-row"><button class="secondary" data-act="task-info" data-id="${j.id}">详情与日志</button>${['failed','cancelled'].includes(j.status)?`<button class="secondary" data-act="retry-job" data-id="${j.id}">从检查点重试</button>`:''}</div>${j.cache_clearable?`<button class="secondary" data-act="clear-task-cache" data-id="${j.id}">清理任务缓存</button>`:''}</section><section class="task-section" data-task-prompts></section></aside></div>`;
   }
   async function readLog(c,button){
-    if(!alive(c)||c.logPending)return;c.logPending=true;
-    const holder=c.el.querySelector('[data-log-content]');if(!holder)return;
-    try{await StudioFeedback.run('task-log:'+c.id,button||c.el.querySelector('[data-log-refresh]'),async()=>{const log=await c.adapter.api(`/api/jobs/${c.id}/log`);if(alive(c))holder.textContent=log.text;});}
+    if(!alive(c)||c.logPending)return;
+    const holder=c.el.querySelector('[data-log-content]');if(!holder)return;c.logPending=true;
+    try{await StudioFeedback.run('task-log:'+c.id,button||c.el.querySelector('[data-log-refresh]'),async()=>{const log=await c.adapter.api(`/api/jobs/${c.id}/log`);if(alive(c)){const raw=String(log.text||'');c.el.querySelector('[data-log-raw]').textContent=raw;holder.textContent=raw.split('\n').map(line=>{try{const event=JSON.parse(line);if(!event||typeof event!=='object')return line;const time=event.timestamp||event.time||event.ts||'',kind=event.type||event.event||event.level||(event.studio_attempt?`第 ${event.studio_attempt} 次尝试`:''),message=event.message||event.msg||event.text||event.error||event.item?.text||event.item?.message||event.item?.error||event.item?.type||'';return [time,kind,typeof message==='string'?message:JSON.stringify(message)].filter(Boolean).join(' · ')||line;}catch{return line;}}).join('\n')||'暂无日志';}});}
     catch(error){if(alive(c))holder.textContent=error.message;}finally{c.logPending=false;}
   }
   function mount(c,showLog){
     const a=c.adapter;c.el.innerHTML=c.mode==='upscale'?upscaleHTML(c.job,a):detailsHTML(c.job,a);hydrateIcons(c.el);StudioProgress.hydrate(c.el);
     c.el.querySelector('[data-task-refresh]').onclick=()=>reload(c);
     const disclosure=c.el.querySelector('[data-task-log]');
-    if(disclosure){disclosure.addEventListener('toggle',()=>{if(disclosure.open)readLog(c);});c.el.querySelector('[data-log-refresh]').onclick=e=>readLog(c,e.currentTarget);if(showLog){disclosure.open=true;requestAnimationFrame(()=>disclosure.scrollIntoView({block:'start',behavior:RM?'auto':'smooth'}));}}
+    if(disclosure){readLog(c);c.el.querySelector('[data-log-refresh]').onclick=e=>readLog(c,e.currentTarget);if(showLog)requestAnimationFrame(()=>disclosure.scrollIntoView({block:'start',behavior:RM?'auto':'smooth'}));}
     if(typeof StudioUpscalePrompts!=='undefined'&&c.job.options.stitch)StudioUpscalePrompts.mountTask(c.el.querySelector('[data-task-prompts]'),c.job,a.api);
   }
   async function reload(c){
@@ -55,7 +55,7 @@ const StudioTasks=(()=>{
       const board=c.el.querySelector('[data-task-board]'),t=c.adapter.task(c.job);if(board&&t.up){setHTML(board,StudioProgress.html(t,{all:true,key:'inspector'}));StudioProgress.hydrate(board);}
     }
     if(previous!==c.job.status)reload(c);
-    if(c.el.querySelector('[data-task-log]')?.open)readLog(c);
+    if(c.el.querySelector('[data-task-log]'))readLog(c);
   }
   return {open,update};
 })();

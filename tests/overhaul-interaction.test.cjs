@@ -83,8 +83,9 @@ test('reference motion before hold and cancelled drag preserve original order',a
  assert.deepEqual(order(f),['asset','neighbor','reference']);
  pointer(f,first,'pointerdown',20);f.flushTimers(420);pointer(f,box,'pointermove',230);await new Promise(resolve=>setImmediate(resolve));
  assert.deepEqual([...box.querySelectorAll('[data-ref-id]')].map(el=>el.dataset.refId),['neighbor','reference','asset'],'drag visibly changes temporary order before cancellation');
+ assert.deepEqual([...box.querySelectorAll('.ref-number')].map(el=>el.textContent),['1','2','3']);assert.match(box.querySelector('[data-ref-id="asset"] .ref-preview').getAttribute('aria-label'),/3/);
  pointer(f,box,'pointercancel',230);assert.deepEqual(order(f),['asset','neighbor','reference']);
- assert.deepEqual([...box.querySelectorAll('[data-ref-id]')].map(el=>el.dataset.refId),['asset','neighbor','reference'],'cancel restores display');
+ assert.deepEqual([...box.querySelectorAll('[data-ref-id]')].map(el=>el.dataset.refId),['asset','neighbor','reference'],'cancel restores display');assert.match(box.querySelector('[data-ref-id="asset"] .ref-preview').getAttribute('aria-label'),/1/);
 });
 // These scenarios require the integrated public behavior to settle before concrete
 // selectors can be selected. They are intentionally reported as pending, not passing.
@@ -119,7 +120,7 @@ test('viewer reports pending decode, failure, retry and success without discardi
 });
 test('works selection enters on hold, toggles items and back clears mode',async()=>{
  const f=await fixture({gallery:true});f.run('S.tab="works";renderPage()');const tile=f.document.querySelector('#page .tile');assert.ok(tile);
- pointer(f,tile,'pointerdown',30);f.flushTimers(480);assert.equal(f.run('StudioSelection.active()'),true);assert.equal(tile.getAttribute('aria-pressed'),'true');
+ pointer(f,tile,'pointerdown',30);f.flushTimers(480);assert.equal(f.run('StudioSelection.active()'),false);f.flushTimers(420);assert.equal(f.run('StudioSelection.active()'),true);assert.equal(tile.getAttribute('aria-pressed'),'true');
  tile.dispatchEvent(new f.context.window.Event('click',{bubbles:true,cancelable:true}));await new Promise(resolve=>setImmediate(resolve));
  // The synthetic click immediately following hold is intentionally suppressed.
  assert.equal(tile.getAttribute('aria-pressed'),'true');await f.run('back()');assert.equal(f.run('StudioSelection.active()'),false);
