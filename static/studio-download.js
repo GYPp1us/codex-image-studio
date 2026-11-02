@@ -4,9 +4,16 @@
 const StudioDownloads=(()=>{
   let current=null;
   const size=n=>n>=1048576?(n/1048576).toFixed(1)+' MB':Math.round(n/1024)+' KB';
+  async function fileInfo(blob,name){
+    const h=new Uint8Array(await blob.slice(0,12).arrayBuffer());
+    const png=h.length>=8&&h[0]===137&&h[1]===80&&h[2]===78&&h[3]===71&&h[4]===13&&h[5]===10&&h[6]===26&&h[7]===10;
+    const jpeg=h.length>=3&&h[0]===255&&h[1]===216&&h[2]===255;
+    const webp=h.length>=12&&String.fromCharCode(...h.slice(0,4))==='RIFF'&&String.fromCharCode(...h.slice(8,12))==='WEBP';
+    const extension=png?'png':jpeg?'jpg':webp?'webp':null;if(!extension)throw new Error('原图格式无法识别，请重新读取');
+    return {name:(name||'image').replace(/\.[^.]+$/,'')+'.'+extension,mime:png?'image/png':jpeg?'image/jpeg':'image/webp'};
+  }
   function cancel(){current?.dispose();current=null;}
   function open(image){
-    if(/ImageStudioAndroid\//.test(navigator.userAgent||'')){const link=document.createElement('a');link.href=image.url+'?download=1';link.download=image.name||'image.png';document.body.append(link);link.click();link.remove();toast('已交给系统下载管理器');return;}
     if(current?.id===image.id&&current.layer.isConnected)return;
     cancel();const controller=new AbortController();let objectURL=null,disposed=false,handedOff=false;
     const layer=openSheet({title:'下载原图',html:`<div class="download-status" role="status"><b class="download-label">正在准备原图…</b><progress class="download-progress" max="100" aria-label="原图下载进度"></progress><p class="note download-detail"></p></div><div class="download-actions"></div><p class="note download-error" role="alert" hidden></p>`});
@@ -20,11 +27,18 @@ const StudioDownloads=(()=>{
       label.textContent=state.done?'原图已准备好':percent===null?'正在下载原图…':`正在下载原图 · ${percent}%`;
       if(percent===null)bar.removeAttribute('value');else bar.value=percent;
       detail.textContent=state.total?`${size(state.loaded)} / ${size(state.total)}`:state.loaded?`已下载 ${size(state.loaded)}`:'正在读取…';
-    }}).then(blob=>{
-      if(!valid())return;objectURL=URL.createObjectURL(blob);bar.value=100;label.textContent='原图已准备好';detail.textContent=`${size(blob.size)} · ${image.width||image.w} × ${image.height||image.h}`;
-      const filename=(image.name||'image').replace(/\.[^.]+$/,'')+'.png';
+    }}).then(async blob=>{
+      if(!valid())return;
+      const info=await fileInfo(blob,image.name),filename=info.name;if(!valid())return;
+      if(StudioNativeDownloads.isApp()){
+        label.textContent='正在保存到下载文件夹…';bar.value=0;
+        const saved=await StudioNativeDownloads.save(blob,filename,{mime:info.mime,signal:controller.signal,onProgress:state=>{if(!valid())return;bar.value=state.loaded/Math.max(1,state.total)*100;detail.textContent=`${size(state.loaded)} / ${size(state.total)} · 已缓存原图`;} });
+        if(!valid())return;bar.value=100;label.textContent='已保存到下载文件夹';detail.textContent=`Downloads / ImageStudio / ${saved}`;
+        const done=document.createElement('button');done.className='primary';done.textContent='完成';done.onclick=()=>back();actions.append(done);return;
+      }
+      objectURL=URL.createObjectURL(blob);bar.value=100;label.textContent='原图已准备好';detail.textContent=`${size(blob.size)} · ${image.width||image.w} × ${image.height||image.h}`;
       const link=document.createElement('a');link.className='primary';link.href=objectURL;link.setAttribute('download',filename);link.textContent='下载原图';link.onclick=()=>{handedOff=true;};actions.append(link);
-      let file=null;try{file=new File([blob],filename,{type:blob.type});}catch{}
+      let file=null;try{file=new File([blob],filename,{type:info.mime});}catch{}
       let canShare=false;try{canShare=!!file&&typeof navigator.share==='function'&&!!navigator.canShare?.({files:[file]});}catch{}
       if(canShare){
         const save=document.createElement('button');save.className='primary';save.textContent='保存到相册 / 分享';link.className='secondary';actions.prepend(save);

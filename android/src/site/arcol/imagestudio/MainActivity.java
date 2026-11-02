@@ -1,7 +1,6 @@
 package site.arcol.imagestudio;
 
 import android.app.Activity;
-import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Color;
@@ -12,7 +11,6 @@ import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -43,6 +41,7 @@ public final class MainActivity extends Activity {
     private WebView web;
     private ChromeLayout root;
     private WebMessagePort chromePort;
+    private CacheDownloads downloads;
     private boolean viewer;
     private int topColor = Color.rgb(245,244,239), bottomColor = topColor;
     private LinearLayout offline;
@@ -52,6 +51,7 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         root = new ChromeLayout();
         web = new WebView(this);
+        downloads=new CacheDownloads(this,web,()->trusted(Uri.parse(web.getUrl()==null?"":web.getUrl())));
         web.setBackgroundColor(Color.rgb(250,249,246));
         root.addView(web, new FrameLayout.LayoutParams(-1,-1));
         setContentView(root);
@@ -80,7 +80,7 @@ public final class MainActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(true);
         settings.setSupportMultipleWindows(false);
-        settings.setUserAgentString(settings.getUserAgentString()+" ImageStudioAndroid/1.1");
+        settings.setUserAgentString(settings.getUserAgentString()+" ImageStudioAndroid/1.2");
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web,false);
         web.setWebViewClient(new WebViewClient() {
@@ -99,7 +99,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void onPageFinished(WebView view, String url) {
                 CookieManager.getInstance().flush();
-                if(trusted(Uri.parse(url)) && url.equals(view.getUrl())) connectChrome();
+                if(trusted(Uri.parse(url)) && url.equals(view.getUrl())){connectChrome();downloads.connect();}
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -117,7 +117,11 @@ public final class MainActivity extends Activity {
                 return true;
             }
         });
-        web.setDownloadListener((url,ua,disposition,mime,length)->download(Uri.parse(url),ua));
+        web.setDownloadListener((url,ua,disposition,mime,length)->{
+            Uri uri=Uri.parse(url);
+            if(trusted(uri)&&"/downloads/image-studio.apk".equals(uri.getPath()))openExternal(uri);
+            else Toast.makeText(this,"请使用图片预览中的保存按钮，直接保存已缓存原图",Toast.LENGTH_SHORT).show();
+        });
         if(Build.VERSION.SDK_INT>=33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::goBack);
         if(savedInstanceState==null || web.restoreState(savedInstanceState)==null)web.loadUrl(HOME);
     }
@@ -150,6 +154,7 @@ public final class MainActivity extends Activity {
         web.postWebMessage(new WebMessage("IMAGE_STUDIO_CHROME_PORT_V1",new WebMessagePort[]{ports[1]}),Uri.parse("https://image.arcol.site"));
     }
     private void resetChrome(){
+        if(downloads!=null)downloads.close();
         if(chromePort!=null){chromePort.close();chromePort=null;}
         viewer=false;topColor=Color.rgb(245,244,239);bottomColor=topColor;
         root.invalidate();applyChrome();
@@ -207,24 +212,6 @@ public final class MainActivity extends Activity {
         try {startActivity(new Intent(Intent.ACTION_VIEW,uri).addCategory(Intent.CATEGORY_BROWSABLE));}
         catch(Exception e){Toast.makeText(this,"无法打开外部浏览器，可复制链接继续",Toast.LENGTH_SHORT).show();}
     }
-    private void download(Uri uri,String userAgent) {
-        if(trusted(uri) && "/downloads/image-studio.apk".equals(uri.getPath())){openExternal(uri);return;}
-        if(!trusted(uri) || uri.getPath()==null || !uri.getPath().matches("/media/[a-f0-9]{32}")) {
-            Toast.makeText(this,"请在系统浏览器下载应用安装包",Toast.LENGTH_SHORT).show();return;
-        }
-        try {
-            DownloadManager.Request request=new DownloadManager.Request(uri);
-            String cookie=CookieManager.getInstance().getCookie(HOME);
-            if(cookie!=null)request.addRequestHeader("Cookie",cookie);
-            request.addRequestHeader("User-Agent",userAgent);
-            String filename="ImageStudio-"+uri.getLastPathSegment().substring(0,8)+"-"+System.currentTimeMillis()+".png";
-            request.setTitle(filename).setMimeType("image/png").setAllowedOverMetered(true);
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,filename);
-            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            ((DownloadManager)getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
-            Toast.makeText(this,"已开始保存到下载目录",Toast.LENGTH_SHORT).show();
-        }catch(Exception e){Toast.makeText(this,"无法保存，请检查系统下载管理器",Toast.LENGTH_SHORT).show();}
-    }
     private void showOffline(String message) {
         resetChrome();
         if(offline!=null)root.removeView(offline);
@@ -255,5 +242,5 @@ public final class MainActivity extends Activity {
     @Override protected void onPause(){CookieManager.getInstance().flush();web.onPause();super.onPause();}
     @Override protected void onResume(){super.onResume();if(web!=null){web.onResume();applyChrome();}}
     @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused && root!=null)applyChrome();}
-    @Override protected void onDestroy(){if(chromePort!=null){chromePort.close();chromePort=null;}if(fileCallback!=null)fileCallback.onReceiveValue(null);root.removeView(web);web.destroy();super.onDestroy();}
+    @Override protected void onDestroy(){if(downloads!=null)downloads.destroy();if(chromePort!=null){chromePort.close();chromePort=null;}if(fileCallback!=null)fileCallback.onReceiveValue(null);root.removeView(web);web.destroy();super.onDestroy();}
 }
