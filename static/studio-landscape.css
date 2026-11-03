@@ -79,3 +79,15 @@
   :is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .rd-row{grid-column:2;align-self:end}
   :is(.app.keyboard-visible,.app.compact-redraw) .viewer.redraw .rd-submit{margin:0;width:auto;min-height:44px;white-space:nowrap}
 }
+/* Explicit task/recovery columns replace automatic placement of individual fields. */
+@media(min-width:600px) and (min-aspect-ratio:4/3){
+  #screens>.task-details-workspace{left:var(--rail-width)}
+  .task-details-workspace .task-work-scroll{display:grid;grid-template-columns:minmax(0,1fr) minmax(225px,30%);align-items:start;gap:16px;padding:0 20px 24px}
+  .task-details-workspace .task-detail-side{display:block}.task-jumpbar{padding-left:20px;padding-right:20px;max-width:560px}
+  .fail-screen .fx-scroll{display:block;padding:0 20px 110px}
+  .fx-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,36%);gap:20px;align-items:start}
+  .fx-controls{display:block}.fx-visuals,.fx-controls{order:0}.fx-visuals{position:sticky;top:0}.fx-controls>.task-section:first-child{margin-top:0}
+  .fail-screen .fx-workspace #fx-view{position:static}.fail-screen .fx-bar{left:0;right:0;width:auto;padding:12px 20px calc(12px + env(safe-area-inset-bottom,0px))}
+  .fail-screen .fx-bar .primary{margin:0;height:42px}
+}
+@media(max-width:359px){.fail-screen .fx-bar{gap:8px}.fail-screen .fx-bar .primary{min-width:112px;font-size:12px}.task-jumpbar{padding-left:12px;padding-right:12px}}

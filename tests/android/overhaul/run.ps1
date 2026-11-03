@@ -5,6 +5,9 @@ param(
   [switch]$PrepareOnly,
   [string]$PreparedProject,
   [switch]$FullLive,
+  [switch]$Recovery,
+  [string]$LiveNoDiagId,
+  [string]$LiveRetryId,
   [int]$LiveFixturePort,
   [string]$LiveFixtureToken,
   [string]$LiveNormalId,
@@ -32,6 +35,7 @@ if ($PreparedProject) {
   Copy-Item -LiteralPath (Join-Path $repo 'tests/generation-visual-qa.js') -Destination (Join-Path $raw 'generation_visual_qa.js')
   Copy-Item -LiteralPath (Join-Path $repo 'tests/generation-browser-qa.js') -Destination (Join-Path $raw 'generation_browser_qa.js')
   Copy-Item -LiteralPath (Join-Path $repo 'tests/generation-integrated-qa.js') -Destination (Join-Path $raw 'generation_integrated_qa.js')
+  Copy-Item -LiteralPath (Join-Path $repo 'tests/task-recovery-visual-qa.js') -Destination (Join-Path $raw 'task_recovery_visual_qa.js')
   Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'fixtures') -Filter '*.json' | Copy-Item -Destination $raw
   $hashes=@()
   Get-ChildItem -LiteralPath (Join-Path $repo 'static') -File | Where-Object { $_.Extension -in '.js','.css','.html' } | ForEach-Object {
@@ -76,7 +80,9 @@ if ($LASTEXITCODE -ne 0) { throw 'QA install failed; existing app data was not c
 if ($LiveFixturePort) {
   if (!$LiveFixtureToken -or !$LiveNormalId -or !$LiveUpscaleId -or !$LiveAssetId) { throw 'Live fixture requires its synthetic token and three IDs.' }
   $fullValue=if ($FullLive) { '1' } else { '0' }
-  $result=& $adb -s $DeviceSerial shell am instrument -w -e live 1 -e full $fullValue -e port $LiveFixturePort -e token $LiveFixtureToken -e normal $LiveNormalId -e upscale $LiveUpscaleId -e asset $LiveAssetId site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
+  $recoveryArgs=@()
+  if ($Recovery) { if (!$LiveNoDiagId -or !$LiveRetryId) { throw 'Recovery requires separate no-checkpoint and retry synthetic IDs.' }; $recoveryArgs=@('-e','recovery','1','-e','nodiag',$LiveNoDiagId,'-e','retryid',$LiveRetryId) }
+  $result=& $adb -s $DeviceSerial shell am instrument -w -e live 1 -e full $fullValue @recoveryArgs -e port $LiveFixturePort -e token $LiveFixtureToken -e normal $LiveNormalId -e upscale $LiveUpscaleId -e asset $LiveAssetId site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
 } else {
   $result=& $adb -s $DeviceSerial shell am instrument -w site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
 }

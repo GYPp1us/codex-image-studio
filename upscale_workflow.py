@@ -60,15 +60,107 @@ def refresh_totals(manifest):
     manifest['calls']={key:manifest.get('previous_calls',{}).get(key,0)+sum(s.get('calls',{}).get(key,0) for s in manifest['stages']) for key in ('images','reviews')}
 
 
+def validate_tile_coverage(plan, stage):
+    """Prove non-overlapping core rectangles cover the input, including adaptive splits."""
+    size=stage['input_size']; output=stage['output_size']; tiles=plan['tiles']
+    if (not isinstance(size,list) or len(size)!=2 or any(type(v) is not int or v<1 for v in size)
+            or output != [size[0]*2,size[1]*2] or plan.get('input_size')!=size
+            or not isinstance(tiles,list) or not 1<=len(tiles)<=100000):
+        raise ValueError('切图计划尺寸无效')
+    width,height=size;events=[];ys=set();seen=set();area=0
+    for tile in tiles:
+        if not isinstance(tile,dict) or type(tile.get('index')) is not int or tile['index']<0 or tile['index'] in seen:
+            raise ValueError('图块索引重复或无效')
+        seen.add(tile['index']); core=tile.get('core');box=tile.get('box')
+        if any(not isinstance(v,list) or len(v)!=4 or any(type(x) is not int for x in v) for v in (core,box)):
+            raise ValueError('图块范围无效')
+        x0,y0,x1,y1=core;left,top,right,bottom=box
+        if not (0<=left<=x0<x1<=right<=width and 0<=top<=y0<y1<=bottom<=height):
+            raise ValueError('图块范围越界')
+        if tile.get('size')!=[(right-left)*2,(bottom-top)*2] or tile.get('corner')!=[left*2,top*2]:
+            raise ValueError('图块输出尺寸或位置无效')
+        area+=(x1-x0)*(y1-y0);ys.update((y0,y1));events.extend(((x0,1,y0,y1),(x1,-1,y0,y1)))
+    if area!=width*height:raise ValueError('图块核心覆盖不完整')
+    coords=sorted(ys);lookup={y:i for i,y in enumerate(coords)};n=len(coords)-1
+    maximum=[0]*(4*n+4);lazy=[0]*(4*n+4)
+    def add(node,left,right,lo,hi,delta):
+        if lo<=left and right<=hi:
+            maximum[node]+=delta;lazy[node]+=delta;return
+        mid=(left+right)//2
+        if lo<=mid:add(node*2,left,mid,lo,hi,delta)
+        if hi>mid:add(node*2+1,mid+1,right,lo,hi,delta)
+        maximum[node]=lazy[node]+max(maximum[node*2],maximum[node*2+1])
+    events.sort();i=0
+    while i<len(events):
+        x=events[i][0]
+        while i<len(events) and events[i][0]==x:
+            _,delta,y0,y1=events[i];add(1,0,n-1,lookup[y0],lookup[y1]-1,delta);i+=1
+        if maximum[1]>1:raise ValueError('图块核心互相重叠')
+
+
+def validate_review_checkpoint(folder, stage, options, *, with_hash=True, require_rejected=True):
+    """Check all deterministic safeguards before accepting a rejected review."""
+    folder = Path(folder)
+    try:
+        plan = json.loads((folder/'plan.json').read_text(encoding='utf-8'))
+        review_path = folder/'diagnostics'/'visual-review.json'
+        review = json.loads(review_path.read_text(encoding='utf-8'))
+        quality = json.loads((folder/'diagnostics'/'quality.json').read_text(encoding='utf-8'))
+        if not isinstance(plan,dict) or not isinstance(quality,dict):
+            raise ValueError('检查点格式无效')
+        if not isinstance(review, dict) or review.get('pass') is not (False if require_rejected else True) or not isinstance(review.get('issues'), list):
+            raise ValueError('本级没有可放行的视觉审核拒绝')
+        if quality.get('dimensions') != stage['output_size'] or quality.get('uncovered_pixels') != 0:
+            raise ValueError('融合质量或画布覆盖检查未通过')
+        if not all((folder/name).is_file() for name in ('candidate.png','inspection.png','overview.png')):
+            raise ValueError('视觉审核需要的检查点不完整')
+        candidate = imaging.info(folder/'candidate.png')
+        if [candidate['width'],candidate['height']] != stage['output_size']:
+            raise ValueError('候选图尺寸与计划不符')
+        if with_hash:
+            from PIL import Image
+            with Image.open(folder/'candidate.png') as image:
+                image.verify()
+        validate_tile_coverage(plan,stage)
+        tiles = plan['tiles']
+        repairs = folder/'diagnostics'/'local-repairs.json'
+        if repairs.exists():
+            requests = json.loads(repairs.read_text(encoding='utf-8'))
+            if not isinstance(requests,list) or any(not isinstance(item,dict) or not item.get('completed') for item in requests):
+                raise ValueError('仍有未完成的局部修复')
+        for tile in tiles:
+            index=tile['index']; output=folder/'redraw'/f'{index}.png'
+            if imaging.assess_return(output,tile['size']).decision != 'accept' or not alignment_current(folder,index):
+                raise ValueError('图块尺寸或配准检查点无效')
+            registered=folder/'registered'/f'{index}.png'
+            if not registered.is_file():
+                raise ValueError('配准结果缺失')
+            dimensions=imaging.info(registered)
+            if [dimensions['width'],dimensions['height']] != tile['size']:
+                raise ValueError('配准结果尺寸不符')
+            if upscale_prompts.is_versioned(options):
+                repair=upscale_prompts.repair_for(options,stage['index'],index)
+                identity={'execution':upscale_prompts.execution_identity(options),'tile':tile,'repair_id':repair.get('id') if repair else None}
+                provenance=json.loads((folder/'redraw'/f'{index}.prompt.json').read_text(encoding='utf-8'))
+                if not isinstance(provenance,dict) or provenance.get('identity') != identity:
+                    raise ValueError('图块与任务快照不一致')
+        return {'review_sha256':imaging.file_sha(review_path), 'candidate_sha256':imaging.file_sha(folder/'candidate.png')} if with_hash else {}
+    except (KeyError, TypeError, OSError, ValueError, SyntaxError, AttributeError) as error:
+        raise ValueError('无法放行视觉审核：检查点缺失或无效') from error
+
+
 async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
     proxy=LevelStudio(studio,manifest,stage,manifest_file)
     maximum=job['max_attempts'];model=options.get('model',studio.MODEL);effort=options.get('effort',studio.EFFORT)
+    approval=options.get('review_approval') or {}
+    no_generation=bool(approval and stage['index'] <= approval.get('level',0))
     for name in ('calls','redraw','crops','diagnostics','tmp'): (folder/name).mkdir(exist_ok=True)
     plan_file=folder/'plan.json'
     plan=json.loads(plan_file.read_text(encoding='utf-8')) if plan_file.exists() else execution_plan(stage)
     save_json(plan_file,plan)
     await engine(proxy,jid,folder,'prepare')
     async def repair_call(name,instruction,refs,phase,done,units):
+        if no_generation:raise WorkflowError('审核放行要求保留现有检查点，不能自动重绘')
         plan['manual_calls']=plan.get('manual_calls',0)+1;save_json(plan_file,plan)
         return await cli_call(proxy,jid,folder,name+'-'+str(time.time_ns()),instruction,refs,model,effort,phase,done,units)
     if (folder/'diagnostics'/'local-repairs.json').exists():
@@ -103,7 +195,10 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
                     raise ValueError('图块指令版本与检查点不一致')
                 measured=imaging.assess_return(output,tile['size'])
                 if measured.decision=='accept':states[index].update(state='done',stage='receiving',checkpoint=True,label='已复用');publish();return None
-            except (ValueError,OSError):output.unlink(missing_ok=True)
+            except (ValueError,OSError):
+                if no_generation:raise WorkflowError('审核放行所需图块检查点无效，未自动重绘')
+                output.unlink(missing_ok=True)
+        if no_generation:raise WorkflowError('审核放行所需图块检查点无效，未自动重绘')
         error=feedback.get(str(index),'')
         for attempt in range(attempts.get(index,0),maximum):
             attempts[index]=attempt+1
@@ -169,6 +264,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             index=tile['index'];diagnostic=folder/'diagnostics'/f'alignment-{index}.json'
             progress(proxy,jid,'registration',number,len(plan['tiles']),detail=f"第 {number+1}/{len(plan['tiles'])} 块")
             if alignment_current(folder,index):continue
+            if no_generation:raise WorkflowError('审核放行所需配准检查点无效，未自动重绘')
             for attempt in range(maximum):
                 try:await engine(proxy,jid,folder,'register','--tile',index);break
                 except WorkflowError as failure:
@@ -181,6 +277,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
                     refined=await redraw(tile)
                     if refined is not None:raise WorkflowError('配准重试返回尺寸不足，请从检查点重试以重新细分')
         if not all((folder/name).exists() for name in ('candidate.png','inspection.png','overview.png','diagnostics/quality.json')):
+            if no_generation:raise WorkflowError('审核放行所需融合检查点缺失')
             raw=folder/'canvas.rgb'
             if raw.exists():raw.unlink()
             studio.STORAGE.require(math.prod(stage['output_size'])*7,'融合本级大图')
@@ -191,7 +288,25 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
         progress(proxy,jid,'inspection',0,1,waiting=True,substage='检查原生细节、接缝与外沿')
         review_file=folder/'diagnostics'/'visual-review.json'
         review=json.loads(review_file.read_text(encoding='utf-8')) if review_file.exists() else None
-        if not review or not review.get('pass'):
+        approved = bool(approval and approval.get('level') == stage['index'])
+        previously_accepted = False
+        if approved:
+            current = validate_review_checkpoint(folder,stage,options)
+            if approval.get('folder') != stage.get('folder') or any(approval.get(k) != v for k,v in current.items()):
+                raise WorkflowError('审核或候选图已变化，请重新确认')
+        elif no_generation:
+            try:
+                if isinstance(review,dict) and review.get('pass') is True:
+                    validate_review_checkpoint(folder,stage,options,with_hash=False,require_rejected=False)
+                else:
+                    previous_quality=json.loads((folder/'diagnostics'/'quality.json').read_text(encoding='utf-8'))
+                    previous=previous_quality.get('visual_review_decision') or {}
+                    current=validate_review_checkpoint(folder,stage,options)
+                    audit=next((item for item in manifest.get('review_decisions',[]) if item.get('id')==previous.get('approval_id') and item.get('status')=='applied' and item.get('level')==stage['index']),None)
+                    if not audit or any(audit.get(k)!=v or previous.get(k)!=v for k,v in current.items()):raise ValueError()
+                    previously_accepted = True
+            except (ValueError,OSError,TypeError):raise WorkflowError('先前级别审核或几何检查点无效，未自动重新提交') from None
+        if not (approved or previously_accepted) and (not review or not review.get('pass')):
             compiled_review=upscale_prompts.compile_review(options,plan,options.get('source_description',''),stage['index']) if upscale_prompts.is_versioned(options) else None
             prompt=compiled_review['worker_instruction'] if compiled_review else '''STUDIO_STITCH_REVIEW
 执行局部视觉验收，不调用生图或任何工具。reference-1 为本级输入缩略图，reference-2 为结果缩略图，reference-3 是原生像素检查局部。
@@ -210,7 +325,15 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             save_json(review_file,review)
         quality=json.loads((folder/'diagnostics'/'quality.json').read_text(encoding='utf-8'));quality['visual_review']=review
         save_json(folder/'diagnostics'/'quality.json',quality)
-        if not review['pass']:raise WorkflowError('本级验收未通过：'+'；'.join(map(str,review['issues']))[:1600])
+        if not review['pass'] and not (approved or previously_accepted):raise WorkflowError('本级验收未通过：'+'；'.join(map(str,review['issues']))[:1600])
+        if approved:
+            quality['visual_review_decision']={'action':'accept_review','approval_id':approval['id'],'created':approval['created'],'review_sha256':approval['review_sha256'],'candidate_sha256':approval['candidate_sha256']}
+            save_json(folder/'diagnostics'/'quality.json',quality)
+            for decision in manifest.get('review_decisions',[]):
+                if decision.get('id') == approval['id']:decision['status']='applied';decision['applied']=time.time()
+            save_json(manifest_file,manifest)
+            options.pop('review_approval',None)
+            studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
         progress(proxy,jid,'receiving',1,1)
         returns=[json.loads(path.read_text(encoding='utf-8')) for path in (folder/'diagnostics').glob('return-*.json')]
         stage['return_stats']={'count':len(returns),'actual_sizes':[r['actual'] for r in returns],
@@ -236,6 +359,9 @@ async def run(studio,jid):
     save_json(root.parent/'request.json',{'options':options,'prompt':job['prompt'],'prompt_snapshot':options.get('upscale_prompts'),
               'worker_instruction':None if upscale_prompts.is_versioned(options) else normalize_redraw_prompt(options.get('stitch_prompt',DEFAULT_STITCH_PROMPT))})
     try:
+        # Reconcile interrupted filesystem/database recovery before any work.
+        from upscale_api import load_manifest
+        load_manifest(studio,jid)
         progress(studio,jid,'base')
         base=root/'base.png';source_id=options.get('source_asset_id')
         if not base.exists():
@@ -280,6 +406,12 @@ async def run(studio,jid):
         studio.write("UPDATE jobs SET status='succeeded',outputs=?,finished=?,error='' WHERE id=? AND status='running'",(json.dumps([result['id']]),time.time(),jid))
         studio.write("UPDATE attempts SET status='succeeded',finished=? WHERE job_id=? AND status='running'",(time.time(),jid))
     except asyncio.CancelledError:
+        pending=options.pop('review_approval',None)
+        if pending:
+            studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
+            if manifest:
+                for decision in manifest.get('review_decisions',[]):
+                    if decision.get('id')==pending.get('id') and decision.get('status')=='queued':decision.update(status='cancelled',finished=time.time())
         states=finish_progress(studio,jid,'cancelled')
         if manifest:
             for stage in manifest['stages']:
@@ -287,6 +419,12 @@ async def run(studio,jid):
         if manifest:manifest['status']='cancelled';save_json(manifest_file,manifest)
         if not studio.job_cancelled(jid):raise
     except Exception as error:
+        pending=options.pop('review_approval',None)
+        if pending:
+            studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
+            if manifest:
+                for decision in manifest.get('review_decisions',[]):
+                    if decision.get('id')==pending.get('id') and decision.get('status')=='queued':decision.update(status='failed',finished=time.time())
         states=finish_progress(studio,jid,'failed',str(error))
         if manifest:
             manifest['status']='failed';manifest['error']=str(error)

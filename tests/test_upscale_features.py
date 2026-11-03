@@ -1,5 +1,8 @@
 """Isolated API/workflow tests. Model calls use a fixture, never a real subscription."""
 import asyncio
+import copy
+import contextlib
+import sqlite3
 import importlib
 import io
 import json
@@ -57,6 +60,22 @@ class ReturnContractTests(unittest.TestCase):
         self.assertEqual(sum((t['core'][2]-t['core'][0])*(t['core'][3]-t['core'][1]) for t in children),
                          (parent['core'][2]-parent['core'][0])*(parent['core'][3]-parent['core'][1]))
         self.assertTrue(all(math.prod(t['size'])<math.prod(parent['size']) for t in children))
+
+    def test_core_coverage_rejects_missing_duplicate_out_of_bounds_and_overlap(self):
+        from upscale_workflow import validate_tile_coverage
+        stage=progressive_plan(100,100,4)['stages'][0]
+        plan=execution_plan(stage)
+        split_tile(plan,plan['tiles'][0]['index'])
+        validate_tile_coverage(plan,stage)
+        missing=copy.deepcopy(plan);missing['tiles'].pop()
+        duplicate=copy.deepcopy(plan);duplicate['tiles'][1]['index']=duplicate['tiles'][0]['index']
+        bounds=copy.deepcopy(plan);bounds['tiles'][0]['core'][0]=-1
+        for bad in (missing,duplicate,bounds):
+            with self.assertRaises(ValueError):validate_tile_coverage(bad,stage)
+        overlap=copy.deepcopy(plan)
+        overlap['tiles']=[{'index':0,'core':[0,0,60,100],'box':[0,0,60,100],'size':[120,200],'corner':[0,0]},
+                          {'index':1,'core':[40,0,80,100],'box':[40,0,80,100],'size':[80,200],'corner':[80,0]}]
+        with self.assertRaises(ValueError):validate_tile_coverage(overlap,stage)
 
     def test_storage_counts_hardlinks_once_and_rejects_paths_outside_root(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -189,7 +208,7 @@ class UpscaleFeatures(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/assets/{asset['id']}/tiles/{maximum}/99999/0").status_code,404)
         source.unlink()
 
-    def run_fixture(self,factor=4,undersize=False,wrong_aspect=False,malformed=False,jid=None,instructions=None):
+    def run_fixture(self,factor=4,undersize=False,wrong_aspect=False,malformed=False,jid=None,instructions=None,reject_review=False):
         import upscale_workflow as workflow
         jid=jid or self.studio.create_jobs(self.studio.JobInput(prompt='Texture enhancement fixture',source_asset_id=self.asset['id'],stitch=factor,max_attempts=2))['ids'][0]
         self.studio.write("UPDATE jobs SET status='running' WHERE id=?",(jid,))
@@ -199,7 +218,7 @@ class UpscaleFeatures(unittest.TestCase):
             if instructions is not None:instructions.append(instruction)
             recorder=getattr(studio,'record_cli_call',None)
             if recorder:recorder(image)
-            if not image:return '{"pass":true,"issues":[]}'
+            if not image:return '{"pass":false,"issues":["fixture concern"]}' if reject_review else '{"pass":true,"issues":[]}'
             if on_progress:on_progress('fixture',True,'test')
             destination=Path(folder)/'calls'/name;destination.mkdir(parents=True,exist_ok=True)
             if malformed and first:
@@ -239,6 +258,177 @@ class UpscaleFeatures(unittest.TestCase):
             job=self.run_fixture(malformed=True)
         self.assertEqual(job['status'],'succeeded',job['error'])
         self.assertEqual(job['upscale_plan']['calls']['images'],2)
+
+    def test_recover_accepts_only_current_review_and_preserves_checks_and_audit(self):
+        import upscale_api
+        job=self.run_fixture(16,reject_review=True)
+        self.assertEqual(job['status'],'failed',job['error'])
+        self.assertTrue(job['recovery']['can_accept_review'])
+        self.assertTrue(job['recovery']['can_retry'])
+        jid=job['id'];folder=upscale_api.stage_folder(self.studio,jid,1)
+        review=(folder/'diagnostics'/'visual-review.json').read_bytes()
+        candidate=(folder/'candidate.png').read_bytes()
+        counts=job['upscale_plan']['calls'].copy()
+        response=self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['level'],1)
+        self.assertEqual(self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'}).status_code,409)
+        job=self.run_fixture(16,jid=jid,reject_review=True)
+        self.assertEqual(job['status'],'failed')
+        self.assertEqual(job['recovery']['level'],2)
+        self.assertTrue(job['recovery']['can_accept_review'])
+        self.assertEqual((folder/'candidate.png').read_bytes(),candidate)
+        self.assertEqual((folder/'diagnostics'/'visual-review.json').read_bytes(),review)
+        manifest=upscale_api.load_manifest(self.studio,jid)
+        self.assertEqual(manifest['review_decisions'][0]['status'],'applied')
+        self.assertEqual(manifest['review_decisions'][0]['level'],1)
+        quality=json.loads((folder/'diagnostics'/'quality.json').read_text(encoding='utf-8'))
+        self.assertFalse(quality['visual_review']['pass'])
+        self.assertEqual(quality['visual_review_decision']['action'],'accept_review')
+        self.assertGreater(job['upscale_plan']['calls']['reviews'],counts['reviews'])
+        before_final=job['upscale_plan']['calls'].copy()
+        self.assertEqual(self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'}).status_code,200)
+        final=self.run_fixture(16,jid=jid,reject_review=True)
+        self.assertEqual(final['status'],'succeeded',final['error'])
+        self.assertEqual(final['upscale_plan']['calls'],before_final)
+        self.assertEqual([d['status'] for d in upscale_api.load_manifest(self.studio,jid)['review_decisions']],['applied','applied'])
+
+    def test_recovery_rejects_missing_registration_and_cleared_cache(self):
+        import upscale_api
+        job=self.run_fixture(reject_review=True);jid=job['id']
+        self.assertTrue(job['recovery']['can_accept_review'])
+        folder=upscale_api.stage_folder(self.studio,jid,1)
+        (folder/'diagnostics'/'alignment-0.json').unlink()
+        response=self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'})
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertEqual(self.client.get(f'/api/jobs/{jid}').json()['status'],'failed')
+        self.assertEqual(self.post(f'/api/upscale/jobs/{jid}/clear-cache').status_code,200)
+        value=self.client.get(f'/api/upscale/jobs/{jid}').json()['recovery']
+        self.assertFalse(value['can_accept_review']);self.assertFalse(value['can_retry'])
+        self.assertEqual(self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'retry'}).status_code,409)
+
+    def test_recovery_availability_and_conflicts_without_checkpoint(self):
+        jid=self.studio.create_jobs(self.studio.JobInput(prompt='Recovery fixture',source_asset_id=self.asset['id'],stitch=4))['ids'][0]
+        url=f'/api/upscale/jobs/{jid}/recover'
+        self.assertEqual(self.post(url,{'action':'retry'}).status_code,409)
+        self.studio.write("UPDATE jobs SET status='failed' WHERE id=?",(jid,))
+        recovery=self.client.get(f'/api/upscale/jobs/{jid}').json()['recovery']
+        self.assertTrue(recovery['can_retry']);self.assertFalse(recovery['cache_available'])
+        self.assertFalse(recovery['can_accept_review'])
+        self.assertEqual(self.post(url,{'action':'accept_review'}).status_code,409)
+        class ActiveTask:
+            def done(self):return False
+        self.studio.JOB_TASKS[jid]=ActiveTask()
+        try:
+            self.assertFalse(self.client.get(f'/api/upscale/jobs/{jid}').json()['recovery']['can_retry'])
+            self.assertEqual(self.post(url,{'action':'retry'}).status_code,409)
+        finally:self.studio.JOB_TASKS.pop(jid,None)
+        self.studio.write("UPDATE jobs SET status='succeeded' WHERE id=?",(jid,))
+        self.assertEqual(self.post(url,{'action':'retry'}).status_code,409)
+        anonymous=TestClient(self.studio.app,base_url='https://image.test')
+        self.assertEqual(anonymous.post(url,json={'action':'retry'}).status_code,401)
+        anonymous.close()
+
+    def test_recovery_transaction_failure_and_zero_update_preserve_manifest(self):
+        import upscale_api
+        job=self.run_fixture(reject_review=True);jid=job['id']
+        original=upscale_api.load_manifest(self.studio,jid)
+        real_save=upscale_api.save_json
+        def fail_progress(path,value):
+            if Path(path).name=='progressive.json':raise OSError('fixture write failure')
+            return real_save(path,value)
+        with patch.object(upscale_api,'save_json',fail_progress):
+            with self.assertRaises(OSError):self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'})
+        self.assertEqual(self.studio.query('SELECT status FROM jobs WHERE id=?',(jid,),True)['status'],'failed')
+        self.assertEqual(upscale_api.load_manifest(self.studio,jid),original)
+        self.assertTrue(self.client.get(f'/api/upscale/jobs/{jid}').json()['recovery']['can_accept_review'])
+        real_db=self.studio.db
+        @contextlib.contextmanager
+        def fail_commit():
+            class Connection:
+                updated=False
+                def __init__(self,inner):self.inner=inner
+                def execute(self,sql,args=()):
+                    if sql.startswith("UPDATE jobs SET status='queued',options="):self.updated=True
+                    return self.inner.execute(sql,args)
+                def __getattr__(self,key):return getattr(self.inner,key)
+            with real_db() as conn:
+                proxy=Connection(conn)
+                yield proxy
+                if proxy.updated:raise sqlite3.OperationalError('fixture commit failure')
+        with patch.object(self.studio,'db',fail_commit):
+            with self.assertRaises(sqlite3.OperationalError):self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'})
+        self.assertEqual(self.studio.query('SELECT status FROM jobs WHERE id=?',(jid,),True)['status'],'failed')
+        self.assertEqual(upscale_api.load_manifest(self.studio,jid),original)
+        with self.studio.db() as db:
+            db.execute("CREATE TRIGGER block_recovery BEFORE UPDATE OF status ON jobs WHEN NEW.status='queued' BEGIN SELECT RAISE(IGNORE); END")
+        try:
+            response=self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'})
+            self.assertEqual(response.status_code,409,response.text)
+            self.assertEqual(upscale_api.load_manifest(self.studio,jid),original)
+        finally:
+            with self.studio.db() as db:db.execute('DROP TRIGGER block_recovery')
+
+    def test_recovery_journal_reconciles_interrupted_db_outcomes(self):
+        import upscale_api
+        from stitch_engine import save_json
+        job=self.run_fixture(reject_review=True);jid=job['id']
+        root=upscale_api.root_for(self.studio,jid)
+        original=upscale_api.load_manifest(self.studio,jid)
+        desired=copy.deepcopy(original);desired.update(status='queued',recovery_request_id='test-recovery')
+        intent={'id':'test-recovery','previous':original,'next':desired}
+        save_json(root/'recovery-journal.json',intent);save_json(root/'progressive.json',desired)
+        self.assertEqual(upscale_api.load_manifest(self.studio,jid),original)
+        self.assertFalse((root/'recovery-journal.json').exists())
+        save_json(root/'recovery-journal.json',intent)
+        options=json.loads(self.studio.query('SELECT options FROM jobs WHERE id=?',(jid,),True)['options'])
+        options['recovery_request_id']='test-recovery'
+        self.studio.write("UPDATE jobs SET status='queued',options=? WHERE id=?",(json.dumps(options),jid))
+        self.assertEqual(upscale_api.load_manifest(self.studio,jid),desired)
+        self.assertFalse((root/'recovery-journal.json').exists())
+        self.studio.write("UPDATE jobs SET status='cancelled' WHERE id=?",(jid,))
+
+    def test_review_rejects_non_object_checkpoint_json_without_server_error(self):
+        import upscale_api
+        job=self.run_fixture(reject_review=True);jid=job['id'];folder=upscale_api.stage_folder(self.studio,jid,1)
+        for relative, invalid in [('plan.json',[]),('diagnostics/quality.json','bad')]:
+            with self.subTest(path=relative):
+                path=folder/relative;previous=path.read_bytes()
+                try:
+                    path.write_text(json.dumps(invalid),encoding='utf-8')
+                    detail=self.client.get(f'/api/upscale/jobs/{jid}')
+                    self.assertEqual(detail.status_code,200,detail.text)
+                    self.assertFalse(detail.json()['recovery']['can_accept_review'])
+                    self.assertEqual(self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'}).status_code,409)
+                finally:path.write_bytes(previous)
+
+    def test_approval_rejects_changed_candidate_without_model_calls(self):
+        import upscale_api
+        job=self.run_fixture(reject_review=True);jid=job['id']
+        before=job['upscale_plan']['calls'].copy()
+        folder=upscale_api.stage_folder(self.studio,jid,1)
+        response=self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'})
+        self.assertEqual(response.status_code,200,response.text)
+        size=tuple(job['upscale_plan']['stages'][0]['output_size'])
+        Image.new('RGB',size,'black').save(folder/'candidate.png')
+        result=self.run_fixture(jid=jid)
+        self.assertEqual(result['status'],'failed')
+        self.assertEqual(result['upscale_plan']['calls'],before)
+        self.assertEqual(result['outputs'],[])
+        self.assertTrue((folder/'diagnostics'/'visual-review.json').exists())
+        options=json.loads(self.studio.query('SELECT options FROM jobs WHERE id=?',(jid,),True)['options'])
+        self.assertNotIn('review_approval',options)
+        self.assertEqual(upscale_api.load_manifest(self.studio,jid)['review_decisions'][-1]['status'],'failed')
+
+    def test_recovery_retry_reuses_tiles_but_rechecks_review(self):
+        job=self.run_fixture(reject_review=True);jid=job['id']
+        before=job['upscale_plan']['calls'].copy()
+        response=self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'retry'})
+        self.assertEqual(response.status_code,200,response.text)
+        result=self.run_fixture(jid=jid)
+        self.assertEqual(result['status'],'succeeded',result['error'])
+        self.assertEqual(result['upscale_plan']['calls']['images'],before['images'])
+        self.assertEqual(result['upscale_plan']['calls']['reviews'],before['reviews']+1)
 
     def test_retry_after_cache_cleanup_preserves_cumulative_call_counts(self):
         job=self.run_fixture();self.assertEqual(job['status'],'succeeded',job['error'])

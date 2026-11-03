@@ -1261,7 +1261,7 @@ async def retry_job(jid: str, session=Depends(require_user)):
             raise HTTPException(404, "任务不存在")
         if j["status"] not in ("failed", "cancelled"):
             raise HTTPException(409, "只有失败或取消的任务可以重试；再次抽卡请使用重新生成")
-        options=json.loads(j["options"]);options.pop("repair_selection",None)
+        options=json.loads(j["options"]);options.pop("repair_selection",None);options.pop("review_approval",None)
         from task_progress import restart_detail
         detail=restart_detail(j)
         if options.get('stitch'):

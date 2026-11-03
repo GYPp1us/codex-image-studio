@@ -203,7 +203,7 @@ const StudioService=(()=>{
   function upscaleSheet(id){const im=assets.get(id);if(!im)return;const f=S.settings.upscale.factor,scope=StudioUpscalePrompts.newScope();
     return openSheet({title:'发送到超分',cls:'up-entry-sheet',html:`<div class="up-entry-workspace"><main><div class="up-src"><img src="${src(im)}" alt=""><div><b>${esc(im.name)}</b><span>${im.w} × ${im.h}</span></div></div><div class="field-label">面积倍率</div><div class="opts" id="upo">${Object.keys(FACTORS).map(v=>`<button class="opt tall${v===f?' on':''}" data-act="up-f" data-v="${v}">${v}<small>宽高 ×${2**FACTORS[v]} · ${FACTORS[v]} 级</small></button>`).join('')}</div><div id="up-plan"></div></main><aside><div class="field-label">任务统一要求</div><textarea class="input" id="up-inj" rows="3" maxlength="12000" placeholder="统一细节、材质与画风；留空按原图保真增强">${esc(S.settings.upscale.injection)}</textarea>${StudioUpscalePrompts.entry(scope,{source:id})}<p class="note">每级重新切图，通过验收后进入下一级。失败会保留已完成图块。</p><button class="primary" data-act="up-go" data-id="${id}" disabled>加入任务${icon('arrow',18)}</button></aside></div>`,onMount:L=>{L.dataset.f=f;L.dataset.upSource=id;L.dataset.promptScope=scope;L.cleanup=()=>StudioUpscalePrompts.release(scope);paintSheetPlan(L);}});}
   async function startUpscale(id,f,inj,onAccepted,scope='upscale',promptOptions=null){const result=await submit(`/api/assets/${id}/upscale`,{factor:factor(f),upscale_requirements:inj||'',...(promptOptions||StudioUpscalePrompts.entryValue(scope)),model:S.composer.model,effort:S.composer.effort},onAccepted);if(!onAccepted)toast(`${f} 超分已加入任务`,{action:'查看',run:()=>goBatch(result.batch_id)});return result;}
-  function upDetail(id,inspectOnly=false){return StudioTasks.open(id,taskAdapter(),{mode:'upscale',inspectOnly});}
+  function upDetail(id){return taskInfo(id);}
   async function cloneUpscale(id){
     const job=await api('/api/upscale/jobs/'+id),source=job.options.source_asset_id||job.source_image?.id;
     if(!source)throw new Error('原图尚未生成，请在原图可用后复制任务');
@@ -309,38 +309,25 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   async function redraw(){const im=img(V.list[V.i]),r=rectOf(curImg()),regions=V.regions.map(g=>({x:Math.round((g.x-r.x)/r.w*im.w),y:Math.round((g.y-r.y)/r.h*im.h),width:Math.round(g.w/r.w*im.w),height:Math.round(g.h/r.h*im.h),prompt:(V.shared?V.sharedText:g.text).trim()}));for(const q of regions){q.x=clamp(q.x,0,im.w);q.y=clamp(q.y,0,im.h);q.width=Math.min(q.width,im.w-q.x);q.height=Math.min(q.height,im.h-q.y);if(q.width<16||q.height<16)throw new Error('每个选区的原图宽高至少需要 16 像素');if(!q.prompt)throw new Error('请填写每个选区的重绘要求');}
     const result=await submit(`/api/assets/${im.id}/inpaint`,{regions,model:S.composer.model,effort:S.composer.effort});await back();toast(`${regions.length} 个区域已加入重绘任务`,{action:'查看',run:()=>goBatch(result.batch_id)});}
 
-  function renderFailure(bid){
-  const t=FX.task,u=t.up,lv=u.levels[u.cur];
-  Object.assign(FX,{bid,pane:"affine",cmp:null,side:"output",showOk:false,latest:false,appendSystem:true,page:0,
-    sel:new Set(S.settings.upscale.autoSelect?lv.tiles.filter(x=>x.state!=="done").map(x=>x.i):[])});
-  const issues=upIssues(t);
-  openScreen(`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon("back")}</button><div class="ct"><h1>失败处理 · 选块重绘</h1><span>${u.factor} · 第 ${u.cur+1}/${u.levels.length} 级 · ${lv.from.join("×")} → ${lv.to.join("×")}</span></div></header>
-  <div class="scroll fx-scroll">
-    <div class="failure-checkpoints">${StudioProgress.html(t,{all:true,key:'failure'})}</div>
-    <details class="inspection-budget"><summary>尺寸、切法与预算</summary>${planHTML(assets.get(u.src),u.factor,t.raw.upscale_plan)}</details>
-    <div class="fx-err">${icon("alert",20)}<div><b>本级验收未通过</b><ul>${issues.slice(0,6).map(i=>`<li>${esc(i)}</li>`).join("")}</ul>${issues.length>6?`<p>另有 ${issues.length-6} 个问题，请在下方分页定位图块。</p>`:''}<details><summary>原始错误</summary><code>${esc(t.err||"")}</code></details></div></div>
-    <div class="seg" id="fx-seg"><span class="ind"></span><button data-act="fx-pane" data-v="source">原图对照</button><button data-act="fx-pane" data-v="raw">直接拼接</button><button data-act="fx-pane" data-v="affine">仿射诊断</button></div>
-    <div id="fx-view"></div>
-    <div class="fx-quick"><button data-act="fx-sel" data-v="problems">选择问题块</button><button data-act="fx-sel" data-v="all">全选</button><button data-act="fx-sel" data-v="none">清除</button></div>
-    <div id="fx-list"></div><div id="fx-warn"></div>
-    <div class="field-label">本次所选图块的修复要求</div><textarea class="input" id="fx-inj" rows="2" maxlength="12000" placeholder="例如：修复窗框断线，保留其余内容"></textarea>
-    <p class="note">仅作用于本级所选图块；后续级接收修复后的图像，不重复执行这段局部指令。</p>
-    <details class="task-disclosure"><summary>任务统一要求 · 保留原快照</summary><div class="prompt-box">${esc(u.injection||'无额外统一要求')}</div></details>
-    <div class="g-card repair-composition" data-layout="margin-top:12px"><button class="s-row" data-act="fx-repair-system">${lbl("拼接局部修复系统模板","关闭时仅附加你填写的修复要求")}<span class="switch on" id="fx-repair-system-sw"></span></button><button class="s-row" data-act="fx-latest">${lbl("采用最新修复模板","只影响所选图块的局部修复；整图超分与验收仍用任务快照")}<span class="switch" id="fx-latest-sw"></span></button></div>
-  </div>
-  <div class="fx-bar"><div class="fx-sum" id="fx-sum"></div><button class="primary" id="fx-go" data-act="fx-go">重绘所选</button></div>`,
-  {cls:"fail-screen",onMount:el=>{FX.screen=el;fxRender(el);StudioProgress.hydrate(el);}});
-}
-
+  function renderFailure(bid){return StudioRecovery.render(FX.job,FX.diag,{bid,api,post,assets,planHTML,budget,bytes,report,refreshData,invalidate:id=>details.delete(id)});}
   let failureVersion=0;
-  async function openFailure(id){const version=++failureVersion,b=S.batches.find(b=>b.id===id),jid=b?.tasks.find(t=>t.raw.options.stitch&&['failed','cancelled'].includes(t.raw.status))?.id||id;
-    const wait=openSheet({title:'失败处理',html:'<p class="note">正在准备真实诊断拼图…</p>'}),revision=wait.dataset.revision;
-    try{const d=await api('/api/upscale/jobs/'+jid);if(version!==failureVersion||wait.style.pointerEvents==='none'||wait.dataset.revision!==revision)return;details.set(jid,d);rememberJob(d);projectBatches();const u=upModel(d);if(!u)throw new Error('该任务尚未生成分块检查点，请从任务详情重试');
-      const stage=d.upscale_plan.stages[u.cur];if(!stage.diagnostic_available)throw new Error(d.upscale_plan.cache_cleared?'任务缓存已清理，请从检查点重新开始任务':'本级尚无可用的切图检查点，请从任务详情重试');
-      const diagnostic=await api(`/api/upscale/jobs/${jid}/diagnostics?level=${stage.index}`);if(version!==failureVersion||wait.style.pointerEvents==='none'||wait.dataset.revision!==revision)return;
-      u.levels[u.cur].tiles=diagnostic.tiles.map(t=>({...t,i:t.index,state:{ready:'done'}[t.state]||t.state,stage:0}));FX.task={...task(d),up:u};FX.diag=diagnostic;FX.level=stage.index;FX.comparison=null;FX.jid=jid;
+  async function openFailure(id){
+    const version=++failureVersion,b=S.batches.find(b=>b.id===id),jid=b?.tasks.find(t=>t.raw.options.stitch&&['failed','cancelled'].includes(t.raw.status))?.id||id;
+    const wait=openSheet({title:'失败处理',html:'<p class="note"><span class="spin"></span> 正在读取检查点…</p>'}),revision=wait.dataset.revision;
+    const valid=()=>version===failureVersion&&wait.isConnected&&wait.style.pointerEvents!=='none'&&wait.dataset.revision===revision;
+    try{
+      const d=await api('/api/upscale/jobs/'+jid);if(!valid())return;
+      if(!['failed','cancelled'].includes(d.status))throw new Error('任务状态已变化，请返回详情查看当前进度。');
+      details.set(jid,d);rememberJob(d);projectBatches();const u=upModel(d),stage=d.upscale_plan?.stages?.[u?.cur||0];
+      let diagnostic=null,diagnosticError='';
+      if(stage?.diagnostic_available){try{diagnostic=await api(`/api/upscale/jobs/${jid}/diagnostics?level=${stage.index}`);}catch(error){diagnosticError='诊断图暂不可用：'+error.message;}}
+      else diagnosticError=d.upscale_plan?.cache_cleared?'中间缓存已清理，本级没有可复用的图块。':'本级尚未建立切图检查点。';
+      if(!valid())return;
+      if(diagnostic&&u)u.levels[u.cur].tiles=diagnostic.tiles.map(t=>({...t,i:t.index,state:{ready:'done'}[t.state]||t.state,stage:0}));
+      Object.assign(FX,{job:d,task:{...task(d),up:u},diag:diagnostic,diagnosticError,level:stage?.index||d.recovery?.level||1,comparison:null,jid});
       await back();renderFailure(b?.id||d.batch_id);
-    }catch(e){if(wait.isConnected&&wait.style.pointerEvents!=='none'&&wait.dataset.revision===revision)swapSheet(wait,'失败处理',`<p class="form-err">${esc(e.message)}</p><button class="primary" data-act="up-detail" data-id="${jid}" data-inspect-only="true">查看尺寸、预算与检查点</button>`);else report(e);}}
+    }catch(error){if(valid())swapSheet(wait,'失败处理',`<p class="form-err">${esc(error.message)}</p><button class="secondary" data-act="task-info" data-id="${jid}">返回任务详情</button>`);else report(error);}
+  }
   function fxView(t){const lv=t.up.levels[t.up.cur],d=FX.diag,[w,h]=d.input_size;
     if(FX.cmp!==null){const x=lv.tiles.find(x=>x.i===FX.cmp),c=FX.comparison;return `<div class="cmp-bar"><button class="ghost-btn" data-act="fx-cmp-close">${icon('back',14)}全图</button><span>第 ${x.i+1} 块 · <b class="st-${x.state}">${TSTATE[x.state]}</b></span><span class="grow"></span><div class="mini-seg" data-layout="flex-wrap:nowrap"><button data-act="fx-side" data-v="input" class="${FX.side==='input'?'on':''}">输入</button><button data-act="fx-side" data-v="output" class="${FX.side==='output'?'on':''}">输出</button></div></div><div class="cmp side-${FX.side}" data-layout="aspect-ratio:${c?.input_size?.join('/')||'4/3'}"><div class="cmp-l in">${c?`<img src="${esc(c.images.input)}" alt="超分输入（含重叠）">`:'<span>正在读取对比…</span>'}</div><div class="cmp-l out">${c?.images.output?`<img src="${esc(c.images.output)}" alt="模型原始返回">`:`<span>${c?'此块尚未返回':'正在读取对比…'}</span>`}</div><span class="cmp-tag" id="cmp-tag">${FX.side==='input'?'输入（含重叠）':'模型原始返回'}</span></div><p class="fx-cap">${c?`输入 ${c.input_size.join('×')} · 输出 ${c.output_size?.join('×')||'未返回'} · `:''}${esc(x.reason)}</p>`;}
     return `<div class="fx-stage bounded-map pane-${FX.pane}" data-layout="aspect-ratio:${w}/${h}"><img src="${esc(d.images[FX.pane])}" alt="${PANE_CAP[FX.pane]}"><canvas data-failure-map tabindex="0" role="img" aria-label="诊断切图，点击图块选择"></canvas></div><p class="fx-cap">${PANE_CAP[FX.pane]} · 点击切图选择，或在下方按编号选择</p>`;}
@@ -390,7 +377,7 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'retry-batch':await batchOperation(id,'retry');break;
       case 'retry-job':await post('/api/jobs/'+id+'/retry');await back();await refreshData();break;
       case 'log':{const jid=a.dataset.t||S.batches.find(b=>b.id===a.dataset.b)?.tasks.find(t=>t.status==='failed')?.id||id;await taskInfo(jid,true);break;}
-      case 'task-info':await taskInfo(id);break;
+      case 'task-info':if(topSheet())await back();await taskInfo(id);break;
       case 'im-native':await back();StudioZoom.toggleNative(true);break;
       case 'v-dl':download(V.list[V.i]);break;
       case 'im-dl':download(id);break;
@@ -403,8 +390,9 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'up-go':a.disabled=true;try{const L=a.closest('.sheet-layer');await startUpscale(id,L.dataset.f,$('#up-inj',L).value.trim(),null,L.dataset.promptScope);await back();}finally{a.disabled=false;}break;
       case 'up-start':{if(!S.upc.src)throw new Error('先选择要超分的原图');if(!getPlan(assets.get(S.upc.src),S.upc.factor)?.stages)throw new Error('请等待切图预算计算完成');a.disabled=true;try{const f=S.upc.factor;await startUpscale(S.upc.src,f,$('#cu-inj').value.trim(),()=>{if(!a.isConnected)return;$('#gen-done').textContent='已加入 '+f;a.classList.add('done');flyDot(a,$('.tab[data-tab="queue"] .ti'));setTimeout(()=>a.classList.remove('done'),1700);});}finally{a.disabled=false;}break;}
       case 'up-detail':await upDetail(id,a.dataset.inspectOnly==='true');break;
-      case 'failure':await closeOverlays();await openFailure(a.dataset.t||id);break;
-      case 'failure-job':await closeOverlays();await openFailure(id);break;
+      case 'failure':await openFailure(a.dataset.t||id);break;
+      case 'failure-job':await openFailure(id);break;
+      case 'fx-recover':await StudioRecovery.recover(a.dataset.v,a);break;
       case 'fx-cmp':await compareTile(+a.dataset.i);break;
       case 'fx-go':await fxSubmit();break;
       case 'model-select':{S.composer.model=id;const m=models.find(m=>m.id===id);if(!m.efforts.includes(S.composer.effort))S.composer.effort=m.default_effort;await back();const L=topSheet();if(L)swapSheet(L,null,paramsBody());refresh();break;}
@@ -416,7 +404,7 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
     }
     saveDraft();return true;
   }
-  const guardedActions=new Set(['tpl-save','tpl-delete','pe-save','inj-save','storage-limit','sessions','pause','unpause','retry-task','retry-batch','retry-job','retry-coll','cancel-task','cancel-batch','coll-rename-save','coll-delete','up-go','up-start','rd-submit','fx-go','fx-cmp','task-info','log','up-detail','failure','failure-job','collection-more','batch-more','works-tab','works-more','im-fav','copy-prompt','cache-clear','logout','model-default','model-quick-save','params-default','accent-set']);
+  const guardedActions=new Set(['tpl-save','tpl-delete','pe-save','inj-save','storage-limit','sessions','pause','unpause','retry-task','retry-batch','retry-job','retry-coll','cancel-task','cancel-batch','coll-rename-save','coll-delete','up-go','up-start','rd-submit','fx-go','fx-cmp','fx-recover','task-info','log','up-detail','failure','failure-job','collection-more','batch-more','works-tab','works-more','im-fav','copy-prompt','cache-clear','logout','model-default','model-quick-save','params-default','accent-set']);
   async function action(k,a,e){if(!guardedActions.has(k))return performAction(k,a,e);const key=StudioFeedback.keyFor(a);if(StudioFeedback.busy(key))return true;return StudioFeedback.run(key,a,()=>performAction(k,a,e));}
   app.addEventListener('input',e=>{if(e.target.id==='accent-custom'){S.settings.appearance.accent=e.target.value;StudioTheme.apply(S.settings.appearance);paintAccent();}});
   app.addEventListener('change',e=>{if(e.target.id==='accent-custom')settingChanged('appearance.accent');});
