@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import math
 import re
@@ -37,6 +38,10 @@ class RepairTiles(BaseModel):
     use_current_prompt: bool = False
 
 
+class RecoveryRequest(BaseModel):
+    action: Literal['retry', 'accept_review']
+
+
 class TaskInjection(BaseModel):
     upscale_injection: str = Field(max_length=12000)
 
@@ -56,9 +61,24 @@ def root_for(studio,jid):
 
 
 def load_manifest(studio,jid):
-    path=root_for(studio,jid)/'progressive.json'
-    if path.exists():
-        with contextlib.suppress(OSError,ValueError):return json.loads(path.read_text(encoding='utf-8'))
+    root=root_for(studio,jid);path=root/'progressive.json';journal=root/'recovery-journal.json'
+    with studio.STORAGE.lock:
+        if journal.exists():
+            try:
+                intent=json.loads(journal.read_text(encoding='utf-8'))
+                job=studio.query('SELECT options FROM jobs WHERE id=?',(jid,),True)
+                options=json.loads(job['options']) if job else {}
+                current=json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+                committed=options.get('recovery_request_id')==intent['id']
+                if committed and (not current or current.get('recovery_request_id')!=intent['id']):
+                    save_json(path,intent['next'])
+                elif not committed and current and current.get('recovery_request_id')==intent['id']:
+                    save_json(path,intent['previous'])
+                journal.unlink()
+            except (OSError,ValueError,TypeError,KeyError) as error:
+                raise HTTPException(409,'恢复检查点对账失败，请稍后重试') from error
+        if path.exists():
+            with contextlib.suppress(OSError,ValueError):return json.loads(path.read_text(encoding='utf-8'))
     return None
 
 
@@ -90,6 +110,43 @@ def plan_payload(studio,jid,job=None):
         stage['result_preview']=f'/api/upscale/jobs/{jid}/stages/{index}/result' if stage.get('actual_size') else None
         stage['diagnostic_available']=ready and not manifest.get('cache_cleared',False)
     return public
+
+
+def recovery_payload(studio, jid, job=None):
+    job = job or studio.query('SELECT * FROM jobs WHERE id=?',(jid,),True)
+    if not job:
+        raise HTTPException(404,'任务不存在')
+    manifest = load_manifest(studio,jid)
+    task = studio.JOB_TASKS.get(jid)
+    stopped = job['status'] in ('failed','cancelled') and not (task and not task.done())
+    cleared = bool(manifest and manifest.get('cache_cleared'))
+    root = root_for(studio,jid)
+    active = manifest.get('active_folder') if manifest else None
+    active_plan = bool(active and re.fullmatch(r'stages/\d{2}-[a-f0-9]{16}',active) and (root/active/'plan.json').is_file())
+    cached = bool(not cleared and ((root/'base.png').is_file() or active_plan))
+    stage = next((item for item in manifest.get('stages',[]) if item.get('folder')==active),None) if manifest else None
+    rejected = False
+    accept_reason = '仅当前级视觉审核明确拒绝时可放行'
+    if (stopped and job['status']=='failed' and not cleared and stage and stage.get('status')=='failed'
+            and manifest.get('status')=='failed' and str(manifest.get('error','')).startswith('本级验收未通过：')):
+        try:
+            folder=stage_folder(studio,jid,stage['index'])
+            review=json.loads((folder/'diagnostics'/'visual-review.json').read_text(encoding='utf-8'))
+            rejected=(isinstance(review,dict) and review.get('pass') is False and isinstance(review.get('issues'),list)
+                      and all((folder/name).is_file() for name in ('candidate.png','inspection.png','overview.png','plan.json','diagnostics/quality.json')))
+            if rejected:
+                from upscale_workflow import validate_review_checkpoint
+                validate_review_checkpoint(folder,stage,json.loads(job['options']) if isinstance(job['options'],str) else job['options'],with_hash=False)
+        except (HTTPException,OSError,ValueError,TypeError):
+            rejected=False
+            accept_reason='审核或尺寸、配准、覆盖检查点不完整，不能放行'
+    reason = ('任务仍在运行或回收中' if job['status'] in ('queued','running','retrying') or (task and not task.done())
+              else '只有失败或已取消的任务可以恢复' if job['status'] not in ('failed','cancelled')
+              else '缓存已清理，请重新执行任务' if cleared else None)
+    return {'can_retry':bool(stopped and not cleared), 'can_accept_review':bool(rejected),
+            'level':stage['index'] if stage else None, 'cache_available':cached,
+            'retry_label':'从当前检查点重试' if cached else '重新执行', 'reason':reason,
+            'retry_reason':reason, 'accept_review_reason':None if rejected else (reason or accept_reason)}
 
 
 def register(app,studio):
@@ -158,6 +215,63 @@ def register(app,studio):
             options['upscale_injection']=body.upscale_injection
             studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
         return {'ok':True}
+
+    @app.post('/api/upscale/jobs/{jid}/recover')
+    def recover(jid:str,body:RecoveryRequest,session=auth):
+        from task_progress import restart_detail
+        with studio.STORAGE.lock:
+            job=stopped(jid)
+            if job['status'] not in ('failed','cancelled'):
+                raise HTTPException(409,'只有失败或已取消的任务可以恢复')
+            available=recovery_payload(studio,jid,job)
+            if not available['can_retry']:
+                raise HTTPException(409,available['reason'] or '当前不能恢复')
+            options=json.loads(job['options'])
+            manifest=load_manifest(studio,jid)
+            previous=copy.deepcopy(manifest)
+            previous_approval=options.pop('review_approval',None)
+            if previous_approval and manifest:
+                for decision in manifest.get('review_decisions',[]):
+                    if decision.get('id')==previous_approval.get('id') and decision.get('status')=='queued':
+                        decision.update(status='superseded',finished=time.time())
+            recovery_id=studio.uid()
+            options['recovery_request_id']=recovery_id
+            if body.action=='accept_review':
+                if not available['can_accept_review']:
+                    raise HTTPException(409,'当前没有可放行的视觉审核拒绝')
+                level=available['level'];folder=stage_folder(studio,jid,level)
+                stage=next(item for item in manifest['stages'] if item['index']==level)
+                from upscale_workflow import validate_review_checkpoint
+                try: hashes=validate_review_checkpoint(folder,stage,options)
+                except ValueError as error:raise HTTPException(409,str(error)) from None
+                approval={'id':studio.uid(),'level':level,'folder':stage['folder'],'created':time.time(),**hashes}
+                options['review_approval']=approval
+                manifest.setdefault('review_decisions',[]).append({**approval,'action':'accept_review','status':'queued'})
+            else:
+                level=available['level']
+            studio.STORAGE.require(0,'恢复超分任务')
+            detail=restart_detail(job)
+            journal=None
+            if manifest:
+                manifest.update(status='queued',recovery_request_id=recovery_id);manifest.pop('error',None)
+                for stage in manifest['stages']:
+                    state=detail.get('level_states',{}).get(str(stage['index']))
+                    if state:stage['progress']=state
+                root=root_for(studio,jid);journal=root/'recovery-journal.json'
+                save_json(journal,{'id':recovery_id,'previous':previous,'next':manifest})
+            try:
+                with studio.db() as connection:
+                    changed=connection.execute("UPDATE jobs SET status='queued',options=?,attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail=? WHERE id=? AND status IN ('failed','cancelled')",(json.dumps(options),json.dumps(detail),jid)).rowcount
+                    if not changed:raise HTTPException(409,'任务状态已变化，请刷新')
+                    if manifest:save_json(root/'progressive.json',manifest)
+            except BaseException:
+                if journal and journal.exists():
+                    with contextlib.suppress(Exception):load_manifest(studio,jid)
+                raise
+            if journal:
+                with contextlib.suppress(OSError):journal.unlink()
+            studio.STORAGE.invalidate();studio.WAKE.set()
+        return {'ok':True,'action':body.action,'level':level}
 
     @app.post('/api/upscale/jobs/{jid}/redraw')
     def redraw_tiles(jid:str,body:RepairTiles,session=auth):
@@ -303,6 +417,7 @@ def register(app,studio):
         value['upscale_plan']=plan_payload(studio,jid,value)
         value['cache_bytes']=tree_bytes(root_for(studio,jid))
         value['cache_clearable']=value['status'] not in ('queued','running','retrying')
+        value['recovery']=recovery_payload(studio,jid)
         return value
 
     @app.get('/api/upscale/jobs/{jid}/stages/{index}/{artifact}')
