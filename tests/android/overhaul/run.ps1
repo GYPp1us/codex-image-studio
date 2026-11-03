@@ -6,6 +6,7 @@ param(
   [string]$PreparedProject,
   [switch]$FullLive,
   [switch]$Recovery,
+  [switch]$NoDiagOnly,
   [string]$LiveNoDiagId,
   [string]$LiveRetryId,
   [int]$LiveFixturePort,
@@ -81,7 +82,7 @@ if ($LiveFixturePort) {
   if (!$LiveFixtureToken -or !$LiveNormalId -or !$LiveUpscaleId -or !$LiveAssetId) { throw 'Live fixture requires its synthetic token and three IDs.' }
   $fullValue=if ($FullLive) { '1' } else { '0' }
   $recoveryArgs=@()
-  if ($Recovery) { if (!$LiveNoDiagId -or !$LiveRetryId) { throw 'Recovery requires separate no-checkpoint and retry synthetic IDs.' }; $recoveryArgs=@('-e','recovery','1','-e','nodiag',$LiveNoDiagId,'-e','retryid',$LiveRetryId) }
+  if ($Recovery) { if (!$LiveNoDiagId -or !$LiveRetryId) { throw 'Recovery requires separate no-checkpoint and retry synthetic IDs.' }; $noDiagValue=if ($NoDiagOnly) { '1' } else { '0' }; $recoveryArgs=@('-e','recovery','1','-e','nodiagonly',$noDiagValue,'-e','nodiag',$LiveNoDiagId,'-e','retryid',$LiveRetryId) }
   $result=& $adb -s $DeviceSerial shell am instrument -w -e live 1 -e full $fullValue @recoveryArgs -e port $LiveFixturePort -e token $LiveFixtureToken -e normal $LiveNormalId -e upscale $LiveUpscaleId -e asset $LiveAssetId site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
 } else {
   $result=& $adb -s $DeviceSerial shell am instrument -w site.arcol.imagestudio.qa/site.arcol.imagestudio.VisualInstrumentation
