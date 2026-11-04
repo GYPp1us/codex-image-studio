@@ -3,6 +3,45 @@
 const StudioGeneration=(()=>{
   const sessions=new Set(),names={images:'图片直连',responses:'Responses 直连',cli:'CLI 兼容'},states={running:'进行中',succeeded:'已完成',failed:'失败',cancelled:'已取消'};
   const val=v=>v===undefined||v===null||v===''?'未回显':String(v),wanted=v=>v===undefined||v===null||v===''?'未设置':String(v);
+  const callTitle=call=>call.kind==='polish'?'独立润色':call.kind==='inspection'?'视觉验收':call.scope||'图片';
+  const callMeta=call=>[states[call.status]||call.status||'等待',names[call.transport]||call.transport].filter(Boolean).join(' · ');
+  const callList=c=>[...c.calls.values()].sort((a,b)=>(b.created||b.updated||0)-(a.created||a.updated||0));
+  function logSummary(call){
+    const values=spec=>[spec?.image_model,spec?.response_model,spec?.quality&&'质量 '+spec.quality].filter(Boolean).join(' · ');
+    const requested=values(call.requested),reported=values(call.provider_reported);
+    const detail=[requested&&'请求 '+requested,reported&&'回显 '+reported].filter(Boolean).join('　');
+    return [callTitle(call),callMeta(call)].join(' · ')+(detail?'\n  '+detail:'');
+  }
+  function dismissCallPicker(picker){
+    return traverseHistory(()=>layers.at(-1)?.type==='sheet'&&topSheet()===picker?1:0);
+  }
+  function openCallPicker(c){
+    if(c.closed||c.picker||!c.calls.size)return;
+    const rows=callList(c).map(call=>{
+      const selected=call.id===c.displayCall;
+      return `<button type="button" class="generation-choice" data-call-id="${esc(call.id)}" aria-pressed="${selected}"><span class="generation-choice-text"><b>${esc(callTitle(call))}</b><small>${esc(callMeta(call))}</small></span>${selected?icon('check',18):''}</button>`;
+    }).join('');
+    const picker=openSheet({title:'选择调用记录',cls:'generation-picker',stack:true,html:`<div class="generation-choices">${rows}</div>`});
+    c.picker=picker;
+    c.trigger.setAttribute('aria-expanded','true');
+    picker.cleanup=()=>{
+      c.picker=null;
+      c.trigger.setAttribute('aria-expanded','false');
+      if(!c.closed&&c.trigger.isConnected)c.trigger.focus({preventScroll:true});
+    };
+    picker.onclick=event=>{
+      const button=event.target.closest('[data-call-id]');
+      if(c.closed||!button||!c.calls.has(button.dataset.callId))return;
+      c.selected=button.dataset.callId;
+      paint(c);
+      picker.onclick=null;
+      dismissCallPicker(picker);
+    };
+    picker.addEventListener('keydown',event=>{
+      if(event.key==='Escape'){event.preventDefault();dismissCallPicker(picker);}
+    });
+    picker.querySelector('[aria-pressed="true"]')?.focus();
+  }
   function comparison(call){
     const r=call.requested||{},p=call.provider_reported||{},image=call.actual_image||{};
     const rows=call.kind==='image'?[['图片模型',r.image_model,p.image_model],['图片质量',r.quality,p.quality],['尺寸',r.size,p.size],['背景',r.background,p.background]]:[];
@@ -17,10 +56,10 @@ const StudioGeneration=(()=>{
   function fmtBytes(n){return n>=1048576?(n/1048576).toFixed(1)+' MB':Math.round(n/1024)+' KB';}
   function create(root,job,adapter){
     const c={root,job,adapter,calls:new Map(),selected:null,source:null,closed:false,revision:0,imageToken:0,offset:0,total:0};
-    root.innerHTML='<h2>图像调用</h2><div class="generation-live"><div class="generation-live-head"><span data-generation-label>等待显影帧</span><span data-generation-state></span></div><div class="generation-frame" hidden><img class="generation-image" alt="当前调用的真实显影帧"><span class="generation-frame-badge">显影中 · 非最终作品</span></div><p class="note" data-generation-empty>服务端提供渐进帧时会在这里实时显示；未提供时等待最终图片。</p></div><label class="generation-select"><span>调用记录</span><span class="generation-select-field"><select class="input" aria-label="选择图像调用记录"></select><span class="generation-select-arrow" aria-hidden="true">⌄</span></span></label><div data-generation-observation></div><button class="secondary generation-more" hidden>更早的调用</button>';
-    c.select=root.querySelector('select');c.observation=root.querySelector('[data-generation-observation]');c.frame=root.querySelector('.generation-frame');c.image=root.querySelector('img');c.empty=root.querySelector('[data-generation-empty]');c.label=root.querySelector('[data-generation-label]');c.state=root.querySelector('[data-generation-state]');c.more=root.querySelector('.generation-more');
+    root.innerHTML=`<h2>图像调用</h2><div class="generation-live"><div class="generation-live-head"><span data-generation-label>等待显影帧</span><span data-generation-state></span></div><div class="generation-frame" hidden><img class="generation-image" alt="当前调用的真实显影帧"><span class="generation-frame-badge">显影中 · 非最终作品</span></div><p class="note" data-generation-empty>服务端提供渐进帧时会在这里实时显示；未提供时等待最终图片。</p></div><div class="generation-select" hidden><span>调用记录</span><button type="button" class="generation-trigger" aria-haspopup="dialog" aria-expanded="false"><span class="generation-choice-text"><b data-call-title></b><small data-call-meta></small></span>${icon('chevd',16)}</button></div><div data-generation-observation></div><button class="secondary generation-more" hidden>更早的调用</button>`;
+    c.trigger=root.querySelector('.generation-trigger');c.observation=root.querySelector('[data-generation-observation]');c.frame=root.querySelector('.generation-frame');c.image=root.querySelector('img');c.empty=root.querySelector('[data-generation-empty]');c.label=root.querySelector('[data-generation-label]');c.state=root.querySelector('[data-generation-state]');c.more=root.querySelector('.generation-more');
     c.retry=document.createElement('button');c.retry.className='link-btn generation-preview-retry';c.retry.textContent='重试加载显影帧';c.retry.hidden=true;c.root.querySelector('.generation-live').append(c.retry);c.retry.onclick=()=>{c.imageURL=null;paint(c);};
-    c.select.onchange=()=>{c.selected=c.select.value;paint(c);};
+    c.trigger.onclick=()=>openCallPicker(c);
     c.more.onclick=()=>load(c,true);
     const prior=job.generation_calls;
     if(prior){accept(c,prior.items||[]);c.offset=(prior.items||[]).length;c.total=prior.total||0;}
@@ -32,14 +71,14 @@ const StudioGeneration=(()=>{
   function accept(c,items){for(const item of items){if(!item.id)continue;const old=c.calls.get(item.id);if(old?.updated&&item.updated&&item.updated<old.updated)continue;const next={...old,...item};if(old?.preview?.revision>(item.preview?.revision??-1))next.preview=old.preview;if(old&&old.status!=='running'&&item.status==='running'&&old.updated>=item.updated)next.status=old.status;c.calls.set(item.id,next);}}
   function paint(c){
     if(c.closed)return;
-    const list=[...c.calls.values()].sort((a,b)=>(b.created||b.updated||0)-(a.created||a.updated||0));
+    const list=callList(c);
     if(c.selected&&!c.calls.has(c.selected))c.selected=null;
-    const call=c.calls.get(c.selected)||list[0],current=call?.id||'';
-    const signature=list.map(x=>`${x.id}:${x.status}:${x.scope}`).join('|');
-    if(c.listSignature!==signature){c.listSignature=signature;c.select.innerHTML=list.map(x=>`<option value="${esc(x.id)}">${esc(x.kind==='polish'?'独立润色':x.kind==='inspection'?'视觉验收':x.scope||'图片')} · ${esc(states[x.status]||x.status||'等待')} · ${esc(names[x.transport]||x.transport||'')}</option>`).join('');}
-    c.select.value=current;c.select.disabled=!list.length;c.root.querySelector('.generation-select').hidden=!list.length;c.more.hidden=c.offset>=c.total;c.more.disabled=!!c.loading;
+    const call=c.calls.get(c.selected)||list[0];
+    c.root.querySelector('.generation-select').hidden=!call;c.more.hidden=c.offset>=c.total;c.more.disabled=!!c.loading;
     if(!call){const modern=!!c.job.options?.generation;c.root.querySelector('.generation-live').hidden=!modern;c.observation.innerHTML=modern?'<p class="note">尚未发出调用。开始执行后会保留真实请求和服务端回显。</p>':'<p class="note">旧任务没有结构化请求记录。可查看原始调用日志；系统不会补造模型或质量回显。</p>';c.state.textContent='暂无记录';return;}
-    c.root.querySelector('.generation-live').hidden=false;
+    c.trigger.querySelector('[data-call-title]').textContent=callTitle(call);
+    c.trigger.querySelector('[data-call-meta]').textContent=callMeta(call);
+    c.root.querySelector('.generation-live').hidden=call.kind!=='image';
     if(c.displayCall!==call.id){c.displayCall=call.id;c.image.removeAttribute('src');c.frame.hidden=true;c.imageURL=null;++c.imageToken;c.retry.hidden=true;c.empty.textContent='服务端提供渐进帧时会在这里实时显示；未提供时等待最终图片。';}
     const detail=comparison(call);if(c.detailSignature!==detail){c.detailSignature=detail;c.observation.innerHTML=detail;}
     c.label.textContent=(call.kind==='image'?'真实显影 · ':call.kind==='polish'?'独立润色 · ':'视觉验收 · ')+(call.scope||'');
@@ -67,9 +106,9 @@ const StudioGeneration=(()=>{
     source.onmessage=event=>{if(c.closed||c.source!==source)return;try{const data=JSON.parse(event.data),previous=c.calls.size;if(!['running','queued','retrying'].includes(c.job.status)&&['running','queued','retrying'].includes(data.status))return;c.job={...c.job,status:data.status,generation:data.generation};if(data.generation?.id)accept(c,[data.generation]);paint(c);if(c.calls.size!==previous)load(c);if(!['running','queued','retrying'].includes(data.status)){disconnect(c);load(c);}}catch{}};
     source.onerror=()=>{if(c.closed||c.source!==source)return;c.state.textContent='连接恢复中';};
   }
-  function close(c){if(!c||c.closed)return;c.closed=true;++c.revision;++c.imageToken;disconnect(c);document.removeEventListener('visibilitychange',c.visibility);sessions.delete(c);c.image.removeAttribute('src');}
+  function close(c){if(!c||c.closed)return;c.closed=true;if(c.picker)dismissCallPicker(c.picker);++c.revision;++c.imageToken;disconnect(c);document.removeEventListener('visibilitychange',c.visibility);sessions.delete(c);c.image.removeAttribute('src');}
   function mount(root,job,adapter){if(!root)return;for(const c of sessions)if(c.root===root)close(c);return create(root,job,adapter);}
   function update(root,job){for(const c of sessions)if(c.root===root&&!c.closed){c.job={...c.job,...job};if(job.generation?.id)accept(c,[job.generation]);paint(c);if(!['running','queued','retrying'].includes(job.status))disconnect(c);else connect(c);}}
   new MutationObserver(()=>{for(const c of sessions)if(!c.root.isConnected)close(c);}).observe(document.documentElement,{childList:true,subtree:true});
-  return {mount,update,close,comparison};
+  return {mount,update,close,comparison,logSummary};
 })();

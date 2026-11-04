@@ -5,7 +5,7 @@ const html=fs.readFileSync('static/index.html','utf8');
 const prompt='Generate an image using {prompt}, preserving the requested native dimensions.';
 const baseAsset={id:'asset',width:900,height:1200,name:'山色.png',kind:'generated',bytes:1234,created:1000,job_id:'job',url:'/media/asset',thumbnail:'/media/asset?thumbnail=1',preview:'/media/asset?preview=1',favorite:0,tags:''};
 function makeJob(id,extra={}){return {id,batch_id:'batch',prompt:'静谧山色',status:'queued',created:1000,collection_id:'untemplated',template_id:'',refs:[],references:[],outputs:[],attempt:0,max_attempts:3,error:'',model:'gpt-test',effort:'high',options:{ratio:'1:1',size:'auto',model:'gpt-test',effort:'high',stitch:0},progress:{stage:'queued',label:'等待调度'},...extra};}
-async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',quickGate=null,settingsFail=false,bigFailure=false,chained=false,chainStatus='failed',defaultInjection='',rerollUpscale=false,savedDraft=null,previewGate=null,accountGate=null,loginGate=null,restoreGate=null,accountFail=false,loginFail=false,restoreFail=false,trashPaged=false,trashPageGate=null,connectGate=null,uploadGate=null,assetGate=null,renameGate=null,avatarGate=null,renameFail=false,passwordFail=false,staleStatusGate=null,settingsGate=null}={}){
+async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',quickGate=null,settingsFail=false,bigFailure=false,chained=false,chainStatus='failed',defaultInjection='',rerollUpscale=false,savedDraft=null,previewGate=null,accountGate=null,loginGate=null,restoreGate=null,accountFail=false,loginFail=false,restoreFail=false,trashPaged=false,trashPageGate=null,connectGate=null,uploadGate=null,assetGate=null,renameGate=null,avatarGate=null,renameFail=false,passwordFail=false,staleStatusGate=null,settingsGate=null,logText="ACTUAL LOG LINE"}={}){
  const {window}=parseHTML(html),{document}=window;const requests=[],timers=new Map(),stored={};let timerId=0,stateReads=0,statusReads=0;
  if(savedDraft)stored['studio-demo-composer:fixture']=JSON.stringify(savedDraft);
  const asset=huge?{...baseAsset,width:12000,height:8000,tile_template:'/api/assets/asset/tiles/{level}/{x}/{y}'}:baseAsset;
@@ -46,7 +46,8 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
   else if(path==='/api/upscale/jobs/up')d=up;
   else if(path==='/api/upscale/jobs/child')d=chainChild;
   else if(path==='/api/jobs/job')d=dataJobs[0];
-  else if(path==='/api/jobs/job/log')d={text:'ACTUAL LOG LINE'};
+  else if(path==='/api/jobs/job/log')d={text:logText};
+  else if(path.includes('/generation-calls?'))d={items:[],total:0};
   else if(path==='/api/upscale/jobs/up/prompt-snapshot')d={available:true,snapshot:{revision:'abcdef123456',templates:{tile:'SAVED TEMPLATE'}}};
   else if(path==='/api/upscale/jobs/up/calls')d={total:1,items:[{id:'savedcall',kind:'redraw',scope:{level:1,tile:0}}]};
   else if(path==='/api/upscale/jobs/up/calls/savedcall')d={worker_instruction:'ACTUAL SENT EXACTLY',prompt_metadata:{components:[{enabled:false,label:'disabled template',text:'disabled'}],snapshot_revision:'abcdef123456',scope:{level:1,tile:0}}};
@@ -73,7 +74,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  window.HTMLElement.prototype.setPointerCapture=function(){};window.HTMLElement.prototype.blur=function(){};
  const mediaListeners=[],media={matches:systemReduce,addEventListener:(type,listener)=>{if(type==='change')mediaListeners.push(listener);}};
  const context=vm.createContext({document,window,console,Headers,FormData,AbortController,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>stored[key]??(key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null),setItem(key,value){stored[key]=value;}},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
- for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-tasks.js','studio-upscale-prompts.js','studio-recovery.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
+ for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-generation.js','studio-tasks.js','studio-upscale-prompts.js','studio-recovery.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
  await vm.runInContext('studioReady',context);
  return {context,document,requests,stored,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
@@ -118,14 +119,18 @@ test('successful upscale hides both short and expanded progress bars',async()=>{
 });
 
 test('task log is loaded inside the existing task detail and does not open another screen',async()=>{
-  const f=await fixture();
+  const raw=JSON.stringify({time:1793761359.5484831,type:'generation_call_summary',message:{kind:'polish',scope:'polish',transport:'responses',status:'succeeded',requested:{response_model:'gpt-test'},provider_reported:{response_model:'gpt-echo'}}})+'\nACTUAL LOG LINE';
+  const f=await fixture({logText:raw});
   const button=f.document.createElement('button');button.dataset.act='task-info';button.dataset.id='job';f.document.body.append(button);
   await f.service.action('task-info',button);await tick();
   const workspace=f.document.querySelector('.task-details-workspace');assert.ok(workspace);
   const log=workspace.querySelector('[data-task-log]');assert.ok(log);
   const screenCount=f.document.querySelectorAll('.screen-layer').length;
   log.open=true;log.dispatchEvent(new f.context.window.Event('toggle'));await tick();await tick();
-  assert.equal(workspace.querySelector('[data-log-content]').textContent,'ACTUAL LOG LINE');
+  const summary=workspace.querySelector('[data-log-content]').textContent;
+  assert.match(summary,/^\d{1,2}\/\d{1,2} \d{2}:\d{2} · 独立润色 · 已完成 · Responses 直连/);
+  assert.match(summary,/请求 gpt-test.*回显 gpt-echo\nACTUAL LOG LINE$/);
+  assert.equal(workspace.querySelector('[data-log-raw]').textContent,raw);
   assert.equal(f.document.querySelectorAll('.screen-layer').length,screenCount);
   assert.equal(f.requests.filter(r=>r.path==='/api/jobs/job/log').length,1);
 });

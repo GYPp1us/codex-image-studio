@@ -27,16 +27,32 @@ const StudioTasks=(()=>{
       <section class="task-section"><h2>${upscale?'任务统一要求':'提示词'}</h2><div class="prompt-box">${esc(upscale?(j.options.upscale_requirements||j.options.upscale_injection||'按原图保真增强'):j.prompt)}</div>${j.polished_prompt?`<details class="task-disclosure"><summary>润色后的提示词</summary><div class="prompt-box">${esc(j.polished_prompt)}</div></details>`:''}</section>
       ${upscale&&!stopped?`<details class="task-section task-plan" id="task-plan"><summary>尺寸、切法与预算</summary>${preview?`<img class="up-check-image" src="${esc(preview)}" alt="本级输入与切图方案">`:''}${a.planHTML(source,j.options.stitch+'×',plan)}<p class="note">已调用 ${a.budget(plan?.calls)} · 缓存 ${a.bytes(j.cache_bytes||0)}</p></details>`:''}
       <section class="task-section generation-workspace" id="task-calls" data-generation-workspace></section>
-      <section class="task-section" id="task-logs"><h2>执行日志</h2><div data-task-log><pre class="prompt-box task-log" data-log-content>正在读取日志…</pre><button class="secondary" data-log-refresh>${icon('refresh',15)}刷新日志</button><details class="task-disclosure"><summary>原始 JSONL</summary><pre class="prompt-box task-log" data-log-raw></pre></details></div></section></main>
+      <section class="task-section" id="task-logs"><h2>执行日志</h2><div class="task-log-panel" data-task-log><pre class="prompt-box task-log" data-log-content tabindex="0">正在读取日志…</pre><button class="secondary" data-log-refresh>${icon('refresh',15)}刷新日志</button><details class="task-disclosure"><summary>原始 JSONL</summary><pre class="prompt-box task-log" data-log-raw tabindex="0"></pre></details></div></section></main>
       <aside class="task-detail-side"><section class="task-section"><h2>任务参数</h2><dl class="kv"><dt>文本模型</dt><dd>${esc(a.modelName(j.model))} · ${esc(j.effort)}</dd><dt>尝试</dt><dd>${j.attempt} / ${j.max_attempts}</dd><dt>创建</dt><dd>${fmtTime(j.created*1000)}</dd><dt>任务 ID</dt><dd class="task-id">${esc(j.id)}</dd></dl></section><section class="task-section" data-task-prompts></section></aside></div>`;
   }
+  function formatLogLine(line){
+    let event;
+    try{event=JSON.parse(line);}catch{return line;}
+    if(!event||typeof event!=='object')return line;
+    const stamp=event.timestamp||event.time||event.ts||'';
+    const numeric=typeof stamp==='number'||typeof stamp==='string'?Number(stamp):NaN;
+    const milliseconds=numeric<1e12?numeric*1000:numeric;
+    const time=numeric>0&&milliseconds<=8.64e15?fmtTime(milliseconds):stamp;
+    if(event.type==='generation_call_summary'&&event.message&&typeof event.message==='object'&&typeof StudioGeneration!=='undefined'){
+      return [time,StudioGeneration.logSummary(event.message)].filter(Boolean).join(' · ');
+    }
+    const kind=event.type||event.event||event.level||(event.studio_attempt?`第 ${event.studio_attempt} 次尝试`:'');
+    const message=event.message||event.msg||event.text||event.error||event.item?.text||event.item?.message||event.item?.error||event.item?.type||'';
+    return [time,kind,typeof message==='string'?message:JSON.stringify(message)].filter(Boolean).join(' · ')||line;
+  }
   async function readLog(c,button){
-    if(!alive(c)||c.logPending)return;const holder=c.el.querySelector('[data-log-content]');if(!holder)return;c.logPending=true;c.lastLog=Date.now();
+    if(!alive(c)||c.logPending||!c.el.querySelector('[data-log-content]'))return;
+    c.logPending=true;c.lastLog=Date.now();
     try{await StudioFeedback.run('task-log:'+c.id,button||c.el.querySelector('[data-log-refresh]'),async()=>{
       const log=await c.adapter.api(`/api/jobs/${c.id}/log`);if(!alive(c))return;
       const raw=String(log.text||'');c.el.querySelector('[data-log-raw]').textContent=raw;
-      holder.textContent=raw.split('\n').map(line=>{try{const event=JSON.parse(line);if(!event||typeof event!=='object')return line;const time=event.timestamp||event.time||event.ts||'',kind=event.type||event.event||event.level||(event.studio_attempt?`第 ${event.studio_attempt} 次尝试`:''),message=event.message||event.msg||event.text||event.error||event.item?.text||event.item?.message||event.item?.error||event.item?.type||'';return [time,kind,typeof message==='string'?message:JSON.stringify(message)].filter(Boolean).join(' · ')||line;}catch{return line;}}).join('\n')||'暂无日志';
-    });}catch(error){if(alive(c))holder.textContent=error.message;}finally{c.logPending=false;}
+      c.el.querySelector('[data-log-content]').textContent=raw.trim()?raw.split('\n').map(formatLogLine).join('\n'):'暂无日志';
+    });}catch(error){if(alive(c))c.el.querySelector('[data-log-content]').textContent=error.message;}finally{c.logPending=false;}
   }
   function jump(c,target){const section=c.el.querySelector('#'+target);if(section)section.scrollIntoView({block:'start',behavior:RM?'auto':'smooth'});}
   function mount(c,showLog){
