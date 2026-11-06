@@ -74,7 +74,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  window.HTMLElement.prototype.setPointerCapture=function(){};window.HTMLElement.prototype.blur=function(){};
  const mediaListeners=[],media={matches:systemReduce,addEventListener:(type,listener)=>{if(type==='change')mediaListeners.push(listener);}};
  const context=vm.createContext({document,window,console,Headers,FormData,AbortController,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>stored[key]??(key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null),setItem(key,value){stored[key]=value;}},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
- for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-generation.js','studio-tasks.js','studio-upscale-prompts.js','studio-recovery.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
+ for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-generation.js','studio-tasks.js','studio-upscale-prompts.js','studio-recovery.js','studio-quick-settings.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
  await vm.runInContext('studioReady',context);
  return {context,document,requests,stored,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
@@ -110,6 +110,19 @@ test('failed tile before an observed model stage still has a red failure segment
   const f=await progressFixture(makeProgressTask({failStage:'queued'}));
   assert.equal(f.board.querySelectorAll('[data-tile="1"] [data-state="failed"]').length,1);
   assert.equal(f.board.querySelectorAll('[data-tile="0"] [data-state="done"]').length,4);
+});
+
+test('local interpolation uses one honest progress column including cancellation and failure',async()=>{
+  const task=makeProgressTask({count:4});
+  const states=['done','failed','cancelled','queued'];
+  task.raw.progress.timeline[0].tiles.forEach((tile,index)=>Object.assign(tile,{processing:'local_interpolation',state:states[index]}));
+  const f=await progressFixture(task);
+  states.forEach((state,index)=>{
+    const column=f.board.querySelector(`[data-tile="${index}"]`);
+    assert.equal(column.querySelectorAll('.work-cell').length,1);
+    assert.equal(column.querySelector('.work-cell').dataset.state,state);
+    assert.match(column.textContent,/插值/);
+  });
 });
 test('successful upscale hides both short and expanded progress bars',async()=>{
   const f=await fixture();f.context.taskFixture=makeProgressTask({status:'done'});
@@ -604,4 +617,63 @@ test('advanced prompt controls start collapsed and preview requires a source',as
   const f=await fixture();f.run("S.upc.src=null;document.querySelector('#app').insertAdjacentHTML('beforeend',StudioUpscalePrompts.entry('upscale'))");
   const holder=f.document.querySelector('.prompt-composition[data-prompt-scope=upscale]');assert.ok(holder);assert.equal(holder.querySelector('.composition-advanced').hasAttribute('open'),false);assert.equal(holder.querySelector('[data-upp-preview]').hasAttribute('disabled'),true);
   assert.ok(holder.querySelector('[data-upp-policy=append_system]'));
+});
+
+function quickPointer(f,target,type,x=20,y=20){const e=new f.context.window.Event(type,{bubbles:true,cancelable:true});Object.assign(e,{pointerId:7,pointerType:'touch',button:0,clientX:x,clientY:y});target.dispatchEvent(e);}
+test('quick model switches affect only the composer and freeze into the submitted job',async()=>{
+ const f=await fixture();
+ f.run(`S.settings.quickSettings=[{key:'image_model',value:'gpt-image-2.6-sunburst',label:'太阳'},{key:'image_model',value:'gpt-image-2.6-flare',label:'火焰'},{key:'ratio',value:'3:2',label:''}];renderPage()`);
+ const chip=f.document.querySelector('[data-quick-id="image_model=gpt-image-2.6-flare"]');assert.ok(chip);chip.click();
+ assert.equal(f.run('S.composer.imageBackend.image_model'),'gpt-image-2.6-flare');
+ assert.equal(f.run('S.settings.imageBackend.image_model'),'gpt-image-2.5-sunburst');
+ assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,0);
+ f.run("S.composer.prompt='quick test';document.querySelector('#gen').disabled=false");await f.service.generate();
+ assert.equal(f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST').body.image_backend.image_model,'gpt-image-2.6-flare');
+});
+test('holding a detailed model option opens pin editor without applying the option',async()=>{
+ const f=await fixture();f.run('paramsSheet()');
+ const option=f.document.querySelector('[data-act="backend-opt"][data-v="gpt-image-2.6-sunburst"]');assert.ok(option);
+ quickPointer(f,option,'pointerdown');f.flushTimers(420);quickPointer(f,option,'pointerup');option.click();
+ const editor=f.document.querySelector('.quick-editor');assert.ok(editor);
+ assert.equal(f.run('S.composer.imageBackend?.image_model'),undefined);
+ editor.querySelector('[data-quick-name]').value='自定义模型';editor.querySelector('[data-quick-save]').click();await tick();await tick();await tick();
+ const request=f.requests.find(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.ok(request);
+ assert.deepEqual(request.body.quick_settings,[{key:'image_model',value:'gpt-image-2.6-sunburst',label:'自定义模型'}]);
+});
+test('failed pin save rolls back and leaves the editor and typed name for retry',async()=>{
+ const f=await fixture({settingsFail:true});f.run('paramsSheet()');
+ const option=f.document.querySelector('[data-act="backend-opt"][data-v="gpt-image-2.6-flare"]');quickPointer(f,option,'pointerdown');f.flushTimers(420);quickPointer(f,option,'pointerup');
+ const editor=f.document.querySelector('.quick-editor');editor.querySelector('[data-quick-name]').value='保留名称';editor.querySelector('[data-quick-save]').click();await tick();await tick();await tick();
+ assert.equal(f.run('S.settings.quickSettings.length'),0);assert.ok(editor.isConnected);assert.equal(editor.querySelector('[data-quick-name]').value,'保留名称');
+});
+test('quick setting drop uses the last pointer position even before an animation frame',async()=>{
+ const f=await fixture();f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:''},{key:'ratio',value:'3:2',label:''},{key:'ratio',value:'2:3',label:''}];renderPage()`);
+ const box=f.document.querySelector('.quick-strip');box.getBoundingClientRect=()=>({left:0,right:300,top:0,bottom:50,width:300,height:50});
+ for(const el of box.children)el.getBoundingClientRect=()=>{const i=[...box.children].indexOf(el);return {left:i*100,right:i*100+90,top:0,bottom:50,width:90,height:50};};
+ const first=box.querySelector('[data-quick-id="ratio=1:1"]');quickPointer(f,first,'pointerdown',20);f.flushTimers(420);quickPointer(f,box,'pointermove',270);quickPointer(f,box,'pointerup',270);await tick();await tick();await tick();
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','1:1']);
+});
+test('rapid keyboard reorders serialize and preserve both changes while saving',async()=>{
+ let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({settingsGate:gate});
+ f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:''},{key:'ratio',value:'3:2',label:''},{key:'ratio',value:'2:3',label:''}];renderPage()`);
+ const box=f.document.querySelector('.quick-strip'),first=box.querySelector('[data-quick-id="ratio=1:1"]');
+ function move(){const e=new f.context.window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(e,{key:'ArrowRight',altKey:true});first.dispatchEvent(e);}
+ move();await tick();move();await tick();assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,1);
+ assert.match(f.document.querySelector('.quick-save-state').textContent,/保存中/);
+ release();await tick();await tick();await tick();await tick();
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','1:1']);
+ const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,2);assert.deepEqual(writes[1].body.quick_settings.map(p=>p.value),['3:2','2:3','1:1']);
+});
+test('removing and undoing a shortcut restores its original place without changing the draft',async()=>{
+ const f=await fixture();f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:'方形'},{key:'ratio',value:'3:2',label:'横幅'},{key:'size',value:'2048',label:'大图'}];renderPage()`);
+ const chip=f.document.querySelector('[data-quick-id="ratio=3:2"]');quickPointer(f,chip,'pointerdown');f.flushTimers(420);quickPointer(f,chip,'pointerup');
+ const editor=f.document.querySelector('.quick-editor');assert.ok(editor);editor.querySelector('[data-quick-remove]').click();
+ for(let i=0;i<5;i++)await tick();assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['1:1','2048']);
+ const undo=f.document.querySelector('#toast button');assert.equal(undo.textContent,'撤销');undo.click();for(let i=0;i<5;i++)await tick();
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['1:1','3:2','2048']);assert.equal(f.run('S.composer.ratio'),'3:2');
+});
+test('moving before hold cancels pinning so scrolling cannot open the editor',async()=>{
+ const f=await fixture();f.run('paramsSheet()');const option=f.document.querySelector('[data-act="backend-opt"][data-v="gpt-image-2.6-flare"]');
+ quickPointer(f,option,'pointerdown',20,20);quickPointer(f,option,'pointermove',40,20);f.flushTimers(420);quickPointer(f,option,'pointerup',40,20);
+ assert.equal(f.document.querySelector('.quick-editor'),null);assert.equal(f.run('S.settings.quickSettings.length'),0);
 });

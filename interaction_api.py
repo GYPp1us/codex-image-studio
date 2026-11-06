@@ -6,6 +6,7 @@ from typing import Literal
 
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
+from quick_settings import QuickSetting
 
 
 class GenerationDefaults(BaseModel):
@@ -49,7 +50,8 @@ def preferences(studio):
     return {key: model(**studio.setting(key, {})).model_dump() for key, model in
             (('defaults', GenerationDefaults), ('quick', QuickDefaults), ('upscale', UpscaleDefaults), ('appearance', Appearance))} | {
                 'motion': studio.setting('motion', True),
-                'motion_mode': studio.setting('motion_mode', 'system'), 'notify': studio.setting('notify', False)}
+                'motion_mode': studio.setting('motion_mode', 'system'), 'notify': studio.setting('notify', False),
+                'quick_settings': [QuickSetting(**pin).model_dump() for pin in studio.setting('quick_settings', [])]}
 
 
 def validate_regions(size, regions):

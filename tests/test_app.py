@@ -815,5 +815,28 @@ elif 'exec' in sys.argv:
             self.client.patch('/api/settings',json={'paused':False},headers=self.headers)
 
 
+    def test_35_quick_settings_persist_and_job_backend_is_frozen(self):
+        before=self.client.get('/api/settings').json()
+        paused=self.client.get('/api/state').json()['paused']
+        pins=[{'key':'image_model','value':'gpt-image-2.6-sunburst','label':'太阳'},
+              {'key':'image_model','value':'gpt-image-2.6-flare','label':'焰'},
+              {'key':'ratio','value':'3:2','label':''}]
+        job_id=None
+        try:
+            response=self.client.patch('/api/settings',json={'paused':True,'quick_settings':pins},headers=self.headers)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(self.client.get('/api/settings').json()['quick_settings'],pins)
+            for invalid in ([{'key':'count','value':True}], [{'key':'image_model','value':'unknown'}], pins*9):
+                self.assertEqual(self.client.patch('/api/settings',json={'quick_settings':invalid},headers=self.headers).status_code,422)
+            backend={**before['image_backend'],'image_model':'gpt-image-2.6-flare'}
+            created=self.post('/api/jobs',{'prompt':'Snapshot quick model','image_backend':backend})
+            self.assertEqual(created.status_code,200,created.text)
+            job_id=created.json()['ids'][0]
+            self.assertEqual(self.client.get('/api/jobs/'+job_id).json()['options']['generation']['image_backend'],backend)
+            self.assertEqual(self.client.get('/api/settings').json()['image_backend'],before['image_backend'])
+        finally:
+            if job_id:self.post('/api/jobs/'+job_id+'/cancel')
+            self.client.patch('/api/settings',json={'paused':paused,'quick_settings':before.get('quick_settings',[])},headers=self.headers)
+
 if __name__=="__main__":
     unittest.main()

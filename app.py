@@ -29,13 +29,14 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from stitch_workflow import DEFAULT_STITCH_PROMPT, normalize_redraw_prompt
 from cli_scheduler import CallPool
 import image_runtime as imaging
 from storage_manager import Storage, StorageFull, tree_bytes
 from prompt_capture import extract as extract_polished_prompt,REPORT_INSTRUCTION
 from interaction_api import Appearance, GenerationDefaults, QuickDefaults, UpscaleDefaults, preferences, validate_regions, quick_model, enqueue_after_upscale
+from quick_settings import QuickSetting
 import account_profile
 import upscale_prompts
 import generation_runtime
@@ -544,6 +545,14 @@ class Settings(BaseModel):
     motion: bool | None = None
     motion_mode: Literal['system', 'reduce', 'full'] | None = None
     notify: bool | None = None
+    quick_settings: list[QuickSetting] | None = Field(default=None,max_length=24)
+
+    @field_validator('quick_settings')
+    @classmethod
+    def unique_quick_settings(cls,pins):
+        if pins is not None and len({(pin.key,pin.value) for pin in pins})!=len(pins):
+            raise ValueError('快速设置不能重复固定同一个值')
+        return pins
 
 
 @app.patch("/api/settings")
@@ -900,6 +909,7 @@ class JobInput(BaseModel):
     region: Rectangle | None = None
     regions: list[EditRegion] | None = Field(default=None,min_length=1,max_length=6)
     quick_edit: bool = False
+    image_backend: generation_runtime.ImageSettings | None = None
     quick_keep_spec: bool = True
     quick_use_ref: bool = True
     system_probe: bool = False
@@ -1010,6 +1020,8 @@ def _create_jobs(body):
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
     options['generation'] = generation_runtime.snapshot(sys.modules[__name__])
+    if body.image_backend is not None:
+        options['generation']['image_backend'] = body.image_backend.model_dump()
     options.update(stitch=body.stitch,after_upscale=body.after_upscale,source_asset_id=body.source_asset_id,upscale_injection=body.upscale_injection,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch or body.after_upscale else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch or body.after_upscale else '')
     if body.stitch or body.after_upscale:
         frozen=upscale_prompts.snapshot(sys.modules[__name__],body.upscale_policy)
