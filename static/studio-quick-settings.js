@@ -202,8 +202,8 @@ const StudioQuickSettings=(()=>{
     if(event.key==='Escape'&&press){event.preventDefault();finish(true);}
     const button=event.target.closest('[data-quick-id]');
     if(button&&event.altKey&&['ArrowLeft','ArrowRight'].includes(event.key)){
-      event.preventDefault();const next=[...pins()],from=next.findIndex(pin=>key(pin)===button.dataset.quickId),to=clamp(from+(event.key==='ArrowLeft'?-1:1),0,next.length-1);
-      if(from!==to){[next[from],next[to]]=[next[to],next[from]];commit(next,button);}
+      event.preventDefault();const id=button.dataset.quickId,direction=event.key==='ArrowLeft'?-1:1;
+      commit(current=>{const next=[...current],from=next.findIndex(pin=>key(pin)===id);if(from<0)return current;const to=clamp(from+direction,0,next.length-1);[next[from],next[to]]=[next[to],next[from]];return next;},button);
     }
     if(event.shiftKey&&event.key==='F10'){const pin=button?pins().find(pin=>key(pin)===button.dataset.quickId):fromButton(event.target.closest('button'));if(pin){event.preventDefault();editor(pin,event.target.closest('button'));}}
   });

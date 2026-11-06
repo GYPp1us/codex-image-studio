@@ -664,6 +664,18 @@ test('rapid keyboard reorders serialize and preserve both changes while saving',
  assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','1:1']);
  const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,2);assert.deepEqual(writes[1].body.quick_settings.map(p=>p.value),['3:2','2:3','1:1']);
 });
+
+test('three delayed reorder intents use each preceding saved order',async()=>{
+ let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({settingsGate:gate});
+ f.run(`S.settings.quickSettings=['1:1','3:2','2:3','16:9'].map(value=>({key:'ratio',value,label:''}));renderPage()`);
+ const first=f.document.querySelector('[data-quick-id="ratio=1:1"]');
+ for(let i=0;i<3;i++){const e=new f.context.window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(e,{key:'ArrowRight',altKey:true});first.dispatchEvent(e);await tick();}
+ assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,1);
+ release();for(let i=0;i<10;i++)await tick();
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','16:9','1:1']);
+ const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,3);
+ assert.deepEqual(writes[2].body.quick_settings.map(p=>p.value),['3:2','2:3','16:9','1:1']);
+});
 test('removing and undoing a shortcut restores its original place without changing the draft',async()=>{
  const f=await fixture();f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:'方形'},{key:'ratio',value:'3:2',label:'横幅'},{key:'size',value:'2048',label:'大图'}];renderPage()`);
  const chip=f.document.querySelector('[data-quick-id="ratio=3:2"]');quickPointer(f,chip,'pointerdown');f.flushTimers(420);quickPointer(f,chip,'pointerup');
