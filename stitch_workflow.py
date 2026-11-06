@@ -13,7 +13,7 @@ from pathlib import Path
 from call_errors import authentication_status_error
 
 from PIL import Image
-from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json, refresh_registered_tile
+from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json, refresh_registered_tile, alignment_current
 from task_progress import mapping, call_stage
 
 ENGINE_LOCK = asyncio.Semaphore(1)
@@ -249,7 +249,7 @@ async def apply_local_repairs(studio,jid,folder,plan,options,generate):
         if not source.exists():shutil.copyfile(output,source)
         with Image.open(source) as image:context_box(image.size,region)
         diagnostic=folder/'diagnostics'/f'alignment-{index}.json'
-        if not diagnostic.exists() or json.loads(diagnostic.read_text(encoding='utf-8')).get('registration_version',0)<REGISTRATION_VERSION:
+        if not alignment_current(folder,index):
             await engine(studio,jid,folder,'register','--tile',index)
         result=work/'result.png'
         if not result.exists():
@@ -337,7 +337,7 @@ async def run(studio,jid):
         for tile in plan['tiles']:
             i=tile['index'];progress(studio,jid,"registration",i,factor,detail=f"第 {i+1}/{factor} 块")
             diagnostic=folder/'diagnostics'/f'alignment-{i}.json'
-            if diagnostic.exists() and json.loads(diagnostic.read_text(encoding='utf-8')).get('registration_version',0)>=REGISTRATION_VERSION:continue
+            if alignment_current(folder,i):continue
             for attempt in range(maximum):
                 try:
                     await engine(studio,jid,folder,"register","--tile",i);break

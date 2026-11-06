@@ -49,10 +49,12 @@ class LevelStudio:
 
 def sync_stage(stage,plan,maximum):
     count=len(plan['tiles']);superseded=sum(s.get('calls',1) for s in plan.get('adaptive_splits',[]))+plan.get('manual_calls',0)
-    reviews=stage.get('review_budget',1)
-    stage.update(tile_count=count,adaptive_splits=plan.get('adaptive_splits',[]))
-    stage['budget']={'images':count+superseded,'reviews':reviews,'calls':count+superseded+reviews,
-                     'max_calls':count*maximum+superseded+reviews}
+    local=len(plan.get('smooth_backgrounds',{}))
+    images=count-local
+    reviews=0 if local==count and not plan.get('manual_calls') else stage.get('review_budget',1)
+    stage.update(tile_count=count,local_tile_count=local,adaptive_splits=plan.get('adaptive_splits',[]))
+    stage['budget']={'images':images+superseded,'reviews':reviews,'calls':images+superseded+reviews,
+                     'max_calls':images*maximum+superseded+reviews}
 
 
 def refresh_totals(manifest):
@@ -158,7 +160,16 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
     plan_file=folder/'plan.json'
     plan=json.loads(plan_file.read_text(encoding='utf-8')) if plan_file.exists() else execution_plan(stage)
     save_json(plan_file,plan)
-    await engine(proxy,jid,folder,'prepare')
+    async def prepare_plan():
+        await engine(proxy,jid,folder,'prepare')
+        prepared=json.loads(plan_file.read_text(encoding='utf-8'))
+        for tile in prepared['tiles']:
+            if upscale_prompts.repair_for(options,stage['index'],tile['index']):
+                prepared.get('smooth_backgrounds',{}).pop(str(tile['index']),None)
+        save_json(plan_file,prepared)
+        sync_stage(stage,prepared,maximum);refresh_totals(manifest);save_json(manifest_file,manifest)
+        return prepared
+    plan=await prepare_plan()
     async def repair_call(name,instruction,refs,phase,done,units):
         if no_generation:raise WorkflowError('审核放行要求保留现有检查点，不能自动重绘')
         plan['manual_calls']=plan.get('manual_calls',0)+1;save_json(plan_file,plan)
@@ -170,6 +181,13 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
     selection=options.get('repair_selection',{})
     selected=set(selection['tiles']) if selection.get('level')==stage['index'] else None
     states={};tasks=[];token=str(time.time_ns());attempts={}
+
+    def retain_ai_checkpoint(index):
+        # Classification predicts new work; an existing AI return keeps its real origin.
+        if (folder/'diagnostics'/f'local-{index}.json').is_file():return
+        if plan.get('smooth_backgrounds',{}).pop(str(index),None) is not None:
+            save_json(plan_file,plan)
+            sync_stage(stage,plan,maximum);refresh_totals(manifest);save_json(manifest_file,manifest)
 
     def publish():
         current=[states.get(t['index'],{'index':t['index']+1,'state':'queued','label':'等待并发名额'}) for t in plan['tiles']]
@@ -188,17 +206,42 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
         def changed(label,active,source):
             states[index].update(state='running' if active else 'queued',stage=call_stage(label,active,states[index].get('stage')),label=label,source=source);publish()
         if selected is not None and index not in selected:
+            if output.exists():retain_ai_checkpoint(index)
             states[index].update(state='done' if output.exists() else 'missing',stage='receiving' if output.exists() else 'queued',checkpoint=output.exists(),label='保留未选中的块' if output.exists() else '未选择重绘');publish();return None
         if output.exists():
             try:
+                local_file=folder/'diagnostics'/f'local-{index}.json'
+                if local_file.is_file():
+                    if repair:raise ValueError('明确重绘要求不能复用本地背景插值')
+                    local=json.loads(local_file.read_text(encoding='utf-8'))
+                    if local.get('source_sha256')!=imaging.file_sha(folder/'crops'/f'{index}.png') or local.get('output_sha256')!=imaging.file_sha(output):
+                        raise ValueError('平滑背景检查点与原图不一致')
                 if modern and (not provenance.is_file() or json.loads(provenance.read_text(encoding='utf-8')).get('identity')!=identity):
                     raise ValueError('图块指令版本与检查点不一致')
                 measured=imaging.assess_return(output,tile['size'])
-                if measured.decision=='accept':states[index].update(state='done',stage='receiving',checkpoint=True,label='已复用');publish();return None
+                if measured.decision=='accept':
+                    retain_ai_checkpoint(index)
+                    states[index].update(state='done',stage='receiving',checkpoint=True,label='已复用')
+                    if local_file.is_file():states[index].update(processing='local_interpolation',label='已复用本地插值')
+                    publish();return None
             except (ValueError,OSError):
                 if no_generation:raise WorkflowError('审核放行所需图块检查点无效，未自动重绘')
                 output.unlink(missing_ok=True)
         if no_generation:raise WorkflowError('审核放行所需图块检查点无效，未自动重绘')
+        if str(index) in plan.get('smooth_backgrounds',{}) and not repair:
+            ensure_active(studio,jid)
+            studio.STORAGE.require(math.prod(tile['size'])*4,'插值平滑背景')
+            states[index].update(state='running',stage='saving',processing='local_interpolation',label='正在插值平滑背景');publish()
+            try:
+                await engine(proxy,jid,folder,'interpolate','--tile',index)
+            except asyncio.CancelledError:
+                states[index].update(state='cancelled',label='本地插值已停止');publish();raise
+            except (WorkflowError,ValueError,OSError) as error:
+                states[index].update(state='failed',label=str(error)[:160]);publish();raise
+            if modern:save_json(provenance,{'identity':identity,'processing':'local_interpolation','method':'bilinear'})
+            states[index].update(state='done',stage='receiving',checkpoint=True,processing='local_interpolation',label='平滑背景 · 双线性插值')
+            publish();return None
+        (folder/'diagnostics'/f'local-{index}.json').unlink(missing_ok=True)
         error=feedback.get(str(index),'')
         for attempt in range(attempts.get(index,0),maximum):
             attempts[index]=attempt+1
@@ -259,7 +302,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
             sync_stage(stage,plan,maximum);refresh_totals(manifest)
             save_json(plan_file,plan);save_json(manifest_file,manifest)
-            await engine(proxy,jid,folder,'prepare')
+            plan=await prepare_plan()
         for number,tile in enumerate(plan['tiles']):
             index=tile['index'];diagnostic=folder/'diagnostics'/f'alignment-{index}.json'
             progress(proxy,jid,'registration',number,len(plan['tiles']),detail=f"第 {number+1}/{len(plan['tiles'])} 块")
@@ -288,6 +331,14 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
         progress(proxy,jid,'inspection',0,1,waiting=True,substage='检查原生细节、接缝与外沿')
         review_file=folder/'diagnostics'/'visual-review.json'
         review=json.loads(review_file.read_text(encoding='utf-8')) if review_file.exists() else None
+        if review is None and not plan.get('manual_calls') and len(plan.get('smooth_backgrounds',{}))==len(plan['tiles']) and all((folder/'diagnostics'/f"local-{tile['index']}.json").is_file() for tile in plan['tiles']):
+            local_valid=all(
+                (local:=json.loads((folder/'diagnostics'/f"local-{tile['index']}.json").read_text())).get('output_sha256')==imaging.file_sha(folder/'redraw'/f"{tile['index']}.png")
+                and local.get('source_sha256')==imaging.file_sha(folder/'crops'/f"{tile['index']}.png")
+                for tile in plan['tiles'])
+            if local_valid:
+                review={'pass':True,'issues':[],'method':'deterministic_interpolation','label':'全图平滑区域插值，尺寸与覆盖检查通过'}
+                save_json(review_file,review)
         approved = bool(approval and approval.get('level') == stage['index'])
         previously_accepted = False
         if approved:
