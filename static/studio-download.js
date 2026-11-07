@@ -42,7 +42,9 @@ const StudioDownloads=(()=>{
       let canShare=false;try{canShare=!!file&&typeof navigator.share==='function'&&!!navigator.canShare?.({files:[file]});}catch{}
       if(canShare){
         const save=document.createElement('button');save.className='primary';save.textContent='保存到相册 / 分享';link.className='secondary';actions.prepend(save);
-        save.onclick=()=>{error.hidden=true;save.disabled=true;handedOff=true;let pending;try{pending=navigator.share({files:[file]});}catch(e){pending=Promise.reject(e);}
+        save.onclick=()=>{if(save.disabled)return;error.hidden=true;handedOff=true;
+          const share=()=>navigator.share({files:[file]});let pending;
+          try{if(typeof StudioFeedback!=='undefined')pending=StudioFeedback.run('download-share:'+image.id,save,share,{immediate:true});else{save.disabled=true;pending=share();}}catch(e){pending=Promise.reject(e);}
           Promise.resolve(pending).catch(e=>{if(valid()&&e.name!=='AbortError'){error.hidden=false;error.textContent='系统未能分享图片，请使用下方“下载原图”。';}}).finally(()=>{if(valid())save.disabled=false;});};
       }else{handedOff=true;link.click();label.textContent='原图已交给浏览器保存';}
     }).catch(fail);

@@ -5,8 +5,8 @@ const html=fs.readFileSync('static/index.html','utf8');
 const prompt='Generate an image using {prompt}, preserving the requested native dimensions.';
 const baseAsset={id:'asset',width:900,height:1200,name:'山色.png',kind:'generated',bytes:1234,created:1000,job_id:'job',url:'/media/asset',thumbnail:'/media/asset?thumbnail=1',preview:'/media/asset?preview=1',favorite:0,tags:''};
 function makeJob(id,extra={}){return {id,batch_id:'batch',prompt:'静谧山色',status:'queued',created:1000,collection_id:'untemplated',template_id:'',refs:[],references:[],outputs:[],attempt:0,max_attempts:3,error:'',model:'gpt-test',effort:'high',options:{ratio:'1:1',size:'auto',model:'gpt-test',effort:'high',stitch:0},progress:{stage:'queued',label:'等待调度'},...extra};}
-async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL=''}={}){
- const {window}=parseHTML(html),{document}=window;const requests=[],timers=new Map();let timerId=0,stateReads=0;
+async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',blockedPaths=[],skipReady=false,savedDraft=null}={}){
+ const {window}=parseHTML(html),{document}=window;const stored=new Map(savedDraft?[["studio-demo-composer:fixture",JSON.stringify(savedDraft)]]:[]);const requests=[],timers=new Map();let timerId=0,stateReads=0,clock=0;
  const asset=huge?{...baseAsset,width:12000,height:8000,tile_template:'/api/assets/asset/tiles/{level}/{x}/{y}'}:baseAsset;
  const dataJobs=[makeJob('job',{status:'succeeded',outputs:[asset]}),...Array.from({length:19},(_,i)=>makeJob('job'+i))];
  const plan={factor:4,input_size:[900,1200],output_size:[1800,2400],budget:{images:3,reviews:1,max_calls:10},stages:[{index:1,input_size:[900,1200],output_size:[1800,2400],columns:1,rows:3,tile_count:3,status:'failed',cuts:{x:[],y:[400,800]},budget:{images:3,reviews:1,max_calls:10},diagnostic_available:true}]};
@@ -16,6 +16,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  const state={model:'gpt-test',effort:'high',concurrency:2,max_attempts:3,paused:true,preferences:prefs};
  const storage={bytes:1024,limit_bytes:0,free_bytes:1e9,groups:{database:512},tasks:[],trash:{assets:0,collections:0}};
  const fetch=async(path,opt={})=>{requests.push({path,method:opt.method||'GET',body:typeof opt.body==='string'?JSON.parse(opt.body):opt.body,headers:opt.headers});let d;
+  if(blockedPaths.includes(path))await new Promise(()=>{});
   if(path==='/api/auth/state')d={initialized:true,authenticated:!unauth,csrf:'csrf-fixture',cache_scope:'fixture'};
   else if(path==='/api/state'){if(failSync&&stateReads++>0)return {ok:false,status:503,json:async()=>({detail:'poll unavailable'})};d=state;}
   else if(path==='/api/settings')d=opt.method?{ok:true}:prefs;
@@ -47,10 +48,10 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  window.HTMLElement.prototype.getAnimations=function(){return [];};window.HTMLElement.prototype.animate=function(){return {finished:Promise.resolve({cancel(){}}),cancel(){}};};window.HTMLElement.prototype.scrollIntoView=function(){};window.HTMLElement.prototype.scrollTo=function(){};
  window.HTMLElement.prototype.setPointerCapture=function(){};window.HTMLElement.prototype.blur=function(){};
  const mediaListeners=[],media={matches:systemReduce,addEventListener:(type,listener)=>{if(type==='change')mediaListeners.push(listener);}};
- const context=vm.createContext({document,window,console,Headers,FormData,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null,setItem(){}},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:query.includes('min-aspect-ratio')?{matches:false,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
+ const context=vm.createContext({document,window,console,Headers,FormData,AbortController,DOMException,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>stored.get(key)??(key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null),setItem:(key,value)=>stored.set(key,value)},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:query.includes('min-aspect-ratio')?{matches:false,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms,at:clock+ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
  for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-tasks.js','studio-upscale-prompts.js','studio-landscape.js','studio-failure-map.js','studio-recovery.js','studio-quick-settings.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
- await vm.runInContext('studioReady',context);
- return {context,document,requests,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
+ if(skipReady){for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));}else await vm.runInContext('studioReady',context);
+ return {context,document,requests,stored,advance(ms){clock+=ms;for(const [id,t] of [...timers])if(t.at<=clock){timers.delete(id);t.fn();}},setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){let count=0;for(const [id,t] of [...timers])if(t.ms===ms){count++;timers.delete(id);t.fn();}return count;},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
 
 function previewLoads(f,{decode=true}={}){
@@ -226,4 +227,128 @@ test('viewer theme and dark chrome are held until the closing animation finishes
  f.document.querySelector('.slide[data-o="0"] img').animate=()=>({finished:new Promise(resolve=>finish=resolve),cancel(){}});
  f.run('closeViewer()');assert.equal(f.document.documentElement.classList.contains('viewer-present'),true);assert.equal(f.document.querySelector('#app').classList.contains('dark-sb'),true);assert.equal(f.document.querySelector('meta[name="theme-color"]').content,'#0c0c0a');
  finish();await previewTick();assert.equal(f.document.documentElement.classList.contains('viewer-present'),false);assert.equal(f.document.querySelector('#app').classList.contains('dark-sb'),false);assert.equal(f.document.querySelector('meta[name="theme-color"]').content,'#f5f4ef');
+});
+
+test('late preview from an earlier attempt cannot complete a retry of the same URL',async()=>{
+ const f=await fixture(),loads=previewLoads(f);f.run('openViewer("asset","recent")');
+ const image=f.document.querySelector('.slide[data-o="0"] img');
+ f.run('showProgressive(curImg(),img("asset"),true)');assert.equal(loads.length,2);
+ loads[0].resolve();await previewTick();
+ assert.equal(image.getAttribute('src'),baseAsset.thumbnail,'old attempt must not replace the thumbnail');
+ assert.equal(image.dataset.loading,'1','old attempt must not finish the new load');
+ loads[1].resolve();await previewTick();assert.equal(image.getAttribute('src'),baseAsset.preview);
+});
+
+
+test('a stalled GET response body times out and a later request can succeed',async()=>{
+ const f=await fixture();let calls=0;
+ f.context.fetch=async()=>{calls++;return {ok:true,status:200,json:()=>calls===1?new Promise(()=>{}):Promise.resolve({ok:true})};};
+ const pending=f.service.api('/api/synthetic');await previewTick();assert.ok(f.flushTimers(15000),'GET deadline must be scheduled');
+ await assert.rejects(pending);assert.equal((await f.service.api('/api/synthetic')).ok,true);assert.equal(calls,2);
+});
+
+test('a timed-out mutation is not automatically sent a second time',async()=>{
+ const f=await fixture();let calls=0;f.context.fetch=()=>{calls++;return new Promise(()=>{});};
+ const pending=f.service.api('/api/jobs',{method:'POST',body:{prompt:'fixture'}});assert.ok(f.flushTimers(45000),'mutation deadline must be scheduled');
+ await assert.rejects(pending);await previewTick();assert.equal(calls,1);
+});
+
+test('a hung preview exposes retry after its deadline and retains the thumbnail',async()=>{
+ const f=await fixture(),loads=previewLoads(f);f.run('openViewer("asset","recent")');
+ const image=f.document.querySelector('.slide[data-o="0"] img');
+ assert.ok(f.flushTimers(20000),'preview must have a deadline');await previewTick();
+ assert.equal(image.dataset.loading,'error');assert.equal(image.getAttribute('src'),baseAsset.thumbnail);
+ loads[0].resolve();await previewTick();assert.equal(image.dataset.loading,'error');
+});
+
+test('visibility resume interrupts a hung poll and starts a fresh sync',async()=>{
+ const f=await fixture(),realFetch=f.context.fetch;let stateRequests=0,stalledSignal;
+ f.context.fetch=(path,opt={})=>{
+  if(path==='/api/state'&&++stateRequests===1){stalledSignal=opt.signal;return new Promise((resolve,reject)=>opt.signal?.addEventListener('abort',()=>reject(Object.assign(new Error('cancelled'),{name:'AbortError'})),{once:true}));}
+  return realFetch(path,opt);
+ };
+ assert.ok(f.flushTimers(2500));await previewTick();assert.equal(stateRequests,1);
+ f.document.dispatchEvent(new f.context.window.Event('visibilitychange'));await previewTick();await previewTick();
+ assert.equal(stalledSignal?.aborted,true,'the stale request must be interrupted');
+ assert.ok(stateRequests>=2,'a new foreground sync must not wait for the stale request');
+});
+
+
+test('first screen and draft remain usable while optional startup calls never finish',async()=>{
+ const blockedPaths=['/api/account','/api/setup/status','/api/models','/api/assets?kind=all&limit=80','/api/assets/asset/info'];
+ const f=await fixture({skipReady:true,blockedPaths,legacyDraft:{prompt:'保留的草稿',refs:['asset'],ratio:'auto'}});
+ assert.equal(f.document.querySelector('#tabbar').hidden,false);
+ assert.equal(f.run('S.composer.prompt'),'保留的草稿');
+ assert.deepEqual(Array.from(f.run('S.composer.refs')),['asset']);
+ assert.ok(f.document.querySelector('#prompt'));
+ for(const path of blockedPaths)assert.ok(f.requests.some(item=>item.path===path),path);
+});
+
+
+test('backgrounding before startup restores the draft never overwrites the saved draft',async()=>{
+ const saved={composer:{prompt:'必须保留的草稿',refs:['asset']},mode:'gen'};
+ const f=await fixture({skipReady:true,blockedPaths:['/api/settings'],savedDraft:saved});
+ assert.ok(f.requests.some(item=>item.path==='/api/settings'));
+ Object.defineProperty(f.document,'hidden',{configurable:true,value:true});
+ f.document.dispatchEvent(new f.context.window.Event('visibilitychange'));await previewTick();
+ assert.deepEqual(JSON.parse(f.stored.get('studio-demo-composer:fixture')),saved);
+});
+
+
+function uploadXHR(f){
+ const requests=[];
+ f.context.XMLHttpRequest=class {
+  constructor(){this.upload={};this.headers={};this.readyState=0;this.status=0;this.responseText='';this.aborts=0;requests.push(this);}
+  open(method,path){this.method=method;this.path=path;}
+  setRequestHeader(name,value){this.headers[name.toLowerCase()]=value;}
+  send(body){this.body=body;this.sends=(this.sends||0)+1;}
+  abort(){this.aborts++;this.onabort?.();}
+  sent(loaded){this.upload.onprogress?.({loaded});}
+  received(loaded){this.onprogress?.({loaded});}
+  headersReceived(){this.readyState=2;this.onreadystatechange?.();}
+  complete(status,data){this.status=status;this.responseText=data;this.onload?.();}
+ };
+ return requests;
+}
+
+test('FormData upload remains active while byte progress continues beyond 45 seconds',async()=>{
+ const f=await fixture(),xhr=uploadXHR(f),form=new FormData();form.append('description','fixture');
+ const controller=new AbortController(),pending=f.service.api('/api/assets',{method:'POST',body:form,signal:controller.signal});
+ assert.equal(xhr.length,1);const item=xhr[0];assert.equal(item.path,'/api/assets');assert.equal(item.method,'POST');
+ assert.equal(item.withCredentials,true);assert.equal(item.headers['x-csrf-token'],'csrf-fixture');assert.equal(item.headers['content-type'],undefined);
+ for(let i=1;i<=4;i++){f.advance(30000);item.sent(i*100);await previewTick();assert.equal(item.aborts,0);}
+ item.headersReceived();f.advance(30000);item.received(1);f.advance(30000);item.complete(200,'{\"ok\":true}');
+ assert.equal((await pending).ok,true);assert.equal(item.sends,1);controller.abort();assert.equal(item.aborts,0,'success must detach cancellation listener');
+});
+
+test('stalled FormData upload reports uncertain timeout and is not resubmitted',async()=>{
+ const f=await fixture(),xhr=uploadXHR(f),form=new FormData();form.append('description','fixture');
+ const result=f.service.api('/api/assets',{method:'POST',body:form});f.advance(44999);assert.equal(xhr[0].aborts,0);
+ f.advance(1);await assert.rejects(result,error=>error.name==='TimeoutError'&&error.uncertain===true);
+ assert.equal(xhr.length,1);assert.equal(xhr[0].sends,1);assert.equal(xhr[0].aborts,1);
+ assert.equal(xhr[0].onload,null);assert.equal(xhr[0].upload.onprogress,null);
+});
+
+test('aborting FormData upload cancels the request once and cleans up its timer',async()=>{
+ const f=await fixture(),xhr=uploadXHR(f),form=new FormData(),controller=new AbortController();
+ const result=f.service.api('/api/assets',{method:'POST',body:form,signal:controller.signal});controller.abort();
+ await assert.rejects(result,error=>error.name==='AbortError');assert.equal(xhr[0].aborts,1);assert.equal(xhr[0].onload,null);
+ f.advance(60000);assert.equal(xhr[0].aborts,1);assert.equal(xhr[0].sends,1);
+});
+
+test('FormData upload reports malformed JSON and HTTP errors and cleans up',async()=>{
+ for(const [status,body,expected] of [[200,'not-json',/服务器返回异常/],[413,'{\"detail\":\"文件过大\"}',/文件过大/]]){
+  const f=await fixture(),xhr=uploadXHR(f),form=new FormData(),controller=new AbortController();
+  const result=f.service.api('/api/assets',{method:'POST',body:form,signal:controller.signal});xhr[0].complete(status,body);
+  await assert.rejects(result,expected);assert.equal(xhr[0].onload,null);assert.equal(xhr[0].upload.onprogress,null);
+  controller.abort();f.advance(60000);assert.equal(xhr[0].aborts,0);assert.equal(xhr[0].sends,1);
+ }
+});
+
+test('duplicate upload progress events without new bytes do not postpone timeout',async()=>{
+ const f=await fixture(),xhr=uploadXHR(f),form=new FormData();
+ const result=f.service.api('/api/assets',{method:'POST',body:form});xhr[0].sent(100);
+ f.advance(30000);xhr[0].sent(100);f.advance(15000);
+ await assert.rejects(result,error=>error.name==='TimeoutError'&&error.uncertain===true);
+ assert.equal(xhr[0].sends,1);assert.equal(xhr[0].aborts,1);
 });

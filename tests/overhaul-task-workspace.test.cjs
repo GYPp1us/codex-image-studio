@@ -522,8 +522,10 @@ test('avatar reset provides a real pending label and prevents repeat actions',as
   let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({avatarURL:'/old.png',avatarGate:gate});
   const opener=f.document.createElement('button');opener.dataset.act='avatar-edit';f.document.body.append(opener);await f.service.action('avatar-edit',opener);
   const editor=f.document.querySelector('.avatar-editor'),button=editor.querySelector('.avatar-remove'),save=editor.querySelector('.avatar-save');button.click();await tick();button.click();await tick();
-  const calls=f.requests.filter(r=>r.path==='/api/account/avatar'&&r.method==='DELETE').length,text=save.textContent,disabled=button.disabled;
-  release();await tick();await tick();assert.equal(calls,1);assert.equal(disabled,true);assert.match(text,/正在保存/);
+  const calls=f.requests.filter(r=>r.path==='/api/account/avatar'&&r.method==='DELETE').length;
+  assert.equal(button.disabled,true);assert.equal(button.dataset.pending,'1');assert.equal(button.dataset.pendingMode,'text');
+  assert.equal(button.querySelectorAll('.action-spinner').length,1);assert.equal(save.textContent,'保存头像');assert.equal(save.disabled,true);
+  release();await tick();await tick();assert.equal(calls,1);assert.equal(button.hasAttribute('data-pending'),false);assert.equal(save.disabled,true);
 });
 
 test('overlapping image name saves keep the latest user value',async()=>{
@@ -688,4 +690,14 @@ test('moving before hold cancels pinning so scrolling cannot open the editor',as
  const f=await fixture();f.run('paramsSheet()');const option=f.document.querySelector('[data-act="backend-opt"][data-v="gpt-image-2.6-flare"]');
  quickPointer(f,option,'pointerdown',20,20);quickPointer(f,option,'pointermove',40,20);f.flushTimers(420);quickPointer(f,option,'pointerup',40,20);
  assert.equal(f.document.querySelector('.quick-editor'),null);assert.equal(f.run('S.settings.quickSettings.length'),0);
+});
+
+test('failed avatar reset restores the trigger and does not change save availability',async()=>{
+ let reject;const gate=new Promise((resolve,fail)=>reject=fail),f=await fixture({avatarURL:'/old.png',avatarGate:gate});
+ const opener=f.document.createElement('button');opener.dataset.act='avatar-edit';f.document.body.append(opener);await f.service.action('avatar-edit',opener);
+ const editor=f.document.querySelector('.avatar-editor'),button=editor.querySelector('.avatar-remove'),save=editor.querySelector('.avatar-save');
+ button.click();await tick();assert.equal(button.dataset.pending,'1');assert.equal(save.disabled,true);
+ reject(new Error('fixture avatar failure'));await tick();await tick();
+ assert.equal(button.hasAttribute('data-pending'),false);assert.equal(button.disabled,false);
+ assert.match(button.textContent,/恢复默认头像/);assert.equal(save.disabled,true);
 });

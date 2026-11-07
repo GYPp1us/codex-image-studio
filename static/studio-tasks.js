@@ -68,7 +68,7 @@ const StudioTasks=(()=>{
   async function fetchJob(c){const j=await c.adapter.api('/api/jobs/'+c.id);return j.options?.stitch?c.adapter.api('/api/upscale/jobs/'+c.id):j;}
   async function reload(c){
     if(!alive(c))return;
-    return StudioFeedback.run('task-refresh:'+c.id,c.el.querySelector('[data-task-refresh]'),async()=>{
+    return StudioFeedback.run('task-refresh:'+c.id,c.el.querySelector('[data-task-refresh],[data-task-retry]'),async()=>{
       const job=await fetchJob(c);if(!alive(c))return;
       c.job=job;c.adapter.accept(job);const position=c.el.querySelector('.scroll')?.scrollTop||0;mount(c,false);c.el.querySelector('.scroll').scrollTop=position;
     });

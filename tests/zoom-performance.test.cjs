@@ -63,3 +63,30 @@ test('stop and reset cancel an in-progress tween without recreating the closed s
 test('instant native-pixel viewing cancels an earlier animated target',()=>{
  const f=fixture();f.zoom.toggleAt({clientX:190,clientY:350});for(let i=0;i<4;i++)f.frame();f.zoom.toggleNative();f.frame();assert.equal(!!f.document.querySelector('.zoom-plane'),false);for(let i=0;i<30;i++)f.frame();assert.equal(!!f.document.querySelector('.zoom-plane'),false);
 });
+
+test('stalled tile loads release their slots so queued visible tiles can start',()=>{
+ const f=fixture();f.zoom.toggleNative();f.frame();
+ const initial=f.requests.length;assert.ok(initial>0);assert.ok(f.zoom.cacheUsage().active>0);
+ f.advance(30000);f.frame();
+ assert.ok(f.requests.length>initial,'stalled loads must not hold all request slots forever');
+ assert.ok(f.zoom.cacheUsage().active<=4);
+ f.zoom.stop();f.zoom.reset();assert.equal(f.zoom.cacheUsage().active,0);
+});
+
+test('stalled tile decode releases its slot without waiting for the network deadline',()=>{
+ const f=fixture();f.zoom.toggleNative();f.frame();const initial=f.requests.length;
+ const image=[...f.loading][0];assert.ok(image);image.decode=()=>new Promise(()=>{});image.onload();
+ f.advance(11000);f.frame();assert.ok(f.requests.length>initial,'stalled decode must free a slot');
+ assert.ok(f.zoom.cacheUsage().active<=4);f.zoom.stop();f.zoom.reset();assert.equal(f.zoom.cacheUsage().active,0);
+});
+
+test('late decode from a timed-out tile attempt cannot complete its retry',async()=>{
+ const f=fixture({width:512,height:512});f.zoom.toggleNative();f.frame();
+ const image=[...f.loading][0];assert.ok(image);let resolveOld;
+ image.decode=()=>new Promise(resolve=>{resolveOld=resolve;});image.onload();
+ f.advance(11000);f.advance(1600);f.frame();assert.ok(f.requests.length>=2,'same tile should retry');
+ assert.equal(f.zoom.cacheUsage().active,1);resolveOld();await Promise.resolve();await Promise.resolve();
+ assert.equal(f.zoom.cacheUsage().active,1,'late old decode must not finish the current attempt');
+ assert.equal(f.document.querySelectorAll('.tile-current img').length,0);
+ f.zoom.stop();f.zoom.reset();assert.equal(f.zoom.cacheUsage().active,0);
+});

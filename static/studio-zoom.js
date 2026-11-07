@@ -4,7 +4,7 @@
 const StudioZoom=(()=>{
   const MAX_REQUESTS=4,MAX_CACHE_BYTES=64*1024*1024,MAX_ENTRIES=96,MAX_WANTED=56,TILE_INTERVAL=90;
   let asset=null,id=null,metrics=null,preview=null,plane=null,tileLayer=null,fallbackLayer=null;
-  let tween=null,scale=1,x=0,y=0,frameId=null,resizeFrame=null,settleTimer=null,retryTimer=null,gesture=null,closing=false;
+  let tween=null,scale=1,x=0,y=0,frameId=null,resizeFrame=null,settleTimer=null,retryTimer=null,gesture=null,closing=false,suspended=false;
   let epoch=0,active=0,cacheBytes=0,clock=0,lastTiles=-Infinity,signature='',forceTiles=false,lastWheel=-Infinity;
   let queue=[],wanted=new Set(),visible=new Set();const cache=new Map(),points=new Map();
   const currentId=()=>V.list[V.i];
@@ -48,7 +48,7 @@ const StudioZoom=(()=>{
     for(const entry of cache.values())positionTile(entry);
   }
   function schedulePaint(force=false){
-    forceTiles=forceTiles||force;if(closing||frameId!==null||!V.open)return;
+    forceTiles=forceTiles||force;if(closing||suspended||frameId!==null||!V.open)return;
     frameId=requestAnimationFrame(render);
   }
   function render(time){
@@ -91,6 +91,7 @@ const StudioZoom=(()=>{
   function settle(){clearTimeout(settleTimer);settleTimer=setTimeout(()=>{settleTimer=null;schedulePaint(true);},110);}
   function toggleNative(animate){if(!ensure()||V.redraw)return;cancelTween();closing=false;const p={x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2},target=scale>1.0001?1:Math.max(1,asset.w/metrics.fit.w);if(animate)animateZoom(target,p);else zoomTo(target,p);schedulePaint(true);vw.classList.remove('chrome-off');}
   function cancelEntry(entry){
+    clearTimeout(entry.timer);
     if(entry.status==='loading'||entry.status==='decoding'){active--;entry.image.onload=entry.image.onerror=null;entry.image.removeAttribute('src');}
     if(entry.status==='ready')cacheBytes-=entry.bytes;
     entry.status='removed';entry.image.remove();entry.image.removeAttribute('src');cache.delete(entry.key);
@@ -138,19 +139,19 @@ const StudioZoom=(()=>{
     queue=nextQueue.sort((a,b)=>a.priority-b.priority).map(x=>x.entry);pruneFallback();evict();pump();
   }
   function pump(){
-    if(closing||!V.open)return;
+    if(closing||suspended||!V.open)return;
     while(active<MAX_REQUESTS&&queue.length){
       const entry=queue.shift();if(!wanted.has(entry.key)||cache.get(entry.key)!==entry||!['idle','error'].includes(entry.status))continue;
-      const generation=epoch;entry.status='loading';active++;
-      const valid=()=>generation===epoch&&cache.get(entry.key)===entry&&['loading','decoding'].includes(entry.status);
-      const failed=()=>{if(!valid())return;active--;entry.status='error';entry.failures++;entry.retryAt=now()+1500;entry.image.remove();
+      const generation=epoch,attempt=(entry.attempt||0)+1;entry.attempt=attempt;entry.status='loading';active++;
+      const valid=()=>generation===epoch&&entry.attempt===attempt&&cache.get(entry.key)===entry&&['loading','decoding'].includes(entry.status);
+      const failed=()=>{if(!valid())return;clearTimeout(entry.timer);entry.image.onload=entry.image.onerror=null;entry.image.removeAttribute('src');active--;entry.status='error';entry.failures++;entry.retryAt=now()+1500;entry.image.remove();
         if(entry.failures<2&&wanted.has(entry.key)){clearTimeout(retryTimer);retryTimer=setTimeout(()=>schedulePaint(true),1550);}pump();};
       entry.image.onerror=failed;
-      entry.image.onload=()=>{if(!valid())return;entry.status='decoding';
+      entry.image.onload=()=>{if(!valid())return;clearTimeout(entry.timer);entry.status='decoding';entry.timer=setTimeout(failed,10000);
         const decoded=typeof entry.image.decode==='function'?entry.image.decode():Promise.resolve();
-        Promise.resolve(decoded).then(()=>{if(!valid())return;active--;entry.status='ready';entry.used=++clock;entry.bytes=(entry.image.naturalWidth||512)*(entry.image.naturalHeight||512)*4;cacheBytes+=entry.bytes;
+        Promise.resolve(decoded).then(()=>{if(!valid())return;clearTimeout(entry.timer);active--;entry.status='ready';entry.used=++clock;entry.bytes=(entry.image.naturalWidth||512)*(entry.image.naturalHeight||512)*4;cacheBytes+=entry.bytes;
           if(wanted.has(entry.key)&&tileLayer)tileLayer.append(entry.image);pruneFallback();evict();pump();},failed);};
-      entry.image.src=asset.tile_template.replace('{level}',entry.level).replace('{x}',entry.col).replace('{y}',entry.row);
+      entry.timer=setTimeout(failed,15000);entry.image.src=asset.tile_template.replace('{level}',entry.level).replace('{x}',entry.col).replace('{y}',entry.row);
     }
   }
   function cancelWork(){
@@ -161,7 +162,9 @@ const StudioZoom=(()=>{
     for(const entry of [...cache.values()])cancelEntry(entry);cache.clear();cacheBytes=0;active=0;queue=[];wanted.clear();visible.clear();signature='';
     if(plane){if(preview?.parentNode===plane)plane.before(preview);plane.remove();}plane=tileLayer=fallbackLayer=null;
   }
-  function reset(){cancelTween();epoch++;cancelWork();releaseSurface();restorePreview();asset=null;id=null;metrics=null;preview=null;scale=1;x=y=0;closing=false;lastTiles=-Infinity;forceTiles=false;lastWheel=-Infinity;}
+  function reset(){cancelTween();epoch++;cancelWork();releaseSurface();restorePreview();asset=null;id=null;metrics=null;preview=null;scale=1;x=y=0;closing=false;suspended=false;lastTiles=-Infinity;forceTiles=false;lastWheel=-Infinity;}
+  function suspend(){suspended=true;cancelTween();epoch++;cancelWork();}
+  function resume(){suspended=false;if(!V.open)return;closing=false;if(ensure()){measure();sizeSurface();schedulePaint(true);}}
   function stop(){cancelTween();closing=true;epoch++;cancelWork();return plane||preview;}
   function fit(){reset();if(ensure())restorePreview();}
   function startGesture(){
@@ -201,5 +204,5 @@ const StudioZoom=(()=>{
   }
   const requestResize=()=>{if(resizeFrame===null)resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;resized();});};
   addEventListener('resize',requestResize);globalThis.visualViewport?.addEventListener('resize',requestResize);
-  return {reset,stop,fit,toggleNative,toggleAt,paint(){if(ensure())schedulePaint(true);},isZoomed:()=>scale>1.0001,isInteracting:()=>points.size>0||now()-lastWheel<150,cacheUsage:()=>({bytes:cacheBytes,entries:cache.size,active})};
+  return {reset,stop,fit,suspend,resume,toggleNative,toggleAt,paint(){if(ensure())schedulePaint(true);},isZoomed:()=>scale>1.0001,isInteracting:()=>points.size>0||now()-lastWheel<150,cacheUsage:()=>({bytes:cacheBytes,entries:cache.size,active})};
 })();
