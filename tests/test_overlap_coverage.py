@@ -32,7 +32,7 @@ class OverlapCoverageTests(unittest.TestCase):
                 quality = json.loads((folder / 'diagnostics' / 'quality.json').read_text(encoding='utf-8'))
                 self.assertEqual(quality['uncovered_pixels'], 0)
             else:
-                with self.assertRaisesRegex(engine.StitchError, '覆盖检查'):
+                with self.assertRaisesRegex(engine.StitchError, r'第 \d+ 块.*覆盖.*缺失'):
                     engine.compose(folder)
                 self.assertFalse((folder / 'diagnostics' / 'quality.json').exists())
 

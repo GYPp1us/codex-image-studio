@@ -890,6 +890,9 @@ class EditRegion(Rectangle):
     prompt: str = Field(default='',max_length=24000)
 
 
+from generation_choices import ImageSize,UpscaleFactor
+
+
 class JobInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=24000)
     refs: list[str] = Field(default_factory=list, max_length=8)
@@ -897,9 +900,9 @@ class JobInput(BaseModel):
     ratio: str = "1:1"
     transparent: bool = False
     polish: bool = False
-    size: Literal["auto", "1024", "2048", "4096"] = "auto"
-    stitch: Literal[0,4,16,64] = 0
-    after_upscale: Literal[0,4,16,64] = 0
+    size: ImageSize = "auto"
+    stitch: UpscaleFactor = 0
+    after_upscale: UpscaleFactor = 0
     upscale_injection: str = Field(default='',max_length=12000)
     upscale_requirements: str | None = Field(default=None,max_length=12000)
     source_description: str | None = Field(default=None,max_length=24000)
@@ -1021,7 +1024,7 @@ def _create_jobs(body):
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
     options['generation'] = generation_runtime.snapshot(sys.modules[__name__])
     if body.image_backend is not None:
-        options['generation']['image_backend'] = body.image_backend.model_dump()
+        options['generation']['image_backend'].update(body.image_backend.model_dump(exclude_unset=True))
     options.update(stitch=body.stitch,after_upscale=body.after_upscale,source_asset_id=body.source_asset_id,upscale_injection=body.upscale_injection,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch or body.after_upscale else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch or body.after_upscale else '')
     if body.stitch or body.after_upscale:
         frozen=upscale_prompts.snapshot(sys.modules[__name__],body.upscale_policy)

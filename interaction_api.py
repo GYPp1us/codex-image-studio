@@ -7,15 +7,16 @@ from typing import Literal
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 from quick_settings import QuickSetting
+from generation_choices import AspectRatio,ImageSize,UpscaleFactor
 
 
 class GenerationDefaults(BaseModel):
-    ratio: Literal['1:1', '3:2', '2:3', '16:9', '9:16', 'auto'] = '1:1'
-    size: Literal['auto', '1024', '2048', '4096'] = 'auto'
+    ratio: AspectRatio = '1:1'
+    size: ImageSize = 'auto'
     count: int = Field(default=1, ge=1, le=20)
     transparent: bool = False
     polish: bool = False
-    stitch: Literal[0, 4, 16, 64] = 0
+    stitch: UpscaleFactor = 0
 
 
 class QuickDefaults(BaseModel):
@@ -29,8 +30,8 @@ class QuickDefaults(BaseModel):
 
 
 class QuickEditSpec(BaseModel):
-    ratio: Literal['1:1', '3:2', '2:3', '16:9', '9:16', 'auto'] = '1:1'
-    size: Literal['auto', '1024', '2048', '4096'] = 'auto'
+    ratio: AspectRatio = '1:1'
+    size: ImageSize = 'auto'
 
 
 class UpscaleDefaults(BaseModel):
@@ -47,11 +48,15 @@ class Appearance(BaseModel):
 
 
 def preferences(studio):
+    pins=[]
+    for pin in studio.setting('quick_settings', []) or []:
+        try:pins.append(QuickSetting.model_validate(pin).model_dump())
+        except (ValueError,TypeError):continue
     return {key: model(**studio.setting(key, {})).model_dump() for key, model in
             (('defaults', GenerationDefaults), ('quick', QuickDefaults), ('upscale', UpscaleDefaults), ('appearance', Appearance))} | {
                 'motion': studio.setting('motion', True),
                 'motion_mode': studio.setting('motion_mode', 'system'), 'notify': studio.setting('notify', False),
-                'quick_settings': [QuickSetting(**pin).model_dump() for pin in studio.setting('quick_settings', [])]}
+                'quick_settings': pins}
 
 
 def validate_regions(size, regions):

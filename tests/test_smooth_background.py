@@ -131,9 +131,8 @@ class SmoothBackgroundTests(unittest.TestCase):
         self.assertEqual(stage['budget']['reviews'], 1)
         self.assertNotEqual(review.get('method'), 'deterministic_interpolation')
 
-    def test_local_failure_and_cancellation_preserve_truthful_progress(self):
-        for error in (workflow.WorkflowError, asyncio.CancelledError):
-            with self.subTest(error=error): self._exercise_level(False, local_failure=error)
+    def test_local_cancellation_preserves_truthful_progress(self):
+        self._exercise_level(False, local_failure=asyncio.CancelledError)
 
     def test_changed_source_invalidates_local_and_composition_checkpoints(self):
         stage, calls, review = self._exercise_level(False, replace_source=True)

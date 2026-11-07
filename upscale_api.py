@@ -301,7 +301,8 @@ def register(app,studio):
             def repair_budget(current,current_plan,count):
                 adaptive=sum(s.get('calls',1) for s in current_plan.get('adaptive_splits',[]))
                 prior=current.get('calls',{})
-                current_plan['manual_calls']=max(current_plan.get('manual_calls',0),prior.get('images',0)-len(current_plan['tiles'])-adaptive)+count
+                images=len(current_plan['tiles'])-len(current_plan.get('smooth_backgrounds',{}))
+                current_plan['manual_calls']=max(current_plan.get('manual_calls',0),prior.get('images',0)-images-adaptive)+count
                 current['review_budget']=prior.get('reviews',0)+1
                 sync_stage(current,current_plan,job['max_attempts'])
             for stage in manifest['stages']:
@@ -309,7 +310,7 @@ def register(app,studio):
                 if stage['index']>body.level and stage.get('folder'):
                     later=stage_folder(studio,jid,stage['index']);later_plan=json.loads((later/'plan.json').read_text(encoding='utf-8'))
                     invalidate(later,[t['index'] for t in later_plan['tiles']],repair_id)
-                    repair_budget(stage,later_plan,len(later_plan['tiles']));save_json(later/'plan.json',later_plan)
+                    repair_budget(stage,later_plan,len(later_plan['tiles'])-len(later_plan.get('smooth_backgrounds',{})));save_json(later/'plan.json',later_plan)
                 stage['status']='pending'
                 for key in ('actual_size','return_stats'):stage.pop(key,None)
                 if stage['index']==body.level:repair_budget(stage,plan,len(indices));save_json(folder/'plan.json',plan)
