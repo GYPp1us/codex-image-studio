@@ -113,7 +113,7 @@ const StudioService=(()=>{
   function flushDraft(){clearTimeout(draftTimer);if(!authenticated||!hasPainted||!authState?.cache_scope)return;try{localStorage.setItem(draftKey(),JSON.stringify({composer:S.composer,upc:S.upc,mode:S.mode}));}catch{}}
   function saveDraft(){if(!authenticated)return;clearTimeout(draftTimer);draftTimer=setTimeout(flushDraft,250);}
   function restoreDraft(){let d;try{d=JSON.parse(localStorage.getItem(draftKey())||'null');if(!d){const old=JSON.parse(localStorage.getItem('studio_draft')||'null');if(old)d={composer:{...old,ratio:labelRatio(old.ratio||'auto'),size:labelSize(old.size||'auto'),stitch:old.stitch?old.stitch+'×':'关',template:old.template?.id||null},mode:'gen'};}}catch{}
-    
+
     S.composer=defaultComposer();S.upc={src:null,factor:S.settings.upscale.factor,inj:S.settings.upscale.injection,policy:{append_system:S.settings.upscale.appendSystem,include_source_context:S.settings.upscale.includeSourceContext}};
     if(d?.composer){const c=d.composer;Object.assign(S.composer,c,{refs:Array.isArray(c.refs)?c.refs:[],template:c.template||null});}
     if(d?.upc)Object.assign(S.upc,d.upc);if(['gen','up'].includes(d?.mode))S.mode=d.mode;
