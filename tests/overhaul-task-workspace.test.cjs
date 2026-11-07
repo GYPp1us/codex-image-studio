@@ -5,11 +5,12 @@ const html=fs.readFileSync('static/index.html','utf8');
 const prompt='Generate an image using {prompt}, preserving the requested native dimensions.';
 const baseAsset={id:'asset',width:900,height:1200,name:'山色.png',kind:'generated',bytes:1234,created:1000,job_id:'job',url:'/media/asset',thumbnail:'/media/asset?thumbnail=1',preview:'/media/asset?preview=1',favorite:0,tags:''};
 function makeJob(id,extra={}){return {id,batch_id:'batch',prompt:'静谧山色',status:'queued',created:1000,collection_id:'untemplated',template_id:'',refs:[],references:[],outputs:[],attempt:0,max_attempts:3,error:'',model:'gpt-test',effort:'high',options:{ratio:'1:1',size:'auto',model:'gpt-test',effort:'high',stitch:0},progress:{stage:'queued',label:'等待调度'},...extra};}
-async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',quickGate=null,settingsFail=false,bigFailure=false,chained=false,chainStatus='failed',defaultInjection='',rerollUpscale=false,savedDraft=null,previewGate=null,accountGate=null,loginGate=null,restoreGate=null,accountFail=false,loginFail=false,restoreFail=false,trashPaged=false,trashPageGate=null,connectGate=null,uploadGate=null,assetGate=null,renameGate=null,avatarGate=null,renameFail=false,passwordFail=false,staleStatusGate=null,settingsGate=null}={}){
+async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',quickGate=null,settingsFail=false,bigFailure=false,chained=false,chainStatus='failed',defaultInjection='',rerollUpscale=false,rerollBackend=null,savedDraft=null,previewGate=null,accountGate=null,loginGate=null,restoreGate=null,accountFail=false,loginFail=false,restoreFail=false,trashPaged=false,trashPageGate=null,connectGate=null,uploadGate=null,assetGate=null,renameGate=null,avatarGate=null,renameFail=false,passwordFail=false,staleStatusGate=null,settingsGate=null,logText="ACTUAL LOG LINE"}={}){
  const {window}=parseHTML(html),{document}=window;const requests=[],timers=new Map(),stored={};let timerId=0,stateReads=0,statusReads=0;
  if(savedDraft)stored['studio-demo-composer:fixture']=JSON.stringify(savedDraft);
  const asset=huge?{...baseAsset,width:12000,height:8000,tile_template:'/api/assets/asset/tiles/{level}/{x}/{y}'}:baseAsset;
  const dataJobs=[makeJob('job',{status:'succeeded',outputs:[asset]}),...Array.from({length:19},(_,i)=>makeJob('job'+i))];
+ if(rerollBackend)dataJobs[0].options.generation={schema:1,image_backend:rerollBackend};
  const plan={factor:4,input_size:[900,1200],output_size:[1800,2400],budget:{images:3,reviews:1,max_calls:10},stages:[{index:1,input_size:[900,1200],output_size:[1800,2400],columns:1,rows:3,tile_count:3,status:'failed',cuts:{x:[],y:[400,800]},budget:{images:3,reviews:1,max_calls:10},diagnostic_available:true}]};
  if(bigFailure)plan.stages[0].tile_count=5000;
  const up=makeJob('up',{batch_id:'upbatch',status:'failed',options:{stitch:4,source_asset_id:'asset',upscale_requirements:'ORIGINAL-REQUIREMENT',upscale_injection:'ORIGINAL-REQUIREMENT',upscale_prompts:{policy:{append_system:false,include_source_context:true},revision:'old-revision'}},source_image:asset,upscale_plan:plan,error:'图块验收失败'});
@@ -46,7 +47,8 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
   else if(path==='/api/upscale/jobs/up')d=up;
   else if(path==='/api/upscale/jobs/child')d=chainChild;
   else if(path==='/api/jobs/job')d=dataJobs[0];
-  else if(path==='/api/jobs/job/log')d={text:'ACTUAL LOG LINE'};
+  else if(path==='/api/jobs/job/log')d={text:logText};
+  else if(path.includes('/generation-calls?'))d={items:[],total:0};
   else if(path==='/api/upscale/jobs/up/prompt-snapshot')d={available:true,snapshot:{revision:'abcdef123456',templates:{tile:'SAVED TEMPLATE'}}};
   else if(path==='/api/upscale/jobs/up/calls')d={total:1,items:[{id:'savedcall',kind:'redraw',scope:{level:1,tile:0}}]};
   else if(path==='/api/upscale/jobs/up/calls/savedcall')d={worker_instruction:'ACTUAL SENT EXACTLY',prompt_metadata:{components:[{enabled:false,label:'disabled template',text:'disabled'}],snapshot_revision:'abcdef123456',scope:{level:1,tile:0}}};
@@ -73,7 +75,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  window.HTMLElement.prototype.setPointerCapture=function(){};window.HTMLElement.prototype.blur=function(){};
  const mediaListeners=[],media={matches:systemReduce,addEventListener:(type,listener)=>{if(type==='change')mediaListeners.push(listener);}};
  const context=vm.createContext({document,window,console,Headers,FormData,AbortController,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>stored[key]??(key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null),setItem(key,value){stored[key]=value;}},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
- for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-tasks.js','studio-upscale-prompts.js','studio-recovery.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
+ for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-generation.js','studio-tasks.js','studio-upscale-prompts.js','studio-recovery.js','studio-quick-settings.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
  await vm.runInContext('studioReady',context);
  return {context,document,requests,stored,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
@@ -110,6 +112,19 @@ test('failed tile before an observed model stage still has a red failure segment
   assert.equal(f.board.querySelectorAll('[data-tile="1"] [data-state="failed"]').length,1);
   assert.equal(f.board.querySelectorAll('[data-tile="0"] [data-state="done"]').length,4);
 });
+
+test('local interpolation uses one honest progress column including cancellation and failure',async()=>{
+  const task=makeProgressTask({count:4});
+  const states=['done','failed','cancelled','queued'];
+  task.raw.progress.timeline[0].tiles.forEach((tile,index)=>Object.assign(tile,{processing:'local_interpolation',state:states[index]}));
+  const f=await progressFixture(task);
+  states.forEach((state,index)=>{
+    const column=f.board.querySelector(`[data-tile="${index}"]`);
+    assert.equal(column.querySelectorAll('.work-cell').length,1);
+    assert.equal(column.querySelector('.work-cell').dataset.state,state);
+    assert.match(column.textContent,/插值/);
+  });
+});
 test('successful upscale hides both short and expanded progress bars',async()=>{
   const f=await fixture();f.context.taskFixture=makeProgressTask({status:'done'});
   assert.equal(f.run('StudioProgress.short(taskFixture)'), '');
@@ -118,14 +133,18 @@ test('successful upscale hides both short and expanded progress bars',async()=>{
 });
 
 test('task log is loaded inside the existing task detail and does not open another screen',async()=>{
-  const f=await fixture();
+  const raw=JSON.stringify({time:1793761359.5484831,type:'generation_call_summary',message:{kind:'polish',scope:'polish',transport:'responses',status:'succeeded',requested:{response_model:'gpt-test'},provider_reported:{response_model:'gpt-echo'}}})+'\nACTUAL LOG LINE';
+  const f=await fixture({logText:raw});
   const button=f.document.createElement('button');button.dataset.act='task-info';button.dataset.id='job';f.document.body.append(button);
   await f.service.action('task-info',button);await tick();
   const workspace=f.document.querySelector('.task-details-workspace');assert.ok(workspace);
   const log=workspace.querySelector('[data-task-log]');assert.ok(log);
   const screenCount=f.document.querySelectorAll('.screen-layer').length;
   log.open=true;log.dispatchEvent(new f.context.window.Event('toggle'));await tick();await tick();
-  assert.equal(workspace.querySelector('[data-log-content]').textContent,'ACTUAL LOG LINE');
+  const summary=workspace.querySelector('[data-log-content]').textContent;
+  assert.match(summary,/^\d{1,2}\/\d{1,2} \d{2}:\d{2} · 独立润色 · 已完成 · Responses 直连/);
+  assert.match(summary,/请求 gpt-test.*回显 gpt-echo\nACTUAL LOG LINE$/);
+  assert.equal(workspace.querySelector('[data-log-raw]').textContent,raw);
   assert.equal(f.document.querySelectorAll('.screen-layer').length,screenCount);
   assert.equal(f.requests.filter(r=>r.path==='/api/jobs/job/log').length,1);
 });
@@ -599,4 +618,92 @@ test('advanced prompt controls start collapsed and preview requires a source',as
   const f=await fixture();f.run("S.upc.src=null;document.querySelector('#app').insertAdjacentHTML('beforeend',StudioUpscalePrompts.entry('upscale'))");
   const holder=f.document.querySelector('.prompt-composition[data-prompt-scope=upscale]');assert.ok(holder);assert.equal(holder.querySelector('.composition-advanced').hasAttribute('open'),false);assert.equal(holder.querySelector('[data-upp-preview]').hasAttribute('disabled'),true);
   assert.ok(holder.querySelector('[data-upp-policy=append_system]'));
+});
+
+function quickPointer(f,target,type,x=20,y=20){const e=new f.context.window.Event(type,{bubbles:true,cancelable:true});Object.assign(e,{pointerId:7,pointerType:'touch',button:0,clientX:x,clientY:y});target.dispatchEvent(e);}
+test('quick model switches affect only the composer and freeze into the submitted job',async()=>{
+ const f=await fixture();
+ f.run(`S.settings.quickSettings=[{key:'image_model',value:'gpt-image-2.6-sunburst',label:'太阳'},{key:'image_model',value:'gpt-image-2.6-flare',label:'火焰'},{key:'ratio',value:'3:2',label:''}];renderPage()`);
+ const chip=f.document.querySelector('[data-quick-id="image_model=gpt-image-2.6-flare"]');assert.ok(chip);chip.click();
+ assert.equal(f.run('S.composer.imageBackend.image_model'),'gpt-image-2.6-flare');
+ assert.equal(f.run('S.settings.imageBackend.image_model'),'gpt-image-2.5-sunburst');
+ assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,0);
+ f.run("S.composer.prompt='quick test';document.querySelector('#gen').disabled=false");await f.service.generate();
+ assert.equal(f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST').body.image_backend.image_model,'gpt-image-2.6-flare');
+});
+test('holding a detailed model option opens pin editor without applying the option',async()=>{
+ const f=await fixture();f.run('paramsSheet()');
+ const option=f.document.querySelector('[data-act="backend-opt"][data-v="gpt-image-2.6-sunburst"]');assert.ok(option);
+ quickPointer(f,option,'pointerdown');f.flushTimers(420);quickPointer(f,option,'pointerup');option.click();
+ const editor=f.document.querySelector('.quick-editor');assert.ok(editor);
+ assert.equal(f.run('S.composer.imageBackend?.image_model'),undefined);
+ editor.querySelector('[data-quick-name]').value='自定义模型';editor.querySelector('[data-quick-save]').click();await tick();await tick();await tick();
+ const request=f.requests.find(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.ok(request);
+ assert.deepEqual(request.body.quick_settings,[{key:'image_model',value:'gpt-image-2.6-sunburst',label:'自定义模型'}]);
+});
+test('failed pin save rolls back and leaves the editor and typed name for retry',async()=>{
+ const f=await fixture({settingsFail:true});f.run('paramsSheet()');
+ const option=f.document.querySelector('[data-act="backend-opt"][data-v="gpt-image-2.6-flare"]');quickPointer(f,option,'pointerdown');f.flushTimers(420);quickPointer(f,option,'pointerup');
+ const editor=f.document.querySelector('.quick-editor');editor.querySelector('[data-quick-name]').value='保留名称';editor.querySelector('[data-quick-save]').click();await tick();await tick();await tick();
+ assert.equal(f.run('S.settings.quickSettings.length'),0);assert.ok(editor.isConnected);assert.equal(editor.querySelector('[data-quick-name]').value,'保留名称');
+});
+test('quick setting drop uses the last pointer position even before an animation frame',async()=>{
+ const f=await fixture();f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:''},{key:'ratio',value:'3:2',label:''},{key:'ratio',value:'2:3',label:''}];renderPage()`);
+ const box=f.document.querySelector('.quick-strip');box.getBoundingClientRect=()=>({left:0,right:300,top:0,bottom:50,width:300,height:50});
+ for(const el of box.children)el.getBoundingClientRect=()=>{const i=[...box.children].indexOf(el);return {left:i*100,right:i*100+90,top:0,bottom:50,width:90,height:50};};
+ const first=box.querySelector('[data-quick-id="ratio=1:1"]');quickPointer(f,first,'pointerdown',20);f.flushTimers(420);quickPointer(f,box,'pointermove',270);quickPointer(f,box,'pointerup',270);await tick();await tick();await tick();
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','1:1']);
+});
+test('rapid keyboard reorders serialize and preserve both changes while saving',async()=>{
+ let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({settingsGate:gate});
+ f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:''},{key:'ratio',value:'3:2',label:''},{key:'ratio',value:'2:3',label:''}];renderPage()`);
+ const box=f.document.querySelector('.quick-strip'),first=box.querySelector('[data-quick-id="ratio=1:1"]');
+ function move(){const e=new f.context.window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(e,{key:'ArrowRight',altKey:true});first.dispatchEvent(e);}
+ move();await tick();move();await tick();assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,1);
+ assert.match(f.document.querySelector('.quick-save-state').textContent,/保存中/);
+ release();await tick();await tick();await tick();await tick();
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','1:1']);
+ const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,2);assert.deepEqual(writes[1].body.quick_settings.map(p=>p.value),['3:2','2:3','1:1']);
+});
+
+test('three delayed reorder intents use each preceding saved order',async()=>{
+ let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({settingsGate:gate});
+ f.run(`S.settings.quickSettings=['1:1','3:2','2:3','16:9'].map(value=>({key:'ratio',value,label:''}));renderPage()`);
+ const first=f.document.querySelector('[data-quick-id="ratio=1:1"]');
+ for(let i=0;i<3;i++){const e=new f.context.window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(e,{key:'ArrowRight',altKey:true});first.dispatchEvent(e);await tick();}
+ assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,1);
+ release();for(let i=0;i<10;i++)await tick();
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','16:9','1:1']);
+ const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,3);
+ assert.deepEqual(writes[2].body.quick_settings.map(p=>p.value),['3:2','2:3','16:9','1:1']);
+});
+test('removing and undoing a shortcut restores its original place without changing the draft',async()=>{
+ const f=await fixture();f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:'方形'},{key:'ratio',value:'3:2',label:'横幅'},{key:'size',value:'2048',label:'大图'}];renderPage()`);
+ const chip=f.document.querySelector('[data-quick-id="ratio=3:2"]');quickPointer(f,chip,'pointerdown');f.flushTimers(420);quickPointer(f,chip,'pointerup');
+ const editor=f.document.querySelector('.quick-editor');assert.ok(editor);editor.querySelector('[data-quick-remove]').click();
+ for(let i=0;i<5;i++)await tick();assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['1:1','2048']);
+ const undo=f.document.querySelector('#toast button');assert.equal(undo.textContent,'撤销');undo.click();for(let i=0;i<5;i++)await tick();
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['1:1','3:2','2048']);assert.equal(f.run('S.composer.ratio'),'3:2');
+});
+test('moving before hold cancels pinning so scrolling cannot open the editor',async()=>{
+ const f=await fixture();f.run('paramsSheet()');const option=f.document.querySelector('[data-act="backend-opt"][data-v="gpt-image-2.6-flare"]');
+ quickPointer(f,option,'pointerdown',20,20);quickPointer(f,option,'pointermove',40,20);f.flushTimers(420);quickPointer(f,option,'pointerup',40,20);
+ assert.equal(f.document.querySelector('.quick-editor'),null);assert.equal(f.run('S.settings.quickSettings.length'),0);
+});
+
+test('a quick backend choice persists only the selected key and inherits later global changes',async()=>{
+ const f=await fixture();f.run(`StudioQuickSettings.apply({key:'image_model',value:'gpt-image-2.6-flare'});S.settings.imageBackend.quality='low';S.settings.imageBackend.transport='responses'`);
+ assert.deepEqual(JSON.parse(f.run('JSON.stringify(S.composer.imageBackend)')),{image_model:'gpt-image-2.6-flare'});
+ assert.deepEqual(JSON.parse(f.run('JSON.stringify(StudioQuickSettings.backend())')),{transport:'responses',fallback:true,image_model:'gpt-image-2.6-flare',quality:'low',partial_images:2});
+ f.run("S.composer.prompt='partial backend';document.querySelector('#gen').disabled=false");await f.service.generate();
+ assert.deepEqual(f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST').body.image_backend,{image_model:'gpt-image-2.6-flare'});
+});
+test('a generation without backend overrides lets the server select current settings',async()=>{
+ const f=await fixture();f.run("S.composer.prompt='server defaults';document.querySelector('#gen').disabled=false");await f.service.generate();
+ const body=f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST').body;assert.equal(Object.hasOwn(body,'image_backend'),false);
+});
+test('reroll uses the original task frozen backend rather than current composer or global settings',async()=>{
+ const original={transport:'responses',fallback:false,image_model:'gpt-image-2.6-sunburst',quality:'high',partial_images:1};
+ const f=await fixture({rerollBackend:original});f.run("S.settings.imageBackend.image_model='gpt-image-2';S.composer.imageBackend={image_model:'gpt-image-2.6-flare'}");
+ await f.service.reroll('asset');const req=f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST');assert.ok(req);assert.deepEqual(req.body.image_backend,original);
 });

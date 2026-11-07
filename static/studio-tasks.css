@@ -24,6 +24,10 @@
 .task-plan>summary{cursor:pointer;font-size:13px;font-weight:600}.task-plan[open]>summary{margin-bottom:12px}
 .task-workspace .kv{grid-template-columns:64px minmax(0,1fr)}.task-workspace .kv dd{min-width:0;overflow-wrap:anywhere}
 .task-workspace .task-log{max-height:28dvh;overflow:auto;font:11px/1.7 ui-monospace,monospace;overflow-wrap:anywhere}
+.task-log-panel{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+.task-log-panel>[data-log-refresh]{justify-self:start}
+.task-log-panel>.task-disclosure{margin:0}
+.task-workspace [data-log-content]{font:inherit;font-size:12px;line-height:1.65;font-variant-numeric:tabular-nums}
 .task-workspace button:focus-visible,.fail-screen button:focus-visible{outline:2px solid var(--sage-ink);outline-offset:3px}
 .failure-recovery>.secondary{display:flex;width:100%;height:auto;min-height:42px;justify-content:center;line-height:1.5;padding:10px 12px;text-align:center;color:var(--sage-ink);background:var(--sage)}
 .failure-recovery>.secondary:disabled{opacity:.45;cursor:default}.failure-recovery>.note{margin:8px 0 15px;color:var(--ink-2)}.failure-recovery>.note:last-child{margin-bottom:0}

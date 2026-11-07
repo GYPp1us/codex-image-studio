@@ -13,15 +13,17 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 import image_runtime as imaging
+from image_registration import frame_alignment
+import smooth_background
 
 MAX_PIXELS = 0
 BLOCK = 1536
 HALO = 256
 BANDS = 7
-REGISTRATION_VERSION = 4
+REGISTRATION_VERSION = 5
 OUTER_BORDER = 12  # Original-image pixels; convert to output coordinates with the grid.
 PHASES = ("base", "cutting", "redraw", "registration", "color", "seams", "blend", "inspection", "receiving")
-LABELS = ("准备原图", "带重叠切图", "逐块 AI 补绘", "SIFT + RANSAC 配准", "匹配大范围色调", "Graph Cut 寻找接缝", "7 层拉普拉斯融合", "局部质量检查", "回传超分结果")
+LABELS = ("准备原图", "带重叠切图", "逐块 AI 补绘", "图块几何校验与配准", "匹配大范围色调", "Graph Cut 寻找接缝", "7 层拉普拉斯融合", "局部质量检查", "回传超分结果")
 Image.MAX_IMAGE_PIXELS = None
 cv2.setNumThreads(1)
 cv2.ocl.setUseOpenCL(False)
@@ -82,11 +84,19 @@ def prepare(folder, factor):
     for name in ("crops","redraw","registered","corrected","masks","diagnostics","calls"):
         (folder/name).mkdir(exist_ok=True)
     report(folder,"cutting",0,len(plan['tiles']))
+    backgrounds={}
     for tile in plan["tiles"]:
         box=tile['box'];crop=imaging.to_pil(image.crop(box[0],box[1],box[2]-box[0],box[3]-box[1]))
-        features=cv2.SIFT_create(nfeatures=3000,contrastThreshold=.018).detect(cv2.cvtColor(np.array(crop.convert('RGB')),cv2.COLOR_RGB2GRAY),None)
-        if len(features)<12:raise StitchError(f"第 {tile['index']+1} 块原图纹理不足，无法可靠执行 SIFT 配准；未开始 AI 补绘")
         crop.save(folder/"crops"/f'{tile["index"]}.png')
+        index=tile['index'];source=folder/'crops'/f'{index}.png';cache=folder/'diagnostics'/f'background-{index}.json'
+        if not (folder/'redraw'/f'{index}.png').exists() or (folder/'diagnostics'/f'local-{index}.json').exists():
+            digest=imaging.file_sha(source)
+            try:background=json.loads(cache.read_text(encoding='utf-8'))
+            except (OSError,ValueError):background={}
+            if background.get('version')!=smooth_background.VERSION or background.get('source_sha256')!=digest:
+                background=smooth_background.classify(cv2.cvtColor(np.array(crop.convert('RGB')),cv2.COLOR_RGB2BGR))
+                background['source_sha256']=digest;save_json(cache,background)
+            if background.get('eligible'):backgrounds[str(index)]=background
         report(folder,"cutting",tile["index"]+1,len(plan['tiles']))
     imaging.thumbnail(folder/'base.png',folder/'preview.png',1400)
     imaging.thumbnail(folder/'base.png',folder/'reference-full.png',1600)
@@ -95,8 +105,25 @@ def prepare(folder, factor):
         for tile in plan['tiles']:
             x0,y0,x1,y1=tile['core'];draw.rectangle((x0*sx,y0*sy,x1*sx-1,y1*sy-1),outline='#45ad7e',width=2)
         preview.save(folder/'layout.png')
+    plan['smooth_backgrounds']=backgrounds
     save_json(folder/"plan.json",plan)
     return plan
+
+
+def interpolate_tile(folder,index):
+    folder=Path(folder);plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'))
+    tile=next(tile for tile in plan['tiles'] if tile['index']==index)
+    source=folder/'crops'/f'{index}.png';image=read_bgr(source)
+    metrics=plan.get('smooth_backgrounds',{}).get(str(index),{}).copy()
+    if metrics.get('version')!=smooth_background.VERSION or metrics.get('source_sha256')!=imaging.file_sha(source):
+        metrics=smooth_background.classify(image)
+    if not metrics['eligible']:raise StitchError('该块包含可见结构，不能作为平滑背景插值')
+    result=cv2.resize(image,tuple(tile['size']),interpolation=cv2.INTER_LINEAR_EXACT)
+    output=folder/'redraw'/f'{index}.png';temporary=output.with_suffix('.tmp.png')
+    write_png(temporary,result);temporary.replace(output)
+    metrics.update(source_sha256=imaging.file_sha(source),output_sha256=imaging.file_sha(output),processing='local_interpolation')
+    save_json(folder/'diagnostics'/f'local-{index}.json',metrics)
+    return metrics
 
 
 def read_bgr(path):
@@ -118,7 +145,7 @@ def estimate_affine(original, redraw):
     sift=cv2.SIFT_create(nfeatures=6000,contrastThreshold=.018)
     target_points,target_desc=sift.detectAndCompute(cv2.cvtColor(original,cv2.COLOR_BGR2GRAY),None)
     source_points,source_desc=sift.detectAndCompute(cv2.cvtColor(reduced,cv2.COLOR_BGR2GRAY),None)
-    if source_desc is None or target_desc is None:
+    if source_desc is None or target_desc is None or len(target_desc)<2:
         raise StitchError("SIFT 特征不足，补绘块无法可靠配准；请重试该块")
     matches=cv2.BFMatcher(cv2.NORM_L2).knnMatch(source_desc,target_desc,k=2)
     good=[pair[0] for pair in matches if len(pair)==2 and pair[0].distance < .72*pair[1].distance]
@@ -127,6 +154,7 @@ def estimate_affine(original, redraw):
     target=np.float32([target_points[m.trainIdx].pt for m in good])
     affine,inliers=cv2.estimateAffine2D(source,target,method=cv2.RANSAC,ransacReprojThreshold=2.5,maxIters=5000,confidence=.995,refineIters=25)
     if affine is None or inliers is None: raise StitchError("RANSAC 未找到稳定的全局仿射变换")
+    if not np.isfinite(affine).all():raise StitchError("RANSAC 返回了无效的仿射变换")
     keep=inliers.ravel().astype(bool);count=int(keep.sum());ratio=count/len(good)
     errors=np.linalg.norm(source[keep]@affine[:,:2].T+affine[:,2]-target[keep],axis=1)
     rms=float(np.sqrt(np.mean(errors**2)))
@@ -137,10 +165,17 @@ def estimate_affine(original, redraw):
 
 
 def affine_register(original, redraw):
-    affine,metrics=estimate_affine(original,redraw)
+    try:
+        affine,metrics=estimate_affine(original,redraw)
+        if metrics['accepted']:
+            return affine,metrics
+        reason='特征匹配未通过全局仿射验证'
+    except (StitchError,cv2.error) as error:
+        reason=str(error)
+    affine,metrics=frame_alignment(original,redraw)
+    metrics['feature_registration_reason']=reason
     if not metrics['accepted']:
-        count,ratio,rms=metrics['inliers'],metrics['inlier_ratio'],metrics['rms_original_pixels']
-        raise StitchError(f"配准质量不足：内点 {count}、比例 {ratio:.2f}、误差 {rms:.2f}px；保留中间结果供重试")
+        raise StitchError("特征配准缺少可靠证据，原画幅落位后的局部颜色或结构也不一致；请检查或重绘该块")
     return affine,metrics
 
 
@@ -180,10 +215,24 @@ def register_tile(folder,index):
     # Interior gaps keep their original mask and must never be filled by this allowance.
     border,border_metrics=registration_mask(valid,tile,plan);metrics.update(border_metrics)
     x,y=tile['corner'];cx0,cy0,cx1,cy1=[round(v*scales[n%2]) for n,v in enumerate(tile['core'])]
-    missing=int(np.count_nonzero(border[cy0-y:cy1-y,cx0-x:cx1-x]==0))
+    missing_mask=border[cy0-y:cy1-y,cx0-x:cx1-x]==0
+    missing=int(np.count_nonzero(missing_mask))
+    uncovered=missing_mask.copy()
     if missing:
+        # Planned overlap is a reason to defer judgement, not proof of coverage.
+        # compose() must still verify the union of actual masks after GraphCut.
+        for neighbour in plan['tiles']:
+            if neighbour['index']==index:continue
+            nx,ny=neighbour['corner'];nw,nh=neighbour['size']
+            left,top=max(cx0,nx),max(cy0,ny)
+            right,bottom=min(cx1,nx+nw),min(cy1,ny+nh)
+            if right>left and bottom>top:
+                uncovered[top-cy0:bottom-cy0,left-cx0:right-cx0]=False
+    unresolved=int(np.count_nonzero(uncovered))
+    if unresolved:
         save_json(folder/'diagnostics'/f'alignment-rejected-{index}.json',{'missing_core_pixels':missing,**metrics})
-        raise StitchError(f'第 {index+1} 块配准后核心区域仍缺失 {missing} 像素，超过外沿容差，需重新补绘该块')
+        raise StitchError(f'第 {index+1} 块配准后核心区域仍缺失 {unresolved} 像素，且无相邻块可覆盖，需重新补绘该块')
+    metrics['pending_overlap_pixels']=missing
     metrics['registration_version']=REGISTRATION_VERSION
     metrics["target_matrix"]=transform.tolist()
     write_png(folder/"registered"/f"{index}.png",registered)
@@ -200,7 +249,8 @@ def register_tile(folder,index):
 def alignment_current(folder,index):
     folder=Path(folder);checkpoint=folder/'diagnostics'/f'alignment-{index}.json';returned=folder/'redraw'/f'{index}.png'
     try:
-        return (json.loads(checkpoint.read_text(encoding='utf-8')).get('registration_version')==REGISTRATION_VERSION
+        data=json.loads(checkpoint.read_text(encoding='utf-8'))
+        return (data.get('registration_version') in (4,REGISTRATION_VERSION) and data.get('accepted') is True
                 and checkpoint.stat().st_mtime_ns>=returned.stat().st_mtime_ns)
     except (OSError,ValueError):return False
 
@@ -210,7 +260,7 @@ def refresh_registered_tile(folder,index,region):
     folder=Path(folder);plan=json.loads((folder/'plan.json').read_text(encoding='utf-8'));tile=next(t for t in plan['tiles'] if t['index']==index)
     path=folder/'diagnostics'/f'alignment-{index}.json';metrics=json.loads(path.read_text(encoding='utf-8'))
     image=read_bgr(folder/'redraw'/f'{index}.png')
-    if metrics.get('registration_version')!=REGISTRATION_VERSION or [image.shape[1],image.shape[0]]!=metrics['generated_dimensions']:
+    if metrics.get('registration_version') not in (4,REGISTRATION_VERSION) or metrics.get('accepted') is not True or [image.shape[1],image.shape[0]]!=metrics['generated_dimensions']:
         raise StitchError('局部编辑需要当前版本且尺寸不变的已配准补绘块')
     registered=cv2.warpAffine(image,np.array(metrics['target_matrix']),tuple(tile['size']),flags=cv2.INTER_LANCZOS4,borderMode=cv2.BORDER_REFLECT_101)
     write_png(folder/'registered'/f'{index}.png',registered)
@@ -234,13 +284,30 @@ def color_match(image, reference, mask):
     return np.clip(corrected*255,0,255).astype(np.uint8)
 
 
+def validate_actual_coverage(folder,plan):
+    """Attribute holes to their owning core using actual registered masks."""
+    sx,sy=plan['output_size'][0]/plan['width'],plan['output_size'][1]/plan['height']
+    for owner in plan['tiles']:
+        x0,y0,x1,y1=[round(v*(sx if n%2==0 else sy)) for n,v in enumerate(owner['core'])]
+        covered=np.zeros((y1-y0,x1-x0),np.uint8)
+        for tile in plan['tiles']:
+            tx,ty=tile['corner'];tw,th=tile['size'];left,top=max(x0,tx),max(y0,ty);right,bottom=min(x1,tx+tw),min(y1,ty+th)
+            if right<=left or bottom<=top:continue
+            mask=cv2.imread(str(Path(folder)/'masks'/f"valid-{tile['index']}.png"),cv2.IMREAD_GRAYSCALE)
+            if mask is None:raise StitchError(f"第 {tile['index']+1} 块缺少实际覆盖掩码，需重新补绘")
+            target=covered[top-y0:bottom-y0,left-x0:right-x0]
+            cv2.bitwise_or(target,mask[top-ty:bottom-ty,left-tx:right-tx],dst=target)
+        missing=int(np.count_nonzero(covered==0))
+        if missing:raise StitchError(f"第 {owner['index']+1} 块实际覆盖仍缺失 {missing} 像素，需重新补绘该块")
+
+
 def compose(folder):
     folder=Path(folder);plan=json.loads((folder/"plan.json").read_text(encoding='utf-8'));count=len(plan["tiles"])
     for tile in plan["tiles"]:
         i=tile["index"]
-        diagnostic=folder/'diagnostics'/f'alignment-{i}.json'
         if not alignment_current(folder,i):
             report(folder,"registration",i,count);register_tile(folder,i)
+    validate_actual_coverage(folder,plan)
     for tile in plan["tiles"]:
         i=tile["index"];report(folder,"color",i,count)
         corrected_path=folder/"corrected"/f"{i}.png"
@@ -276,7 +343,7 @@ def compose(folder):
     # A halo wider than 2**7 keeps seven-band block boundaries outside each saved core.
     output=np.memmap(folder/"canvas.rgb",dtype=np.uint8,mode="w+",shape=(height,width,3))
     columns=math.ceil(width/BLOCK);rows=math.ceil(height/BLOCK);total=columns*rows;completed=0
-    uncovered=0
+    uncovered=0;missing_owner=None
     for row in range(rows):
         for col in range(columns):
             report(folder,"blend",completed,total)
@@ -293,14 +360,17 @@ def compose(folder):
             core=result[y0-by0:y1-by0,x0-bx0:x1-bx0]
             core_coverage=coverage[y0-by0:y1-by0,x0-bx0:x1-bx0]
             uncovered+=int(np.count_nonzero(core_coverage==0))
+            if missing_owner is None and np.any(core_coverage==0):
+                dy,dx=np.argwhere(core_coverage==0)[0];px,py=x0+int(dx),y0+int(dy)
+                missing_owner=next((t['index'] for t in plan['tiles'] if t['core'][0]*width/plan['width']<=px<t['core'][2]*width/plan['width'] and t['core'][1]*height/plan['height']<=py<t['core'][3]*height/plan['height']),plan['tiles'][0]['index'])
             output[y0:y1,x0:x1]=np.clip(core[:,:,::-1],0,255).astype(np.uint8)
             completed+=1
             del blender,result,coverage,core
         output.flush()
         if hasattr(output._mmap,'madvise'):output._mmap.madvise(mmap.MADV_DONTNEED)
     output.flush();report(folder,"blend",completed,total)
-    if uncovered: raise StitchError(f"拼接覆盖检查发现 {uncovered} 个空白像素，拒绝发布结果；请重试补绘")
     output._mmap.close();del output
+    if uncovered: raise StitchError(f"第 {missing_owner+1} 块融合覆盖检查发现 {uncovered} 个空白像素，拒绝发布结果；请重试补绘")
     imaging.raw_to_png(folder/'canvas.rgb',folder/'candidate.png',width,height,folder/'base.png')
     make_inspection(folder,imaging.open_image(folder/'candidate.png'),plan)
     alignments=[json.loads((folder/'diagnostics'/f"alignment-{tile['index']}.json").read_text(encoding='utf-8')) for tile in plan['tiles']]
@@ -338,11 +408,12 @@ def make_inspection(folder, image, plan):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("command",choices=("prepare","register","compose"));parser.add_argument("folder",type=Path);parser.add_argument("--factor",type=int,default=4);parser.add_argument("--tile",type=int,default=0)
+    parser=argparse.ArgumentParser();parser.add_argument("command",choices=("prepare","register","compose","interpolate"));parser.add_argument("folder",type=Path);parser.add_argument("--factor",type=int,default=4);parser.add_argument("--tile",type=int,default=0)
     args=parser.parse_args()
     try:
         if args.command=="prepare": prepare(args.folder,args.factor)
         elif args.command=="register": register_tile(args.folder,args.tile)
+        elif args.command=="interpolate": interpolate_tile(args.folder,args.tile)
         else: compose(args.folder)
     except (StitchError,cv2.error,OSError,ValueError) as error:
         print(json.dumps({"error":str(error)},ensure_ascii=False),flush=True);raise SystemExit(1)

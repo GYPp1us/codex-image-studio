@@ -263,7 +263,7 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(self.studio.CALL_POOL.snapshot()['active'],0)
         self.assertEqual(self.studio.CALL_POOL.snapshot()['waiting'],0)
         self.assertEqual(self.client.get('/api/jobs/'+jid).json()['outputs'],[])
-        state=json.loads((self.studio.DATA/'jobs'/jid/'regions.json').read_text())
+        state=json.loads((self.studio.DATA/'jobs'/jid/'regions.json').read_text(encoding='utf-8'))
         self.assertTrue(all(item['status']=='cancelled' for item in state['regions']))
 
     def test_new_read_endpoints_require_authentication(self):

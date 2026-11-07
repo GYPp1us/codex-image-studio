@@ -33,7 +33,7 @@ Original brief:
 class ImageSettings(BaseModel):
     transport: Literal['images', 'responses', 'cli'] = 'images'
     fallback: bool = True
-    image_model: Literal['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'] = 'gpt-image-2.5-sunburst'
+    image_model: Literal['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'] = 'gpt-image-2.5-sunburst'
     quality: Literal['auto', 'low', 'medium', 'high', 'xhigh', 'max'] = 'max'
     partial_images: int = Field(default=2, ge=0, le=3)
 

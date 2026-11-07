@@ -198,6 +198,7 @@ function genHTML(){const c=S.composer;return `${topBar("创作",modeSeg())}
     <div class="card-head"><span class="label">参考图</span><span class="muted small" id="ref-count"></span></div>
     <div class="ref-strip" id="refs"></div>
   </section>
+  ${typeof StudioQuickSettings!=='undefined'?StudioQuickSettings.html():''}
 </div>
 <aside class="landscape-only landscape-parameters" id="landscape-parameters"></aside>
 <div class="gen-bar">
@@ -224,6 +225,7 @@ function updateCreate(){
   $("#sum1").textContent=`${c.ratio} · ${c.count} 张`;
   $("#sum2").textContent=[c.size==="自动"?"自动尺寸":c.size+" 长边",c.polish&&"润色",c.transparent&&"透明",c.stitch!=="关"&&"生成后 "+c.stitch+" 超分",(StudioService.backendLabel?.()||StudioService.modelName(c.model))+(c.polish?" · 润色 "+StudioService.modelName(c.model):"")].filter(Boolean).join(" · ");
   updBp();
+  if(typeof StudioQuickSettings!=='undefined')StudioQuickSettings.render();
 }
 function updBp(){
   const act=S.batches.filter(b=>b.tasks.some(t=>t.status==="queued"||t.status==="running")),bp=$("#bp");
@@ -635,6 +637,9 @@ function paramsBody(){
   const c=S.composer,o=(k,v,lab=v,sub="")=>`<button class="opt${sub?" tall":""}${c[k]===v?" on":""}" data-act="opt" data-k="${k}" data-v="${v}">${lab}${sub?`<small>${sub}</small>`:""}</button>`;
   const sw=(k,lab,sub)=>`<button class="row" data-act="sw" data-k="${k}" data-layout="width:100%"><span class="rl">${lab}<small>${sub}</small></span><span class="switch ${c[k]?"on":""}"></span></button>`;
   return `
+    <p class="note">长按选项可固定到快速设置。本页参数应用到本次创作。</p>
+    <div class="field-label">图片模型</div><div class="opts backend-options">${typeof StudioQuickSettings!=='undefined'?StudioQuickSettings.imageModels.map(([value,label])=>`<button class="opt${StudioQuickSettings.backend().image_model===value?' on':''}" data-act="backend-opt" data-k="image_model" data-v="${value}">${label}</button>`).join(''):''}</div>
+    <div class="field-label">图片质量</div><div class="opts c4">${[['auto','自动'],['low','低'],['medium','中'],['high','高'],['xhigh','极高'],['max','最大']].map(([value,label])=>`<button class="opt${typeof StudioQuickSettings!=='undefined'&&StudioQuickSettings.backend().quality===value?' on':''}" data-act="backend-opt" data-k="quality" data-v="${value}">${label}</button>`).join('')}</div>
     <div class="field-label">画幅</div><div class="opts">${["1:1","3:2","2:3","16:9","9:16","自动"].map(v=>o("ratio",v)).join("")}</div>
     <div class="row" data-layout="margin-top:8px"><span class="rl">数量<small>每张为独立会话</small></span><span class="stepper"><button data-act="cnt" data-d="-1" aria-label="减少">${icon("minus",18)}</button><output id="cnt">${c.count}</output><button data-act="cnt" data-d="1" aria-label="增加">${icon("plus",18)}</button></span></div>
     <div class="field-label">图像尺寸</div><div class="opts c4">${["自动","1K","2K","4K"].map(v=>o("size",v)).join("")}</div>
@@ -715,6 +720,7 @@ app.addEventListener("click",async e=>{
     case"sheet-close":back();break;
     case"generate":generate();break;
     case"params":if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide())$('#landscape-parameters')?.scrollTo({top:0,behavior:RM?'auto':'smooth'});else paramsSheet();break;
+    case"backend-opt":if(typeof StudioQuickSettings!=='undefined')StudioQuickSettings.apply({key:a.dataset.k,value:a.dataset.v});break;
     case"opt":{const kk=a.dataset.k;S.composer[kk]=a.dataset.v;$$(`.opt[data-k="${kk}"]`,a.closest(".sheet,.landscape-parameters")||document).forEach(x=>x.classList.toggle("on",x===a));refresh();break;}
     case"sw":{const kk=a.dataset.k;S.composer[kk]=!S.composer[kk];$(".switch",a).classList.toggle("on",S.composer[kk]);refresh();break;}
     case"cnt":{const c=S.composer;c.count=clamp(c.count+ +a.dataset.d,1,20);const o=$('output',a.closest('.stepper'));o.textContent=c.count;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});refresh();break;}

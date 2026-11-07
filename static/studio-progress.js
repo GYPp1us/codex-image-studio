@@ -36,6 +36,10 @@ const StudioProgress=(()=>{
     if(phase){const [key,label]=phase,state=m.complete?'done':m.history.phases?.[key]?.status||'queued',normalized=success(state)?'done':state==='cancelled'?'cancelled':state==='failed'?'failed':state==='running'?'running':'queued';
       return `<div class="progress-column whole" data-phase="${key}" title="${label} · ${normalized==='done'?'已完成':normalized==='failed'?'失败':normalized==='running'?'进行中':'等待'}"><i class="work-cell merged" data-state="${normalized}"></i><span>${label}</span></div>`;}
     const i=index-2,tile=m.children[i]||{index:i+1},number=tile.index||i+1;
+    if(tile.processing==='local_interpolation'){
+      const state=tile.state||tile.status,normalized=success(state)?'done':['failed','cancelled','queued'].includes(state)?state:'running';
+      return `<div class="progress-column whole local" data-tile="${number-1}" title="第 ${number} 块 · 平滑背景 · 本地双线性插值"><i class="work-cell merged" data-state="${normalized}"></i><span>${number}·插值</span></div>`;
+    }
     return `<div class="progress-column" data-tile="${number-1}">${m.calls.map((stage,row)=>{const state=tileState(tile,row,m);return `<i class="work-cell" data-stage="${stage}" data-state="${state}" title="第 ${number} 块 · ${({sending:"发送",thinking:"思考",dispatching:"派发",generating:"生图",receiving:"回传"})[stage]} · ${state==='done'?'已完成':state==='failed'?'失败':state==='running'?'进行中':'等待'}"></i>`;}).join('')}<span title="第 ${number} 块">${number}</span></div>`;
   }
   function activeColumn(m){

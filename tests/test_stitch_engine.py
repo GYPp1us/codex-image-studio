@@ -43,7 +43,13 @@ class StitchEngineTests(unittest.TestCase):
         self.assertGreater(quality['inliers'],20)
         self.assertLess(quality['rms_original_pixels'],1)
         self.assertEqual(np.array(quality['matrix']).shape,(2,3))
-        with self.assertRaises(engine.StitchError):engine.affine_register(np.zeros((200,200,3),np.uint8),np.zeros((200,200,3),np.uint8))
+        flat=np.zeros((200,200,3),np.uint8)
+        matrix,quality=engine.affine_register(flat,flat)
+        self.assertEqual(quality['method'],'frame_coordinates/visible_content')
+        self.assertEqual(quality['geometry_evidence'],'frame_only')
+        self.assertTrue(np.array_equal(matrix,np.array([[1.,0.,0.],[0.,1.,0.]])))
+        changed=flat.copy();cv2.rectangle(changed,(90,90),(110,110),(255,255,255),-1)
+        with self.assertRaises(engine.StitchError):engine.affine_register(flat,changed)
 
     def test_slow_color_correction_preserves_redrawn_detail(self):
         original=texture();redraw=np.clip(original.astype(np.int16)+18,0,255).astype(np.uint8)

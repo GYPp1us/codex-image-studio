@@ -13,10 +13,12 @@ from pathlib import Path
 from call_errors import authentication_status_error
 
 from PIL import Image
-from stitch_engine import LABELS, MAX_PIXELS, PHASES, REGISTRATION_VERSION, layout, save_json, refresh_registered_tile
+import cv2
+from stitch_engine import LABELS, MAX_PIXELS, PHASES, layout, save_json, refresh_registered_tile, alignment_current,interpolate_tile,StitchError
 from task_progress import mapping, call_stage
 
 ENGINE_LOCK = asyncio.Semaphore(1)
+LOCAL_INTERPOLATION_LOCK = asyncio.Semaphore(2)
 _LEGACY_VERBATIM_PROMPT = """将 reference-1.png 中的局部图重绘为 {target_size} 的高细节图像。reference-2.png 是完整原图，仅供保持风格、光照和景深一致。
 严格保留局部图的画面边界、元素位置、轮廓、比例、文字和数量，只增强已有细节。不移动或增删内容、不扩图、不加边框，只输出局部图。
 以下原始说明仅用于理解语义和风格，不重复执行其中改变姿态、结构或构图的旧编辑指令：
@@ -186,6 +188,17 @@ async def legacy_cli_call(studio,jid,folder,name,instruction,references,model,ef
 
 
 async def engine(studio,jid,folder,command,*args):
+    if command=='interpolate':
+        async with LOCAL_INTERPOLATION_LOCK:
+            ensure_active(studio,jid)
+            work=asyncio.create_task(asyncio.to_thread(interpolate_tile,folder,int(args[1])))
+            try:await asyncio.shield(work)
+            except asyncio.CancelledError:
+                with contextlib.suppress(Exception):await work
+                raise
+            except (StitchError,cv2.error) as error:raise WorkflowError(str(error)) from error
+            ensure_active(studio,jid)
+        return
     progress_file=folder/"engine-progress.json";last=""
     async with ENGINE_LOCK:
         ensure_active(studio,jid)
@@ -248,8 +261,7 @@ async def apply_local_repairs(studio,jid,folder,plan,options,generate):
         source=work/'source.png';output=folder/'redraw'/f'{index}.png'
         if not source.exists():shutil.copyfile(output,source)
         with Image.open(source) as image:context_box(image.size,region)
-        diagnostic=folder/'diagnostics'/f'alignment-{index}.json'
-        if not diagnostic.exists() or json.loads(diagnostic.read_text(encoding='utf-8')).get('registration_version',0)<REGISTRATION_VERSION:
+        if not alignment_current(folder,index):
             await engine(studio,jid,folder,'register','--tile',index)
         result=work/'result.png'
         if not result.exists():
@@ -261,6 +273,7 @@ async def apply_local_repairs(studio,jid,folder,plan,options,generate):
             temporary=result.with_suffix('.tmp');await asyncio.to_thread(compose_edit,source,generated,region,temporary);temporary.replace(result)
         ensure_active(studio,jid)
         temporary=output.with_suffix('.local.tmp');shutil.copyfile(result,temporary);temporary.replace(output)
+        (folder/'diagnostics'/f'local-{index}.json').unlink(missing_ok=True)
         async with ENGINE_LOCK:await asyncio.to_thread(refresh_registered_tile,folder,index,region)
         repair['completed']=True;save_json(path,repairs)
 
@@ -336,8 +349,7 @@ async def run(studio,jid):
         progress(studio,jid,"redraw",factor,factor)
         for tile in plan['tiles']:
             i=tile['index'];progress(studio,jid,"registration",i,factor,detail=f"第 {i+1}/{factor} 块")
-            diagnostic=folder/'diagnostics'/f'alignment-{i}.json'
-            if diagnostic.exists() and json.loads(diagnostic.read_text(encoding='utf-8')).get('registration_version',0)>=REGISTRATION_VERSION:continue
+            if alignment_current(folder,i):continue
             for attempt in range(maximum):
                 try:
                     await engine(studio,jid,folder,"register","--tile",i);break
