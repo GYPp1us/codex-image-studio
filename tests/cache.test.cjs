@@ -11,7 +11,7 @@ class CacheStorage {
 function worker(state,cache=new CacheStorage()){
   const listeners={},pending=new Set();
   const waitUntil=work=>{const task=Promise.resolve(work);pending.add(task);task.finally(()=>pending.delete(task)).catch(()=>{});};
-  const context=vm.createContext({Response,Request,Headers,URL,Map,Promise,TransformStream,AbortController,DOMException,setTimeout:(fn,ms)=>{const timer=setTimeout(fn,ms);timer.unref();return timer;},clearTimeout,Date:class extends Date{static now(){return state.time||1000;}},caches:cache,self:{location:{origin:'https://image.test'},addEventListener:(type,fn)=>listeners[type]=fn,clients:{claim:async()=>{},matchAll:async()=>[{postMessage:message=>(state.progress||=[]).push(message)}]},skipWaiting:async()=>{}},fetch:async (request,options={})=>{
+  const context=vm.createContext({Response,Request,Headers,URL,Map,Promise,TransformStream,AbortController,DOMException,setTimeout:state.setTimeout||((fn,ms)=>{const timer=setTimeout(fn,ms);timer.unref();return timer;}),clearTimeout:state.clearTimeout||clearTimeout,Date:class extends Date{static now(){return state.time||1000;}},caches:cache,self:{location:{origin:'https://image.test'},addEventListener:(type,fn)=>listeners[type]=fn,clients:{claim:async()=>{},matchAll:async()=>[{postMessage:message=>(state.progress||=[]).push(message)}]},skipWaiting:async()=>{}},fetch:async (request,options={})=>{
     const url=typeof request==='string'?request:request.url;
     if(url==='/api/auth/state'){state.authCalls=(state.authCalls||0)+1;const authenticated=state.auth!==false;if(state.authGate)await state.authGate;if(state.authFailure)throw new Error('auth connection lost');return Response.json({authenticated,cache_scope:state.scope||'account-a'});}
     if(url.includes('/api/auth/logout')){state.auth=false;return Response.json({ok:true});}
@@ -109,4 +109,44 @@ test('logout while cache open or match fails cannot fall back to media fetch',as
     assert.equal((await w.fetch('/api/auth/logout','POST')).status,200);release();
     assert.equal((await image).status,401);assert.equal(state.loads||0,0);await w.settle();
   }
+});
+
+
+test('account change authorizes the new partition without a spurious 401',async()=>{
+  const state={},w=worker(state);
+  assert.equal((await w.fetch(path)).status,200);await w.settle();
+  state.scope='account-b';state.time=32000;
+  const next=await w.fetch(path);assert.equal(next.status,200);assert.equal(await next.text(),'png');await w.settle();
+  assert.deepEqual(await w.cache.keys(),['studio-images-v1-account-b']);assert.equal(state.loads,2);
+});
+
+test('slow cache writes stay serialized beyond 25 seconds and clearing waits for the real write',async()=>{
+  let release,start;const gate=new Promise(resolve=>release=resolve),started=new Promise(resolve=>start=resolve),timers=new Map();let sequence=0,puts=0;
+  const state={setTimeout:(fn,ms)=>{timers.set(++sequence,{fn,ms});return sequence;},clearTimeout:id=>timers.delete(id)};
+  const storage=new CacheStorage(),original=storage.open.bind(storage);
+  storage.open=async name=>{const cache=await original(name),put=cache.put;cache.put=async(...args)=>{puts++;if(puts===1){start();await gate;}return put(...args);};return cache;};
+  const w=worker(state,storage);
+  try{
+    assert.equal((await w.fetch(path)).status,200);await started;
+    assert.equal((await w.fetch('/media/'+'b'.repeat(32))).status,200);
+    for(const timer of [...timers.values()])if(timer.ms===25000)timer.fn();
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(puts,1,'second write must wait');
+    let cleared=false;const clearing=w.message('IMAGE_CACHE_CLEAR').then(()=>{cleared=true;});
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(cleared,false,'clear must wait for cache.put');
+    release();await clearing;await w.settle();assert.equal((await storage.keys()).length,0);assert.equal(puts,1);
+  }finally{release();}
+});
+
+
+test('logout during account partition replacement cannot restore the stale identity',async()=>{
+  const state={},storage=new CacheStorage(),w=worker(state,storage);
+  await w.fetch(path);await w.settle();
+  let release,started;const gate=new Promise(resolve=>release=resolve),entered=new Promise(resolve=>started=resolve);
+  const remove=storage.delete.bind(storage);let calls=0;
+  storage.delete=async key=>{if(++calls===1){started();await gate;}return remove(key);};
+  state.scope='account-b';state.time=32000;
+  const image=w.fetch(path);await entered;
+  const logout=w.fetch('/api/auth/logout','POST');await new Promise(resolve=>setImmediate(resolve));release();
+  assert.equal((await logout).status,200);assert.equal((await image).status,401);assert.equal(state.loads,1);
+  await w.settle();assert.deepEqual(await storage.keys(),[]);
 });

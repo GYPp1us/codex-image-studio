@@ -5,7 +5,7 @@ const html=fs.readFileSync('static/index.html','utf8');
 const prompt='Generate an image using {prompt}, preserving the requested native dimensions.';
 const baseAsset={id:'asset',width:900,height:1200,name:'山色.png',kind:'generated',bytes:1234,created:1000,job_id:'job',url:'/media/asset',thumbnail:'/media/asset?thumbnail=1',preview:'/media/asset?preview=1',favorite:0,tags:''};
 function makeJob(id,extra={}){return {id,batch_id:'batch',prompt:'静谧山色',status:'queued',created:1000,collection_id:'untemplated',template_id:'',refs:[],references:[],outputs:[],attempt:0,max_attempts:3,error:'',model:'gpt-test',effort:'high',options:{ratio:'1:1',size:'auto',model:'gpt-test',effort:'high',stitch:0},progress:{stage:'queued',label:'等待调度'},...extra};}
-async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',blockedPaths=[],skipReady=false,savedDraft=null}={}){
+async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',blockedPaths=[],failOncePaths=[],skipReady=false,savedDraft=null}={}){
  const {window}=parseHTML(html),{document}=window;const stored=new Map(savedDraft?[["studio-demo-composer:fixture",JSON.stringify(savedDraft)]]:[]);const requests=[],timers=new Map();let timerId=0,stateReads=0,clock=0;
  const asset=huge?{...baseAsset,width:12000,height:8000,tile_template:'/api/assets/asset/tiles/{level}/{x}/{y}'}:baseAsset;
  const dataJobs=[makeJob('job',{status:'succeeded',outputs:[asset]}),...Array.from({length:19},(_,i)=>makeJob('job'+i))];
@@ -15,7 +15,8 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  const prefs={defaults:{ratio:'3:2',size:'auto',count:3,transparent:false,polish:false,stitch:0},quick:{keep_spec:true,use_ref:true,use_source_template:true,effort:'high',notify:true},upscale:{factor:4,auto_select:true,default_injection:''},motion:legacyMotion,motion_mode:motion,notify:false,call_prompt:prompt,polish_prompt:prompt,stitch_prompt:prompt,default_call_prompt:prompt,default_polish_prompt:prompt,default_stitch_prompt:prompt};
  const state={model:'gpt-test',effort:'high',concurrency:2,max_attempts:3,paused:true,preferences:prefs};
  const storage={bytes:1024,limit_bytes:0,free_bytes:1e9,groups:{database:512},tasks:[],trash:{assets:0,collections:0}};
- const fetch=async(path,opt={})=>{requests.push({path,method:opt.method||'GET',body:typeof opt.body==='string'?JSON.parse(opt.body):opt.body,headers:opt.headers});let d;
+ const failedOnce=new Set();const fetch=async(path,opt={})=>{requests.push({path,method:opt.method||'GET',body:typeof opt.body==='string'?JSON.parse(opt.body):opt.body,headers:opt.headers});let d;
+  if(failOncePaths.includes(path)&&!failedOnce.has(path)){failedOnce.add(path);return {ok:false,status:503,json:async()=>({detail:'fixture temporary failure'})};}
   if(blockedPaths.includes(path))await new Promise(()=>{});
   if(path==='/api/auth/state')d={initialized:true,authenticated:!unauth,csrf:'csrf-fixture',cache_scope:'fixture'};
   else if(path==='/api/state'){if(failSync&&stateReads++>0)return {ok:false,status:503,json:async()=>({detail:'poll unavailable'})};d=state;}
@@ -37,6 +38,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
   else if(path==='/api/jobs'&&opt.method)d={batch_id:'batch',ids:['queued-job']};
   else if(path==='/api/storage')d=storage;
   else if(path.includes('/assets/asset/info')){if(delayInfo)await delayInfo;d={asset:asset,job:dataJobs[0]};}
+  else if(path==='/api/assets/missing-draft/info')d={asset:{...asset,id:'missing-draft',name:'补读参考图.png',job_id:null},job:null};
   else if(path.startsWith('/api/jobs?'))d={items:dataJobs,total:20};
   else d={ok:true};
   return {ok:true,status:200,json:async()=>structuredClone(d)};
@@ -51,7 +53,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  const context=vm.createContext({document,window,console,Headers,FormData,AbortController,DOMException,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>stored.get(key)??(key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null),setItem:(key,value)=>stored.set(key,value)},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:query.includes('min-aspect-ratio')?{matches:false,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms,at:clock+ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
  for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-tasks.js','studio-upscale-prompts.js','studio-landscape.js','studio-failure-map.js','studio-recovery.js','studio-quick-settings.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
  if(skipReady){for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));}else await vm.runInContext('studioReady',context);
- return {context,document,requests,stored,advance(ms){clock+=ms;for(const [id,t] of [...timers])if(t.at<=clock){timers.delete(id);t.fn();}},setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){let count=0;for(const [id,t] of [...timers])if(t.ms===ms){count++;timers.delete(id);t.fn();}return count;},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
+ return {context,document,requests,stored,emit(name,event={}){eventListeners[name]?.forEach(fn=>fn(event));},advance(ms){clock+=ms;for(const [id,t] of [...timers])if(t.at<=clock){timers.delete(id);t.fn();}},setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){let count=0;for(const [id,t] of [...timers])if(t.ms===ms){count++;timers.delete(id);t.fn();}return count;},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
 
 function previewLoads(f,{decode=true}={}){
@@ -275,13 +277,14 @@ test('visibility resume interrupts a hung poll and starts a fresh sync',async()=
 
 
 test('first screen and draft remain usable while optional startup calls never finish',async()=>{
- const blockedPaths=['/api/account','/api/setup/status','/api/models','/api/assets?kind=all&limit=80','/api/assets/asset/info'];
+ const blockedPaths=['/api/account','/api/setup/status','/api/models','/api/assets?kind=all&limit=80'];
  const f=await fixture({skipReady:true,blockedPaths,legacyDraft:{prompt:'保留的草稿',refs:['asset'],ratio:'auto'}});
  assert.equal(f.document.querySelector('#tabbar').hidden,false);
  assert.equal(f.run('S.composer.prompt'),'保留的草稿');
  assert.deepEqual(Array.from(f.run('S.composer.refs')),['asset']);
  assert.ok(f.document.querySelector('#prompt'));
  for(const path of blockedPaths)assert.ok(f.requests.some(item=>item.path===path),path);
+ assert.equal(f.requests.some(item=>item.path==='/api/assets/asset/info'),false,'wait for initial asset attempt before requesting missing draft metadata');
 });
 
 
@@ -351,4 +354,52 @@ test('duplicate upload progress events without new bytes do not postpone timeout
  f.advance(30000);xhr[0].sent(100);f.advance(15000);
  await assert.rejects(result,error=>error.name==='TimeoutError'&&error.uncertain===true);
  assert.equal(xhr[0].sends,1);assert.equal(xhr[0].aborts,1);
+});
+
+test('initial pageshow does not restart the already completed boot',async()=>{
+ const f=await fixture();const before=f.requests.filter(r=>r.path==='/api/auth/state').length;f.emit('pageshow',{persisted:false});for(let i=0;i<4;i++)await previewTick();
+ assert.equal(f.requests.filter(r=>r.path==='/api/auth/state').length,before);
+});
+test('backgrounding cancels marked background reads but preserves explicit user reads',async()=>{
+ const f=await fixture(),signals={};let finishUser;f.context.fetch=(path,opt={})=>{signals[path]=opt.signal;return new Promise((resolve,reject)=>{if(path==='/api/user-read')finishUser=()=>resolve({ok:true,json:async()=>({ok:true})});opt.signal.addEventListener('abort',()=>reject(Object.assign(new Error('aborted'),{name:'AbortError'})),{once:true});});};
+ const background=f.service.api('/api/background-read',{background:true}),user=f.service.api('/api/user-read');const cancelled=assert.rejects(background,e=>e.name==='AbortError');
+ Object.defineProperty(f.document,'hidden',{configurable:true,value:true});f.document.dispatchEvent(new f.context.window.Event('visibilitychange'));await cancelled;
+ assert.equal(signals['/api/background-read'].aborted,true);assert.equal(signals['/api/user-read'].aborted,false);finishUser();assert.equal((await user).ok,true);
+});
+test('long setup and storage reads use 30s and callers can override the read deadline',async()=>{
+ const f=await fixture();f.context.fetch=()=>new Promise(()=>{});
+ for(const path of ['/api/setup/status','/api/storage']){const pending=f.service.api(path),result=assert.rejects(pending,e=>e.name==='TimeoutError');f.advance(15000);await previewTick();assert.ok(f.flushTimers(30000));await result;}
+ const custom=f.service.api('/api/custom',{timeout:23000}),result=assert.rejects(custom,e=>e.name==='TimeoutError');assert.ok(f.flushTimers(23000));await result;
+});
+test('failed optional startup data retries during the next synchronization',async()=>{
+ const paths=['/api/models','/api/setup/status','/api/account','/api/assets?kind=all&limit=80'];const f=await fixture({failOncePaths:paths});
+ for(let i=0;i<5;i++)await previewTick();f.flushTimers(2500);for(let i=0;i<8;i++)await previewTick();
+ for(const path of paths)assert.equal(f.requests.filter(r=>r.path===path).length,2,path);
+ assert.equal(f.service.models()[0].id,'gpt-test');assert.equal(f.run('S.disconnected'),false);
+});
+test('reopening a viewer before close completes restarts a paused preview',async()=>{
+ const f=await fixture({motion:'full',systemReduce:false}),loads=previewLoads(f);f.run('openViewer("asset","recent")');
+ const first=f.document.querySelector('.slide[data-o="0"] img');assert.ok(loads.length);let finish;f.document.querySelector('#viewer').animate=()=>({finished:new Promise(resolve=>finish=resolve),cancel(){}});
+ f.run('closeViewer()');assert.equal(first.dataset.loading,'paused');f.run('openViewer("asset","recent")');
+ assert.ok(loads.length>=2);assert.equal(f.document.querySelector('.slide[data-o="0"] img').dataset.loading,'1');finish?.();
+});
+test('accepted generation waits for older sync then requests a fresh post-write state',async()=>{
+ const f=await fixture(),realFetch=f.context.fetch;let release,reads=0;const gate=new Promise(resolve=>release=resolve);
+ f.context.fetch=async(path,opt={})=>{if(path==='/api/state'&&++reads===1)await gate;return realFetch(path,opt);};
+ f.flushTimers(2500);await previewTick();assert.equal(reads,1);
+ f.run("S.composer.prompt='fresh sync';document.querySelector('#gen').disabled=false");const generate=f.service.generate();for(let i=0;i<3;i++)await previewTick();
+ assert.equal(f.requests.filter(r=>r.path==='/api/jobs'&&r.method==='POST').length,1);assert.equal(reads,1);
+ release();await generate;assert.ok(reads>=2,'must fetch state after the accepted write');
+});
+test('missing draft reference metadata retries after a temporary read failure',async()=>{
+ const path='/api/assets/missing-draft/info',savedDraft={composer:{prompt:'保留草稿',refs:['missing-draft']},mode:'gen'},f=await fixture({savedDraft,failOncePaths:[path]});
+ for(let i=0;i<6;i++)await previewTick();assert.equal(f.requests.filter(r=>r.path===path).length,1);assert.deepEqual(Array.from(f.run('S.composer.refs')),['missing-draft']);
+ f.flushTimers(2500);for(let i=0;i<8;i++)await previewTick();assert.equal(f.requests.filter(r=>r.path===path).length,2);assert.ok(f.run('img("missing-draft")'));
+});
+test('failed task load places retry feedback on the button the user clicked',async()=>{
+ const f=await fixture(),realFetch=f.context.fetch;let calls=0,release;const gate=new Promise(resolve=>release=resolve);
+ f.context.fetch=async(path,opt={})=>{if(path==='/api/jobs/job'){if(++calls===1)return {ok:false,status:503,json:async()=>({detail:'fixture fail'})};await gate;return {ok:true,json:async()=>makeJob('job')};}return realFetch(path,opt);};
+ await f.service.taskInfo('job');const retry=f.document.querySelector('[data-task-retry]');assert.ok(retry);retry.click();await previewTick();
+ assert.equal(retry.getAttribute('aria-busy'),'true');assert.ok(retry.querySelector('.action-spinner'));const header=f.document.querySelector('[data-task-refresh]');assert.notEqual(header?.getAttribute('aria-busy'),'true');
+ release();for(let i=0;i<5;i++)await previewTick();assert.equal(calls,2);assert.ok(f.document.querySelector('[data-task-refresh]'));
 });

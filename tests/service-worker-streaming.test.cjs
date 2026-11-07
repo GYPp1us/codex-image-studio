@@ -41,3 +41,24 @@ test('stalled authorization falls back to the network without reading private ca
  const timeout=[...timers.values()].find(timer=>timer.ms===8000);assert.ok(timeout,'authorization must have a deadline');timeout.fn();
  const result=await response;assert.equal(result.status,200);assert.equal(downloads,1);assert.deepEqual(opened,[]);
 });
+
+
+test('slow navigation remains live past six seconds and failures use the offline page',async()=>{
+  const handlers={},timers=new Map();let next=0,resolveNetwork,rejectNetwork;
+  const worker={location:{origin:'https://image.test'},addEventListener:(name,fn)=>handlers[name]=fn};
+  const context=vm.createContext({self:worker,caches:{match:async()=>new Response('offline')},
+    fetch:()=>new Promise((resolve,reject)=>{resolveNetwork=resolve;rejectNetwork=reject;}),
+    Response,Request,Headers,URL,TransformStream,Date,Promise,AbortController,
+    setTimeout:(fn,ms)=>{timers.set(++next,{fn,ms});return next;},clearTimeout:id=>timers.delete(id)});
+  vm.runInContext(fs.readFileSync('static/sw.js','utf8'),context);
+  const navigate=()=>{let result;handlers.fetch({request:{url:'https://image.test/',method:'GET',mode:'navigate'},respondWith:p=>result=p});return result;};
+  let settled=false;const first=navigate().then(r=>{settled=true;return r;});await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual([...timers.values()].map(t=>t.ms),[45000]);
+  for(const timer of [...timers.values()])if(timer.ms<=6000)timer.fn();
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(settled,false);
+  resolveNetwork(new Response('online'));assert.equal(await (await first).text(),'online');
+  const second=navigate();await new Promise(resolve=>setImmediate(resolve));rejectNetwork(new Error('network lost'));
+  assert.equal(await (await second).text(),'offline');
+  const third=navigate();await new Promise(resolve=>setImmediate(resolve));[...timers.values()].find(t=>t.ms===45000).fn();
+  assert.equal(await (await third).text(),'offline');
+});

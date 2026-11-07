@@ -3,7 +3,7 @@ const CACHE='studio-offline-v1';
 const IMAGE_PREFIX='studio-images-v1-';
 const OFFLINE=['/static/offline.html','/static/offline.css','/static/icons/icon-192.png'];
 const MAX_BYTES=192*1024*1024,MAX_ITEMS=300,MAX_IMAGE=MAX_BYTES;
-let identity=null,checkedAt=0,authPending=null,epoch=0,maintenance=Promise.resolve();
+let identity=null,checkedAt=0,authPending=null,epoch=0,revocation=0,maintenance=Promise.resolve();
 const inflight=new Map();
 const liveTransfers=new Set();
 const controller=()=>typeof AbortController==='function'?new AbortController():null;
@@ -12,7 +12,8 @@ function deadline(work,ms,abort=()=>{}){
   let timer;return Promise.race([Promise.resolve().then(work),new Promise((_,reject)=>{timer=setTimeout(()=>{abort();reject(new Error('网络长时间无响应'));},ms);})]).finally(()=>clearTimeout(timer));
 }
 
-async function clearImages(){
+async function clearImages(revoke=true){
+  if(revoke)revocation++;
   epoch++;identity=null;checkedAt=0;authPending=null;
   inflight.clear();
   for(const transfer of liveTransfers)transfer.abort();
@@ -29,7 +30,7 @@ async function authorize(){
     if(version!==epoch)return null;
     if(!response.ok||!state.authenticated||!state.cache_scope){await clearImages();return null;}
     const next=IMAGE_PREFIX+state.cache_scope;
-    if(identity&&identity!==next){const clearing=clearImages(),clearedVersion=epoch;await clearing;if(clearedVersion!==epoch)return null;}
+    if(identity&&identity!==next){const clearing=clearImages(false),clearedVersion=epoch;await clearing;if(clearedVersion!==epoch)return null;}
     identity=next;checkedAt=Date.now();return identity;
   })();
   authPending=promise;
@@ -56,7 +57,9 @@ async function store(name,key,response,version){
     const headers=new Headers(copy.headers);headers.set('x-studio-bytes',String(size));headers.set('x-studio-stored',String(Date.now()));
     await cache.put(key,new Response(copy.body,{status:copy.status,statusText:copy.statusText,headers}));
   };
-  maintenance=maintenance.catch(()=>{}).then(()=>deadline(write,25000,()=>{copy.body?.cancel().catch(()=>{});}));await maintenance;
+  // Keep serialization and waitUntil tied to the actual Cache API write. Its input
+  // is already guarded by fetchImage's idle timeout; a locked body cannot be cancelled here.
+  maintenance=maintenance.catch(()=>{}).then(write);await maintenance;
 }
 async function fetchImage(request,shared=null){
   const transfer=controller(),cancel=()=>transfer?.abort();let idle;
@@ -77,9 +80,11 @@ async function fetchImage(request,shared=null){
   return new Response(body,{status:response.status,statusText:response.statusText,headers:response.headers});
 }
 async function image(request,event){
-  const version=epoch,key=request.url,fallback=()=>version===epoch?fetchImage(request):new Response('',{status:401});let name,cached;
+  const generation=revocation,key=request.url;let name,cached,version=null;
+  const fallback=()=>generation===revocation&&(version===null||version===epoch)?fetchImage(request):new Response('',{status:401});
   try{name=await authorize();}catch{return fallback();}
-  if(version!==epoch)return new Response('',{status:401});
+  if(generation!==revocation)return new Response('',{status:401});
+  version=epoch;
   if(!name)return fallback();
   try{cached=await (await caches.open(name)).match(key);}catch{return fallback();}
   if(version!==epoch)return new Response('',{status:401});
@@ -123,6 +128,6 @@ self.addEventListener('fetch',event=>{
   if(request.method!=='GET')return;
   if((/^\/media\/[a-f0-9]{32}$/.test(url.pathname)||/^\/api\/jobs\/[a-f0-9]{32}\/stitch\/base$/.test(url.pathname))&&!url.searchParams.has('download')){event.respondWith(image(request,event));return;}
   if(request.mode==='navigate'||OFFLINE.includes(url.pathname)){
-    const network=controller();event.respondWith(deadline(()=>fetch(request,network?{signal:network.signal}:undefined),6000,()=>network?.abort()).catch(async()=>await caches.match(request.mode==='navigate'?'/static/offline.html':url.pathname)||new Response('暂时无法连接，请重试',{status:503})));
+    const network=controller();event.respondWith(deadline(()=>fetch(request,network?{signal:network.signal}:undefined),45000,()=>network?.abort()).catch(async()=>await caches.match(request.mode==='navigate'?'/static/offline.html':url.pathname)||new Response('暂时无法连接，请重试',{status:503})));
   }
 });

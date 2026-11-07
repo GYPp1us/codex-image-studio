@@ -13,6 +13,11 @@ const StudioFeedback=(()=>{
     for(let p=node;p&&p!==el;p=p.parentElement){if(p.hidden)return false;if(typeof getComputedStyle==='function'){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden'||s.opacity==='0')return false;}}
     return true;
   }
+  function visibleLabel(el){
+    const parts=[];
+    const visit=node=>{if(node.nodeType===3){parts.push(node.textContent);return;}if(node.nodeType!==1||node.getAttribute('aria-hidden')==='true'||!visible(node,el))return;for(const child of node.childNodes)visit(child);};
+    for(const node of el.childNodes)visit(node);return parts.join(' ').replace(/\s+/g,' ').trim();
+  }
   function presentation(el,old){
     // Restore before inspecting: our own hidden icon must not look like a business-hidden icon.
     for(const node of old.hidden){node.removeAttribute('data-pending-icon');node.removeAttribute('data-pending-content');}old.hidden.clear();
@@ -31,7 +36,7 @@ const StudioFeedback=(()=>{
   }
   function mark(el,busy){
     if(busy){
-      if(!saved.has(el)){const old={disabled:el.disabled,busy:el.getAttribute('aria-busy'),label:el.getAttribute('aria-label'),hidden:new Set(),wrappers:new Set()};saved.set(el,old);if(old.label===null)el.setAttribute('aria-label',el.textContent.trim()||el.title||'正在处理');}
+      if(!saved.has(el)){const old={disabled:el.disabled,busy:el.getAttribute('aria-busy'),label:el.getAttribute('aria-label'),hidden:new Set(),wrappers:new Set()};saved.set(el,old);if(old.label===null)el.setAttribute('aria-label',visibleLabel(el)||el.title||'正在处理');}
       el.dataset.pending='1';el.setAttribute('aria-busy','true');
       if('disabled' in el)el.disabled=true;
       presentation(el,saved.get(el));

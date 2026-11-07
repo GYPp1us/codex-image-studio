@@ -3,7 +3,6 @@
 [data-pending="1"]>.action-spinner{position:absolute;left:var(--action-x,50%);top:var(--action-y,50%);width:16px;height:16px;box-sizing:border-box;margin:-8px 0 0 -8px;border:1.8px solid currentColor;border-right-color:transparent;border-radius:50%;animation:action-spin .85s linear infinite;pointer-events:none}
 [data-pending="1"] [data-pending-icon],[data-pending="1"] [data-pending-content]{visibility:hidden!important}
 @keyframes action-spin{to{transform:rotate(360deg)}}
-@keyframes action-reveal{to{opacity:1}}
 html.rm .action-spinner,html[data-motion="reduce"] .action-spinner{animation:none;border-style:dotted;opacity:1}
 .switch.on,.pick.on .ck,.pill-btn.strong,.primary,.gen-btn,.qe-sheet .qe-send,.fx-row.on .fx-ck,.hit.on .hc{background:var(--sage-ink);color:var(--on-accent,#fffefa)}
 .switch.on::after{background:var(--on-accent,#fffefa)}

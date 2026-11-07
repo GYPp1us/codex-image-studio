@@ -2,8 +2,9 @@
 /* Real service adapter for the PR #1 interface. UI state is never a scheduler. */
 const StudioService=(()=>{
   let sessionEpoch=0,syncVersion=0,syncFlight=null,bootVersion=0,bootFlight=null,wakeQueued=false,wakeVersion=0,catalogReady=false,hasPainted=false,slept=false;
-  const requests=new Set(),detailReads=new Map();
-  let csrf='',authenticated=false,authState=null,config={},account={},setup={},prefs={},models=[],polling=null,loading=false,saveQueue=Promise.resolve(),draftTimer,installPrompt;
+  const requests=new Set(),detailReads=new Map(),auxReads=new Map(),auxReady=new Set();
+  let assetsAttempted=false;
+  let csrf='',authenticated=false,authState=null,config={},account={},setup={},prefs={},models=[],polling=null,saveQueue=Promise.resolve(),draftTimer,installPrompt;
   const assets=new Map(),jobs=new Map(),batchMap=new Map(),plans=new Map(),planPending=new Map(),details=new Map(),collectionPages=new Map();
   const workPages=new Map();
   const trashRefresh=new WeakMap();
@@ -16,7 +17,7 @@ const StudioService=(()=>{
     try{const d=await api(`/api/assets?kind=${tab==='references'?'reference':'all'}${tab==='favorites'?'&favorite=true':''}&limit=80&offset=${offset}`);if(epoch!==sessionEpoch)return;d.items.forEach(a=>rememberAsset(a));page.ids=[...new Set([...(more?page.ids:[]),...d.items.map(a=>a.id)])];page.offset=offset+d.items.length;page.total=d.total;page.ready=true;projectImages();}
     catch(error){page.error=true;throw error;}finally{page.loading=false;if(epoch===sessionEpoch&&S.tab==='works'&&!S.coll&&S.worksTab===tab&&!V.open)refresh();}
   }
-  let batchOffset=0,batchTotal=0,stopped=false,firstSync=true,lastActive=new Set(),syncWaiters=[];
+  let batchOffset=0,batchTotal=0,stopped=false,firstSync=true,lastActive=new Set();
   const factor=v=>Number(String(v).replace('×',''))||0,ratio=v=>v==='自动'?'auto':v,size=v=>({'自动':'auto','1K':'1024','2K':'2048','4K':'4096'}[v]||v);
   const labelRatio=v=>v==='auto'?'自动':v,labelSize=v=>({auto:'自动',1024:'1K',2048:'2K',4096:'4K'}[v]||v);
   const bytes=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GB':n>=1048576?(n/1048576).toFixed(1)+' MB':Math.round((n||0)/1024)+' KB';
@@ -40,17 +41,19 @@ const StudioService=(()=>{
     });
   }
   async function api(path,options={}){
+    const {background=false,timeout,...requestOptions}=options;
     const epoch=sessionEpoch,headers=new Headers(options.headers||{});if(csrf)headers.set('X-CSRF-Token',csrf);
     let body=options.body;if(body&&!(body instanceof FormData)){headers.set('Content-Type','application/json');body=JSON.stringify(body);}
     const method=(options.method||'GET').toUpperCase(),controller=new AbortController(),external=options.signal;
     const aborted=()=>{const error=new Error('请求已取消');error.name='AbortError';return error;};
-    if(external?.aborted||method==='GET'&&document.hidden)throw aborted();
-    let rejectDeadline,timer;const entry={method,cancel:()=>{controller.abort();rejectDeadline(aborted());}};
+    if(external?.aborted||background&&method==='GET'&&document.hidden)throw aborted();
+    let rejectDeadline,timer;const entry={method,background,cancel:()=>{controller.abort();rejectDeadline(aborted());}};
     const interrupt=new Promise((_,reject)=>{rejectDeadline=reject;});
     const cancel=()=>entry.cancel();external?.addEventListener('abort',cancel,{once:true});requests.add(entry);
-    const armDeadline=()=>{clearTimeout(timer);timer=setTimeout(()=>{const error=new Error(method==='GET'?'网络长时间无响应，请重试':'请求长时间无进展，提交状态待确认；请刷新列表核对后再操作');error.name='TimeoutError';error.uncertain=method!=='GET';rejectDeadline(error);controller.abort();},method==='GET'?15000:45000);};armDeadline();
+    const duration=timeout??(method!=='GET'?45000:/^\/api\/(setup\/status|storage)(?:\?|$)/.test(path)?30000:15000);
+    const armDeadline=()=>{clearTimeout(timer);timer=setTimeout(()=>{const error=new Error(method==='GET'?'网络长时间无响应，请重试':'请求长时间无进展，提交状态待确认；请刷新列表核对后再操作');error.name='TimeoutError';error.uncertain=method!=='GET';rejectDeadline(error);controller.abort();},duration);};armDeadline();
     let response,data;
-    try{({response,data}=await Promise.race([interrupt,body instanceof FormData&&typeof XMLHttpRequest==='function'?uploadRequest(path,{method,body,headers,signal:controller.signal},armDeadline):(async()=>{const response=await fetch(path,{...options,signal:controller.signal,body,headers,credentials:'same-origin',cache:'no-store'});let data;try{data=await response.json();}catch(error){if(controller.signal.aborted)throw error;throw new Error(`服务器返回异常（${response.status}）`);}return {response,data};})()]));}
+    try{({response,data}=await Promise.race([interrupt,body instanceof FormData&&typeof XMLHttpRequest==='function'?uploadRequest(path,{method,body,headers,signal:controller.signal},armDeadline):(async()=>{const response=await fetch(path,{...requestOptions,signal:controller.signal,body,headers,credentials:'same-origin',cache:'no-store'});let data;try{data=await response.json();}catch(error){if(controller.signal.aborted)throw error;throw new Error(`服务器返回异常（${response.status}）`);}return {response,data};})()]));}
     finally{clearTimeout(timer);requests.delete(entry);external?.removeEventListener('abort',cancel);}
     if(epoch!==sessionEpoch){const error=new Error("会话已变化");error.name="AbortError";throw error;}
     if(!response.ok){if(response.status===401&&authenticated){authenticated=false;clearTimeout(polling);login();}
@@ -58,7 +61,8 @@ const StudioService=(()=>{
       const error=new Error(message||`请求失败（${response.status}）`);error.status=response.status;throw error;}
     if(data.csrf)csrf=data.csrf;return data;
   }
-  function cancelReads(){syncVersion++;syncFlight=null;loading=false;for(const request of [...requests])if(request.method==='GET')request.cancel();detailReads.clear();}
+  const read=(path,options={})=>api(path,{...options,background:true});
+  function cancelReads(){syncVersion++;syncFlight=null;for(const request of [...requests])if(request.method==='GET'&&request.background)request.cancel();detailReads.clear();auxReads.clear();}
   const post=(path,body={})=>api(path,{method:'POST',body});
   function bindPendingForm(form,key,send){
     const button=$('button[type="submit"]',form)||$('button',form);button.dataset.pendingKey=key;StudioFeedback.hydrate(form);
@@ -108,46 +112,75 @@ const StudioService=(()=>{
   function draftKey(){return `studio-demo-composer:${authState.cache_scope}`;}
   function flushDraft(){clearTimeout(draftTimer);if(!authenticated||!hasPainted||!authState?.cache_scope)return;try{localStorage.setItem(draftKey(),JSON.stringify({composer:S.composer,upc:S.upc,mode:S.mode}));}catch{}}
   function saveDraft(){if(!authenticated)return;clearTimeout(draftTimer);draftTimer=setTimeout(flushDraft,250);}
-  async function restoreDraft(){let d;try{d=JSON.parse(localStorage.getItem(draftKey())||'null');if(!d){const old=JSON.parse(localStorage.getItem('studio_draft')||'null');if(old)d={composer:{...old,ratio:labelRatio(old.ratio||'auto'),size:labelSize(old.size||'auto'),stitch:old.stitch?old.stitch+'×':'关',template:old.template?.id||null},mode:'gen'};}}catch{}
-    const epoch=sessionEpoch,missing=new Set();
+  function restoreDraft(){let d;try{d=JSON.parse(localStorage.getItem(draftKey())||'null');if(!d){const old=JSON.parse(localStorage.getItem('studio_draft')||'null');if(old)d={composer:{...old,ratio:labelRatio(old.ratio||'auto'),size:labelSize(old.size||'auto'),stitch:old.stitch?old.stitch+'×':'关',template:old.template?.id||null},mode:'gen'};}}catch{}
+    
     S.composer=defaultComposer();S.upc={src:null,factor:S.settings.upscale.factor,inj:S.settings.upscale.injection,policy:{append_system:S.settings.upscale.appendSystem,include_source_context:S.settings.upscale.includeSourceContext}};
     if(d?.composer){const c=d.composer;Object.assign(S.composer,c,{refs:Array.isArray(c.refs)?c.refs:[],template:c.template||null});}
     if(d?.upc)Object.assign(S.upc,d.upc);if(['gen','up'].includes(d?.mode))S.mode=d.mode;
     reconcileModel();
-    const ids=[...new Set([...(Array.isArray(d?.composer?.refs)?d.composer.refs:[]),d?.upc?.src].filter(Boolean))];
-    await Promise.all(ids.filter(id=>!assets.has(id)).map(async id=>{try{const data=await api('/api/assets/'+id+'/info');if(epoch!==sessionEpoch)return;if(data.job)rememberJob(data.job);rememberAsset(data.asset,data.job);}catch(error){if(error.status===404)missing.add(id);}}));
-    if(epoch!==sessionEpoch)return;
-    const tid=d?.composer?.template;if(tid&&!tpl(tid)){try{const t=await api('/api/templates/'+tid);if(epoch!==sessionEpoch)return;if(!tpl(t.id))S.templates.push({id:t.id,name:t.title,text:t.text,ratio:labelRatio(t.options.ratio||'auto'),refs:t.refs.length,referenceIds:t.refs,options:t.options,raw:t});t.references.forEach(a=>rememberAsset(a));}catch(error){if(error.status===404&&S.composer.template===tid)S.composer.template=null;}}
-    if(epoch!==sessionEpoch)return;S.composer.refs=S.composer.refs.filter(id=>!missing.has(id));if(missing.has(S.upc.src))S.upc.src=null;projectImages();
+  }
+  function repaintHydration(){if(!authenticated||!hasPainted)return;projectImages();if(!V.open&&!topScreen())refresh();updateChrome();}
+  function auxiliary(key,path,accept){
+    if(auxReads.has(key))return auxReads.get(key);
+    const epoch=sessionEpoch;
+    const task=read(path).then(value=>{if(epoch!==sessionEpoch||auxReads.get(key)!==task||!authenticated)return;accept(value);repaintHydration();}).finally(()=>{if(auxReads.get(key)===task)auxReads.delete(key);});
+    auxReads.set(key,task);return task;
+  }
+  function hydrateDraft(){
+    if(!hasPainted||firstSync||!assetsAttempted)return Promise.resolve();
+    const pending=[],ids=[...new Set([...S.composer.refs,S.upc.src].filter(Boolean))];
+    for(const id of ids.filter(id=>!assets.has(id))){
+      const epoch=sessionEpoch;
+      pending.push(auxiliary('asset:'+id,'/api/assets/'+id+'/info',data=>{if(data.job)rememberJob(data.job);rememberAsset(data.asset,data.job);}).catch(error=>{if(epoch===sessionEpoch&&error.status===404){S.composer.refs=S.composer.refs.filter(item=>item!==id);if(S.upc.src===id)S.upc.src=null;repaintHydration();}}));
+    }
+    const tid=S.composer.template;
+    if(tid&&!tpl(tid)){
+      const epoch=sessionEpoch;
+      pending.push(auxiliary('template:'+tid,'/api/templates/'+tid,t=>{if(!tpl(t.id))S.templates.push({id:t.id,name:t.title,text:t.text,ratio:labelRatio(t.options.ratio||'auto'),refs:t.refs.length,referenceIds:t.refs,options:t.options,raw:t});t.references.forEach(a=>rememberAsset(a));}).catch(error=>{if(epoch===sessionEpoch&&error.status===404&&S.composer.template===tid){S.composer.template=null;repaintHydration();}}));
+    }
+    return Promise.allSettled(pending);
+  }
+  function loadAuxiliary(){
+    const definitions=[
+      ['account','/api/account',value=>{account=value;}],
+      ['setup','/api/setup/status',value=>{setup=value;S.disconnected=!value.authenticated;}],
+      ['models','/api/models',value=>{models=value.items;catalogReady=true;reconcileModel();}],
+      ['assets','/api/assets?kind=all&limit=80',value=>{value.items.forEach(a=>rememberAsset(a));}]
+    ];
+    const tasks=definitions.filter(([key])=>!auxReady.has(key)).map(([key,path,accept])=>{
+      const epoch=sessionEpoch;
+      return auxiliary(key,path,value=>{accept(value);auxReady.add(key);}).finally(()=>{if(key==='assets'&&epoch===sessionEpoch){assetsAttempted=true;hydrateDraft();}});
+    });
+    return Promise.allSettled(tasks);
   }
   function reconcileModel(){if(!catalogReady)return;if(!models.some(model=>model.id===S.composer.model))S.composer.model=config.model;const model=models.find(model=>model.id===S.composer.model);if(model&&!model.efforts.includes(S.composer.effort))S.composer.effort=model.default_effort;}
-  async function fetchBatches(offset=0,version=null){const data=await api(`/api/batches?limit=30&offset=${offset}`);if(version!==null&&version!==syncVersion)return data;batchTotal=data.total;batchOffset=Math.max(batchOffset,offset+data.items.length);ingestBatches(data.items);return data;}
+  async function fetchBatches(offset=0,version=null){const data=await read(`/api/batches?limit=30&offset=${offset}`);if(version!==null&&version!==syncVersion)return data;batchTotal=data.total;batchOffset=Math.max(batchOffset,offset+data.items.length);ingestBatches(data.items);return data;}
   function ingestBatches(list){for(const b of list){batchMap.set(b.id,b);b.jobs.forEach(rememberJob);}}
-  async function allCollections(){const data=await api('/api/collections?limit=100');while(data.items.length<data.total){const more=await api('/api/collections?limit=100&offset='+data.items.length);if(!more.items.length)break;data.items.push(...more.items);}return data;}
-  async function sync({initial=false,stateData=null}={}){if(!authenticated)return;if(syncFlight)return syncFlight;loading=true;const version=++syncVersion,epoch=sessionEpoch;
+  async function allCollections(){const data=await read('/api/collections?limit=100');while(data.items.length<data.total){const more=await read('/api/collections?limit=100&offset='+data.items.length);if(!more.items.length)break;data.items.push(...more.items);}return data;}
+  async function sync({initial=false,stateData=null}={}){if(!authenticated)return;if(syncFlight)return syncFlight;const version=++syncVersion,epoch=sessionEpoch;
     const valid=()=>version===syncVersion&&epoch===sessionEpoch&&authenticated;
-    const task=(async()=>{try{const [st,cs,ts]=await Promise.all([stateData||api('/api/state'),allCollections(),api('/api/templates')]);if(!valid())return;config=st;S.paused=st.paused;
+    const task=(async()=>{try{const [st,cs,ts]=await Promise.all([stateData||read('/api/state'),allCollections(),read('/api/templates')]);if(!valid())return;config=st;S.paused=st.paused;
       S.collections=cs.items.map(c=>({...c,template:c.template_id||null}));for(const c of cs.items)for(const a of c.covers||c.cover_assets||[]){const v=rememberAsset(a);if(v)v.coll=c.id;}
       S.templates=ts.map(t=>({id:t.id,name:t.title,text:t.text,ratio:labelRatio(t.options.ratio||'auto'),refs:t.refs.length,referenceIds:t.refs,options:t.options,raw:t}));ts.forEach(t=>t.references.forEach(a=>rememberAsset(a)));
-      const [normal,...act]=await Promise.all([fetchBatches(0,version),...['queued','running','retrying'].map(status=>api(`/api/batches?status=${status}&limit=100`))]);if(!valid())return;act.forEach(d=>ingestBatches(d.items));
+      const [normal,...act]=await Promise.all([fetchBatches(0,version),...['queued','running','retrying'].map(status=>read(`/api/batches?status=${status}&limit=100`))]);if(!valid())return;act.forEach(d=>ingestBatches(d.items));
       // A previously running old batch can finish outside the recent page.
       const current=new Set([...batchMap.values()].flatMap(b=>b.jobs).filter(active).map(j=>j.id));
-      await Promise.all([...lastActive].filter(id=>!normal.items.some(b=>b.jobs.some(j=>j.id===id))&&!act.some(d=>d.items.some(b=>b.jobs.some(j=>j.id===id)))).map(async id=>{const job=await api('/api/jobs/'+id);if(valid())rememberJob(job);}));if(!valid())return;lastActive=current;
+      await Promise.all([...lastActive].filter(id=>!normal.items.some(b=>b.jobs.some(j=>j.id===id))&&!act.some(d=>d.items.some(b=>b.jobs.some(j=>j.id===id)))).map(async id=>{const job=await read('/api/jobs/'+id);if(valid())rememberJob(job);}));if(!valid())return;lastActive=current;
       const ups=[...batchMap.values()].flatMap(b=>b.jobs).filter(j=>j.options.stitch);
-      ups.filter(j=>!detailReads.has(j.id)&&(initial||active(j)||!details.has(j.id)||details.get(j.id).status!==j.status)).slice(0,6).forEach(j=>{const read=api('/api/upscale/jobs/'+j.id).then(d=>{if(detailReads.get(j.id)!==read||epoch!==sessionEpoch||!authenticated||stopped)return;if(jobs.get(j.id)?.status!==j.status&&d.status===j.status)return;details.set(j.id,d);rememberJob(d);projectBatches();if(!V.open&&!topScreen())refresh();StudioTasks.update();}).catch(()=>{}).finally(()=>{if(detailReads.get(j.id)===read)detailReads.delete(j.id);});detailReads.set(j.id,read);});
+      ups.filter(j=>!detailReads.has(j.id)&&(initial||active(j)||!details.has(j.id)||details.get(j.id).status!==j.status)).slice(0,6).forEach(j=>{const request=read('/api/upscale/jobs/'+j.id).then(d=>{if(detailReads.get(j.id)!==request||epoch!==sessionEpoch||!authenticated||stopped)return;if(jobs.get(j.id)?.status!==j.status&&d.status===j.status)return;details.set(j.id,d);rememberJob(d);projectBatches();if(!V.open&&!topScreen())refresh();StudioTasks.update();}).catch(()=>{}).finally(()=>{if(detailReads.get(j.id)===request)detailReads.delete(j.id);});detailReads.set(j.id,request);});
       projectImages();projectBatches();if(!firstSync)notifyChanges();if(hasPainted){if(S.coll&&!coll(S.coll)){await closeOverlays();S.coll=null;S.tab='works';renderPage();}else if(!V.open&&!topScreen())refresh();}
-      S.offline=false;updateChrome();StudioTasks.update();firstSync=false;
-    }finally{if(syncFlight===task){loading=false;syncFlight=null;}}})();syncFlight=task;return task;
+      S.offline=false;updateChrome();StudioTasks.update();firstSync=false;loadAuxiliary();hydrateDraft();
+    }finally{if(syncFlight===task){syncFlight=null;}}})();syncFlight=task;return task;
   }
   const knownStates=new Map();
   function notifyChanges(){for(const j of jobs.values()){const old=knownStates.get(j.id);knownStates.set(j.id,j.status);if(old&&active({status:old})&&!active(j)&&S.settings.notify&&(!j.options.quick_edit||S.settings.quick.notify)){
       const output=j.outputs?.[0],text=j.status==='succeeded'?'任务已完成':j.status==='failed'?'任务失败':'任务已取消';toast(text,{action:output?'查看':'查看任务',run:()=>output?closeOverlays().then(()=>openViewer(output.id,'recent')):goBatch(j.batch_id)});}}}
-  async function refreshData(){await sync();saveDraft();}
+  async function refreshData(){const epoch=sessionEpoch,previous=syncFlight;if(previous)await previous.catch(()=>{});if(epoch!==sessionEpoch||!authenticated)return;await sync();saveDraft();}
   function schedule(){clearTimeout(polling);if(!authenticated||stopped||document.hidden)return;polling=setTimeout(async()=>{if(!document.hidden&&!StudioZoom.isInteracting()){try{await sync();}catch(error){if(authenticated&&error.name!=='AbortError'){S.offline=true;updateChrome();}}}schedule();},2500);}
   function wake(){if(document.hidden||stopped||wakeQueued)return;
     if(slept){slept=false;for(const animation of document.getAnimations?.()||[]){const timing=animation.effect?.getComputedTiming?.();if(timing&&Number.isFinite(timing.endTime)){try{animation.finish();}catch{}}}}
     if(!authenticated||!hasPainted){if($('#login-form'))return;bootVersion++;bootFlight=null;cancelReads();boot().catch(report);return;}
-    wakeQueued=true;const version=++wakeVersion;cancelReads();
+    wakeQueued=true;const version=++wakeVersion;cancelReads();auxReady.delete('account');auxReady.delete('setup');loadAuxiliary();
     if(typeof resumeViewerImages==='function')resumeViewerImages();StudioZoom.resume?.();
     if(!V.open&&!topScreen()){if(!$('#page .top'))renderPage();else refresh();}
     sync().catch(error=>{if(version===wakeVersion&&authenticated&&!document.hidden&&error.name!=='AbortError'){S.offline=true;updateChrome();}}).finally(()=>{if(version===wakeVersion){wakeQueued=false;schedule();}});
@@ -157,24 +190,18 @@ const StudioService=(()=>{
     const valid=()=>version===bootVersion&&authenticated&&!stopped;
     const repaint=()=>{if(!valid())return;if(!V.open&&!topScreen()&&$('#page .top'))refresh();updateChrome();};
     const task=(async()=>{try{$('#tabbar').hidden=true;$('#page').innerHTML='<div class="boot-state"><span class="spin"></span>正在打开工作台</div>';
-      authState=await api('/api/auth/state');csrf=authState.csrf||'';authenticated=authState.authenticated;if(!authenticated)return login();
-      const secondary=[
-        api('/api/account').then(value=>{if(valid()){account=value;repaint();}}),
-        api('/api/setup/status').then(value=>{if(valid()){setup=value;S.disconnected=!value.authenticated;repaint();}}),
-        api('/api/models').then(value=>{if(valid()){models=value.items;catalogReady=true;reconcileModel();repaint();}}),
-        api('/api/assets?kind=all&limit=80').then(value=>{if(valid()){value.items.forEach(a=>rememberAsset(a));projectImages();repaint();}})
-      ].map(promise=>promise.catch(()=>{}));
-      const [st,settingsData]=await Promise.all([api('/api/state'),api('/api/settings')]);if(!valid())return;config=st;S.paused=st.paused;
+      authState=await read('/api/auth/state');csrf=authState.csrf||'';authenticated=authState.authenticated;if(!authenticated)return login();
+      const [st,settingsData]=await Promise.all([read('/api/state'),read('/api/settings')]);if(!valid())return;config=st;S.paused=st.paused;
       if(!models.length)models=[{id:st.model,name:st.model,efforts:[st.effort],default_effort:st.effort}];
-      mapSettings(settingsData);const draft=restoreDraft();renderPage();hasPainted=true;$('#tabbar').hidden=false;schedule();
+      mapSettings(settingsData);restoreDraft();renderPage();hasPainted=true;$('#tabbar').hidden=false;schedule();
       navigator.serviceWorker?.register('/sw.js',{scope:'/',updateViaCache:'none'}).catch(()=>{});
-      await Promise.allSettled([...secondary,draft,sync({initial:true,stateData:st}).catch(error=>{if(valid()&&error.name!=='AbortError'){S.offline=true;updateChrome();}})]);if(!valid())return;notifyChanges();repaint();
-    }catch(error){if(version!==bootVersion||stopped)return;if(!authenticated&&authState?.authenticated===false)return login();$('#page').innerHTML=`<div class="boot-state"><p>${esc(error.message)}</p><button class="secondary" data-act="boot-retry">重新连接</button></div>`;}
+      await Promise.allSettled([loadAuxiliary(),sync({initial:true,stateData:st}).catch(error=>{if(valid()&&error.name!=='AbortError'){S.offline=true;updateChrome();}})]);await hydrateDraft();if(!valid())return;notifyChanges();repaint();
+    }catch(error){if(version!==bootVersion||stopped||error.name==='AbortError')return;if(!authenticated&&authState?.authenticated===false)return login();$('#page').innerHTML=`<div class="boot-state"><p>${esc(error.message)}</p><button class="secondary" data-act="boot-retry">重新连接</button></div>`;}
     finally{if(bootFlight===task)bootFlight=null;}})();bootFlight=task;return task;
   }
-  function login(){StudioSelection.reset();releaseReferenceOwners();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;layers.splice(0);history.replaceState({depth:0},'');
+  function login(){StudioSelection.reset();releaseReferenceOwners();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;layers.splice(0);history.replaceState({depth:0},'');
     $('#page').innerHTML=`<div class="auth-wrap"><div class="auth-brand">${icon('sparkle',28)}<h1>Image Studio</h1><p>${authState?.initialized?'登录私人图片工作台':'设置私人图片工作台'}</p></div><form id="login-form" class="card"><div class="field-label">用户名</div><input class="input" name="username" autocomplete="username" minlength="2" maxlength="64" required><div class="field-label">密码</div><input class="input" name="password" type="password" autocomplete="${authState?.initialized?'current-password':'new-password'}" minlength="10" maxlength="256" required>${authState?.initialized?'':'<div class="field-label">初始化密钥</div><input class="input" name="setup_token" type="password" required>'}<p class="form-err" role="alert"></p><button class="primary" type="submit">${authState?.initialized?'登录':'创建工作台'}</button></form></div>`;
-    bindPendingForm($('#login-form'),'form:login',async values=>{await post('/api/auth/'+(authState.initialized?'login':'setup'),values);$('#tabbar').hidden=false;firstSync=true;await boot();});
+    bindPendingForm($('#login-form'),'form:login',async values=>{await post('/api/auth/'+(authState.initialized?'login':'setup'),values);authState=null;$('#page').innerHTML='<div class="boot-state"><span class="spin"></span>正在打开工作台</div>';firstSync=true;await boot();});
   }
   function jobInput(){const c=S.composer;return {prompt:c.prompt,refs:[...c.refs],count:c.count,ratio:ratio(c.ratio),size:size(c.size),polish:c.polish,transparent:c.transparent,after_upscale:factor(c.stitch),upscale_requirements:c.upscaleRequirements??'',...StudioUpscalePrompts.entryValue('composer'),model:c.model||config.model,effort:c.effort,template_id:c.template||null,...(c.imageBackend&&Object.keys(c.imageBackend).length?{image_backend:{...c.imageBackend}}:{})};}
   async function submit(path,body,onAccepted){const result=await post(path,body);holdBadge();onAccepted?.(result);try{await refreshData();}catch(error){S.offline=true;updateChrome();toast('任务已提交，等待更新状态');}return result;}
@@ -473,7 +500,7 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   let keyboardBaseline={width:0,height:0};
   function keyboardViewport(){const v=globalThis.visualViewport,editing=/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName||'');if(!editing||keyboardBaseline.width!==innerWidth)keyboardBaseline={width:innerWidth,height:innerHeight};else keyboardBaseline.height=Math.max(keyboardBaseline.height,innerHeight);const keyboard=!!(v&&editing&&Math.max(innerHeight-v.height,keyboardBaseline.height-v.height,(typeof KB!=='undefined'&&KB.hold&&KB.w===app.offsetWidth?KB.h-app.offsetHeight:0))>120);app.classList.toggle('keyboard-visible',keyboard);if(keyboard){app.style.setProperty('--studio-vh',v.height+'px');app.style.setProperty('--studio-vv-top',Math.max(0,v.offsetTop)+'px');}else{app.style.removeProperty('--studio-vh');app.style.removeProperty('--studio-vv-top');}}
   if(typeof ResizeObserver==='function')new ResizeObserver(()=>requestAnimationFrame(()=>{app.classList.toggle('compact-redraw',app.offsetWidth>=600&&app.offsetHeight<=240);keyboardViewport();})).observe(app);globalThis.addEventListener('resize',()=>requestAnimationFrame(keyboardViewport));globalThis.visualViewport?.addEventListener('resize',keyboardViewport);globalThis.visualViewport?.addEventListener('scroll',keyboardViewport);document.addEventListener('focusin',keyboardViewport);document.addEventListener('focusout',()=>requestAnimationFrame(keyboardViewport));
-  addEventListener('online',wake);addEventListener('pageshow',wake);addEventListener('offline',()=>{S.offline=true;updateChrome();});
+  addEventListener('online',wake);addEventListener('pageshow',event=>{if(event.persisted)wake();});addEventListener('offline',()=>{S.offline=true;updateChrome();});
   addEventListener('beforeinstallprompt' ,e=>{e.preventDefault();installPrompt=e;});
   app.addEventListener('input',saveDraft);app.addEventListener('click',()=>setTimeout(saveDraft,0));
   addEventListener('pagehide',suspendPage);

@@ -482,6 +482,7 @@ function layoutSlides(){
   const old=new Map($$(".slide",track).map(el=>[el.dataset.id,el]));
   for(const o of [-1,0,1]){const id=V.list[V.i+o];if(!id||!img(id))continue;const im=img(id),r=fitRect(im);let slide=old.get(id);old.delete(id);
     if(!slide){slide=document.createElement("div");slide.className="slide";slide.dataset.id=id;const image=document.createElement("img");image.alt="";image.draggable=false;image.decoding="async";slide.append(image);const loading=document.createElement('button');loading.className='preview-loading';loading.innerHTML='<span class="spin"></span><span class="loading-label">高清预览加载中</span><span class="retry-label">预览未加载 · 轻点重试</span>';loading.setAttribute('aria-label','重试加载高清预览');loading.onclick=e=>{e.stopPropagation();if(slide.dataset.loading==='error')showProgressive(image,im,true);};slide.append(loading);showProgressive(image,im,o===0);}
+    if($('img',slide).dataset.loading==='paused')showProgressive($('img',slide),im,o===0);
     slide.dataset.o=o;slide.style.transform=`translateX(calc(${o} * (100% + 20px)))`;Object.assign($("img",slide).style,{left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px',transform:''});track.append(slide);
   }
   for(const el of old.values()){const image=$('img',el);if(image)cancelPreview(image);el.remove();}

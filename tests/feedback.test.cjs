@@ -81,3 +81,7 @@ test('background completion does not disable a button rebound to another idle pa
  const pa=f.feedback.run('page:a',button,()=>a.promise);await tick();button.dataset.pendingKey='page:b';f.feedback.hydrate(button);button.disabled=false;
  a.resolve();await pa;assert.equal(button.dataset.pendingKey,'page:b');assert.equal(button.disabled,false);assert.equal(button.hasAttribute('aria-busy'),false);assert.equal(button.querySelector('.action-spinner'),null);
 });
+test('loading label omits visually hidden success text',async()=>{
+ const f=fixture('<button data-act="generate"><span>生成</span><span hidden>已加入</span></button>'),button=f.document.querySelector('button'),g=gate();const task=f.feedback.run('generate',button,()=>g.promise);await tick();
+ assert.equal(button.getAttribute('aria-label'),'生成');g.resolve();await task;
+});
