@@ -13,7 +13,8 @@ from pathlib import Path
 from call_errors import authentication_status_error
 
 from PIL import Image
-from stitch_engine import LABELS, MAX_PIXELS, PHASES, layout, save_json, refresh_registered_tile, alignment_current,interpolate_tile
+import cv2
+from stitch_engine import LABELS, MAX_PIXELS, PHASES, layout, save_json, refresh_registered_tile, alignment_current,interpolate_tile,StitchError
 from task_progress import mapping, call_stage
 
 ENGINE_LOCK = asyncio.Semaphore(1)
@@ -195,6 +196,7 @@ async def engine(studio,jid,folder,command,*args):
             except asyncio.CancelledError:
                 with contextlib.suppress(Exception):await work
                 raise
+            except (StitchError,cv2.error) as error:raise WorkflowError(str(error)) from error
             ensure_active(studio,jid)
         return
     progress_file=folder/"engine-progress.json";last=""

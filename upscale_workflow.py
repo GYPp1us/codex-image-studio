@@ -331,14 +331,15 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             progress(proxy,jid,'registration',number,len(plan['tiles']),detail=f"第 {number+1}/{len(plan['tiles'])} 块")
             if alignment_current(folder,index):continue
             if no_generation:raise WorkflowError('审核放行所需配准检查点无效，未自动重绘')
-            for attempt in range(maximum):
+            for attempt in range(maximum+1):
                 try:await engine(proxy,jid,folder,'register','--tile',index);break
                 except WorkflowError as failure:
                     progress(proxy,jid,'registration',number,len(plan['tiles']),detail=f'第 {number+1} 块未通过：{failure}')
                     feedback[str(index)]=str(failure);save_json(feedback_file,feedback)
                     if selected is not None and index not in selected:
                         raise WorkflowError(f'第 {index+1} 块仍未通过，已保留未选中的返回，请在失败处理中选择该块。{failure}') from failure
-                    if attempt+1==maximum:raise
+                    local=(folder/'diagnostics'/f'local-{index}.json').is_file()
+                    if attempt+1>=maximum and not local:raise
                     use_model(index)
                     (folder/'redraw'/f'{index}.png').unlink(missing_ok=True)
                     refined=await redraw(tile)
@@ -348,14 +349,18 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             raw=folder/'canvas.rgb'
             if raw.exists():raw.unlink()
             studio.STORAGE.require(math.prod(stage['output_size'])*7,'融合本级大图')
-            for attempt in range(maximum):
+            coverage_attempts={}
+            while True:
                 try:
                     await engine(proxy,jid,folder,'compose');break
                 except WorkflowError as failure:
                     match=re.search(r'第 (\d+) 块.*(?:覆盖|掩码)',str(failure))
-                    if not match or attempt+1==maximum:raise
+                    if not match:raise
                     index=int(match[1])-1;tile=next((t for t in plan['tiles'] if t['index']==index),None)
                     if tile is None or selected is not None and index not in selected:raise
+                    local=(folder/'diagnostics'/f'local-{index}.json').is_file()
+                    if coverage_attempts.get(index,0)>=maximum-(0 if local else 1):raise
+                    coverage_attempts[index]=coverage_attempts.get(index,0)+1
                     feedback[str(index)]=str(failure);save_json(feedback_file,feedback)
                     use_model(index);(folder/'redraw'/f'{index}.png').unlink(missing_ok=True)
                     if await redraw(tile) is not None:raise WorkflowError('覆盖重试返回尺寸不足，请从检查点重试以重新细分')
