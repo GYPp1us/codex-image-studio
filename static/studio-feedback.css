@@ -1,12 +1,8 @@
-/* Pending feedback adds no layout width and never substitutes button content. */
-[data-pending="1"]{position:relative;cursor:wait!important;opacity:.8!important}
-[data-pending="1"]>.action-spinner{position:absolute;right:8px;top:50%;width:14px;height:14px;margin-top:-7px;border:1.7px solid currentColor;border-right-color:transparent;border-radius:50%;opacity:0;animation:action-spin .85s linear infinite,action-reveal 1ms 120ms forwards;pointer-events:none}
-.icon-btn[data-pending="1"]>svg,.qe-send[data-pending="1"]>svg{opacity:0}
-.icon-btn[data-pending="1"]>.action-spinner,.qe-send[data-pending="1"]>.action-spinner{right:50%;margin-right:-7px}
-.pause-ctl[data-pending="1"]>.switch{opacity:0}
-.pause-ctl[data-pending="1"]>.action-spinner{right:12px}
+/* Preserve layout and names: replace text at the center, or only the visible icon. */
+[data-pending="1"]{position:relative;cursor:wait!important;opacity:1!important}
+[data-pending="1"]>.action-spinner{position:absolute;left:var(--action-x,50%);top:var(--action-y,50%);width:16px;height:16px;box-sizing:border-box;margin:-8px 0 0 -8px;border:1.8px solid currentColor;border-right-color:transparent;border-radius:50%;animation:action-spin .85s linear infinite;pointer-events:none}
+[data-pending="1"] [data-pending-icon],[data-pending="1"] [data-pending-content]{visibility:hidden!important}
 @keyframes action-spin{to{transform:rotate(360deg)}}
-@keyframes action-reveal{to{opacity:1}}
 html.rm .action-spinner,html[data-motion="reduce"] .action-spinner{animation:none;border-style:dotted;opacity:1}
 .switch.on,.pick.on .ck,.pill-btn.strong,.primary,.gen-btn,.qe-sheet .qe-send,.fx-row.on .fx-ck,.hit.on .hc{background:var(--sage-ink);color:var(--on-accent,#fffefa)}
 .switch.on::after{background:var(--on-accent,#fffefa)}
@@ -43,3 +39,4 @@ html.rm .action-spinner,html[data-motion="reduce"] .action-spinner{animation:non
 .storage-key .available{background:var(--sage-2)}
 .storage-key .other{background:var(--ink-3);opacity:.4}
 .field-save-state{display:flex;align-items:center;gap:6px;min-height:22px;margin:4px 0 8px;color:var(--ink-3);font-size:11px}.field-save-state.error{color:var(--red)}.field-save-state .spin{width:11px;height:11px}
+.ref-loading{display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--ink-3);background:var(--surface-2)}.ref-loading .spin{width:16px;height:16px}

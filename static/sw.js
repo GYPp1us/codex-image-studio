@@ -3,11 +3,20 @@ const CACHE='studio-offline-v1';
 const IMAGE_PREFIX='studio-images-v1-';
 const OFFLINE=['/static/offline.html','/static/offline.css','/static/icons/icon-192.png'];
 const MAX_BYTES=192*1024*1024,MAX_ITEMS=300,MAX_IMAGE=MAX_BYTES;
-let identity=null,checkedAt=0,authPending=null,epoch=0,maintenance=Promise.resolve();
+let identity=null,checkedAt=0,authPending=null,epoch=0,revocation=0,maintenance=Promise.resolve();
 const inflight=new Map();
+const liveTransfers=new Set();
+const controller=()=>typeof AbortController==='function'?new AbortController():null;
+function deadline(work,ms,abort=()=>{}){
+  if(typeof setTimeout!=='function')return Promise.resolve().then(work);
+  let timer;return Promise.race([Promise.resolve().then(work),new Promise((_,reject)=>{timer=setTimeout(()=>{abort();reject(new Error('网络长时间无响应'));},ms);})]).finally(()=>clearTimeout(timer));
+}
 
-async function clearImages(){
+async function clearImages(revoke=true){
+  if(revoke)revocation++;
   epoch++;identity=null;checkedAt=0;authPending=null;
+  inflight.clear();
+  for(const transfer of liveTransfers)transfer.abort();
   await maintenance.catch(()=>{});
   try{await Promise.all((await caches.keys()).filter(k=>k.startsWith('studio-images-')).map(k=>caches.delete(k)));}catch{/* Storage may be disabled; the authorization gate still resets. */}
 }
@@ -16,12 +25,12 @@ async function authorize(){
   if(authPending)return authPending;
   const version=epoch;
   const promise=(async()=>{
-    const response=await fetch('/api/auth/state',{credentials:'same-origin',cache:'no-store'});
-    const state=await response.json();
+    const request=controller();
+    const {response,state}=await deadline(async()=>{const response=await fetch('/api/auth/state',{credentials:'same-origin',cache:'no-store',...(request?{signal:request.signal}:{})});return {response,state:await response.json()};},8000,()=>request?.abort());
     if(version!==epoch)return null;
     if(!response.ok||!state.authenticated||!state.cache_scope){await clearImages();return null;}
     const next=IMAGE_PREFIX+state.cache_scope;
-    if(identity&&identity!==next)await clearImages();
+    if(identity&&identity!==next){const clearing=clearImages(false),clearedVersion=epoch;await clearing;if(clearedVersion!==epoch)return null;}
     identity=next;checkedAt=Date.now();return identity;
   })();
   authPending=promise;
@@ -48,39 +57,53 @@ async function store(name,key,response,version){
     const headers=new Headers(copy.headers);headers.set('x-studio-bytes',String(size));headers.set('x-studio-stored',String(Date.now()));
     await cache.put(key,new Response(copy.body,{status:copy.status,statusText:copy.statusText,headers}));
   };
+  // Keep serialization and waitUntil tied to the actual Cache API write. Its input
+  // is already guarded by fetchImage's idle timeout; a locked body cannot be cancelled here.
   maintenance=maintenance.catch(()=>{}).then(write);await maintenance;
 }
-async function fetchImage(request){
-  const response=await fetch(request),url=request.url;
-  if(!response.ok||!response.body||!response.headers.get('content-type')?.startsWith('image/')||new URL(url).searchParams.has('thumbnail')||typeof TransformStream==='undefined')return response;
+async function fetchImage(request,shared=null){
+  const transfer=controller(),cancel=()=>transfer?.abort();let idle;
+  const finish=()=>{if(typeof clearTimeout==='function')clearTimeout(idle);if(transfer)liveTransfers.delete(transfer);if(shared){shared.finished=true;for(const consumer of shared.consumers)consumer.signal?.removeEventListener('abort',consumer.cancel);shared.consumers.clear();}else request.signal?.removeEventListener('abort',cancel);};
+  if(transfer){liveTransfers.add(transfer);transfer.signal.addEventListener('abort',finish,{once:true});}
+  if(shared)shared.cancel=cancel;else if(request.signal?.aborted)cancel();else request.signal?.addEventListener('abort',cancel,{once:true});
+  let response;try{response=await deadline(()=>fetch(request,transfer?{signal:transfer.signal}:undefined),15000,cancel);}catch(error){finish();throw error;}const url=request.url;
+  if(!response.ok||!response.body||!response.headers.get('content-type')?.startsWith('image/')||typeof TransformStream==='undefined'){finish();return response;}
   const total=Number(response.headers.get('content-length')||0);let loaded=0,last=0;
   const publish=done=>{
+    if(new URL(url).searchParams.has('thumbnail'))return;
     if(!done&&loaded!==0&&loaded<total&&Date.now()-last<120)return;last=Date.now();
     self.clients.matchAll({type:'window',includeUncontrolled:true}).then(clients=>clients.forEach(client=>client.postMessage({type:'IMAGE_PROGRESS',url,loaded,total,done}))).catch(()=>{});
   };
   publish(false);
-  const body=response.body.pipeThrough(new TransformStream({transform(chunk,controller){loaded+=chunk.byteLength;publish(false);controller.enqueue(chunk);},flush(){publish(true);}}));
+  const reset=()=>{if(typeof setTimeout!=='function')return;clearTimeout(idle);idle=setTimeout(cancel,20000);};reset();
+  const body=response.body.pipeThrough(new TransformStream({transform(chunk,controller){reset();loaded+=chunk.byteLength;publish(false);controller.enqueue(chunk);},flush(){finish();publish(true);}}));
   return new Response(body,{status:response.status,statusText:response.statusText,headers:response.headers});
 }
-async function image(request){
-  let name;
-  try{name=await authorize();}catch{return fetchImage(request);}
-  if(!name)return fetchImage(request);
-  const version=epoch,key=request.url;let cached;
-  try{cached=await (await caches.open(name)).match(key);}catch{return fetchImage(request);}
+async function image(request,event){
+  const generation=revocation,key=request.url;let name,cached,version=null;
+  const fallback=()=>generation===revocation&&(version===null||version===epoch)?fetchImage(request):new Response('',{status:401});
+  try{name=await authorize();}catch{return fallback();}
+  if(generation!==revocation)return new Response('',{status:401});
+  version=epoch;
+  if(!name)return fallback();
+  try{cached=await (await caches.open(name)).match(key);}catch{return fallback();}
   if(version!==epoch)return new Response('',{status:401});
   if(cached)return cached;
   const id=name+':'+key;
   if(!inflight.has(id)){
-    const pending=(async()=>{
-      const response=await fetchImage(request);
-      if((response.status===401||response.status===403)&&version===epoch)await clearImages();
-      else {try{await store(name,key,response,version);}catch{/* Storage pressure must not break image loading. */}}
-      return response;
-    })();
-    inflight.set(id,pending);pending.finally(()=>{if(inflight.get(id)===pending)inflight.delete(id);}).catch(()=>{});
+    const shared={consumers:new Set(),finished:false,cancel:null};const pending=fetchImage(request,shared);shared.promise=pending;inflight.set(id,shared);
+    pending.then(response=>{
+      const caching=(response.status===401||response.status===403)&&version===epoch?clearImages():store(name,key,response,version);
+      const settled=caching.catch(()=>{});event?.waitUntil?.(settled);
+      // Release the unused tee after current consumers clone it, rather than buffering an entire original.
+      Promise.resolve().then(()=>{if(inflight.get(id)===shared)inflight.delete(id);response.body?.cancel().catch(()=>{});});
+    },()=>{if(inflight.get(id)===shared)inflight.delete(id);});
   }
-  const response=await inflight.get(id);
+  const shared=inflight.get(id),consumer={signal:request.signal};
+  consumer.cancel=()=>{shared.consumers.delete(consumer);consumer.signal?.removeEventListener('abort',consumer.cancel);if(!shared.finished&&!shared.consumers.size){if(inflight.get(id)===shared)inflight.delete(id);shared.cancel?.();}};
+  if(!shared.finished){shared.consumers.add(consumer);if(consumer.signal?.aborted)consumer.cancel();else consumer.signal?.addEventListener('abort',consumer.cancel,{once:true});}
+  const response=await shared.promise;
+  if(request.signal?.aborted){const error=new Error('图片读取已取消');error.name='AbortError';throw error;}
   return version===epoch?response.clone():new Response('',{status:401});
 }
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(OFFLINE)).then(()=>self.skipWaiting())));
@@ -103,7 +126,8 @@ self.addEventListener('fetch',event=>{
     event.respondWith((async()=>{await clearImages();return fetch(request);})());return;
   }
   if(request.method!=='GET')return;
-  if((/^\/media\/[a-f0-9]{32}$/.test(url.pathname)||/^\/api\/jobs\/[a-f0-9]{32}\/stitch\/base$/.test(url.pathname))&&!url.searchParams.has('download')){event.respondWith(image(request));return;}
-  if(request.mode==='navigate')event.respondWith(fetch(request).catch(()=>caches.match('/static/offline.html')));
-  else if(OFFLINE.includes(url.pathname))event.respondWith(fetch(request).catch(()=>caches.match(url.pathname)));
+  if((/^\/media\/[a-f0-9]{32}$/.test(url.pathname)||/^\/api\/jobs\/[a-f0-9]{32}\/stitch\/base$/.test(url.pathname))&&!url.searchParams.has('download')){event.respondWith(image(request,event));return;}
+  if(request.mode==='navigate'||OFFLINE.includes(url.pathname)){
+    const network=controller();event.respondWith(deadline(()=>fetch(request,network?{signal:network.signal}:undefined),45000,()=>network?.abort()).catch(async()=>await caches.match(request.mode==='navigate'?'/static/offline.html':url.pathname)||new Response('暂时无法连接，请重试',{status:503})));
+  }
 });

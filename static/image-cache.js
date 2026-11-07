@@ -17,21 +17,30 @@ function paint(image){
 globalThis.StudioImages={
   async original(url,{signal,onProgress=()=>{}}={}){
     const key=canonical(url);if(new URL(key).origin!==new URL(location.href).origin)throw new Error('原图地址无效');
+    const controller=new AbortController(),cancelError=()=>{const error=new Error('已取消');error.name='AbortError';return error;};
+    const cancel=()=>controller.abort();if(signal?.aborted)throw cancelError();signal?.addEventListener('abort',cancel,{once:true});
+    const wait=work=>new Promise((resolve,reject)=>{
+      let settled=false,timer;const finish=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);controller.signal.removeEventListener('abort',aborted);fn(value);};
+      const aborted=()=>finish(reject,cancelError());if(controller.signal.aborted){aborted();return;}
+      controller.signal.addEventListener('abort',aborted,{once:true});
+      timer=setTimeout(()=>{const error=new Error('图片下载长时间无进展，请重试');error.name='TimeoutError';finish(reject,error);controller.abort();},20000);
+      try{Promise.resolve(work()).then(value=>finish(resolve,value),error=>finish(reject,error));}catch(error){finish(reject,error);}
+    });
     let reported=0;const progress=state=>{reported=Math.max(reported,state.loaded||0);onProgress({...state,loaded:reported});};
     if(!listeners.has(key))listeners.set(key,new Set());listeners.get(key).add(progress);progress({loaded:0,total:0,done:false});
     try{
-      const response=await fetch(key,{credentials:'same-origin',signal});
+      const response=await wait(()=>fetch(key,{credentials:'same-origin',signal:controller.signal}));
       if(!response.ok)throw new Error(response.status===401?'登录已失效，请重新登录':`原图下载失败（${response.status}）`);
       const type=response.headers.get('content-type')||'';if(!type.startsWith('image/'))throw new Error('服务器未返回有效图片');
       const total=Number(response.headers.get('content-length'))||0;
-      if(!response.body?.getReader){const blob=await response.blob();progress({loaded:blob.size,total:total||blob.size,done:true});return blob;}
+      if(!response.body?.getReader){const blob=await wait(()=>response.blob());progress({loaded:blob.size,total:total||blob.size,done:true});return blob;}
       const reader=response.body.getReader(),parts=[];let loaded=0,last=0;
-      try{while(true){const chunk=await reader.read();if(chunk.done)break;if(signal?.aborted)throw new DOMException('已取消','AbortError');parts.push(chunk.value);loaded+=chunk.value.byteLength;
+      try{while(true){const chunk=await wait(()=>reader.read());if(chunk.done)break;if(controller.signal.aborted)throw cancelError();parts.push(chunk.value);loaded+=chunk.value.byteLength;
         if(Date.now()-last>=80||total&&loaded>=total){last=Date.now();progress({loaded,total,done:false});}}
-      }catch(error){await reader.cancel().catch(()=>{});throw error;}finally{reader.releaseLock();}
-      if(signal?.aborted)throw new DOMException('已取消','AbortError');
+      }catch(error){try{Promise.resolve(reader.cancel()).catch(()=>{});}catch{}throw error;}finally{try{reader.releaseLock();}catch{}}
+      if(controller.signal.aborted)throw cancelError();
       const blob=new Blob(parts,{type});progress({loaded,total:total||loaded,done:true});return blob;
-    }finally{listeners.get(key)?.delete(progress);if(!listeners.get(key)?.size)listeners.delete(key);}
+    }finally{signal?.removeEventListener('abort',cancel);listeners.get(key)?.delete(progress);if(!listeners.get(key)?.size)listeners.delete(key);}
   },
   markup(extra=''){return `<span class="image-download-status ${extra}" role="status"><span class="image-download-label">正在下载原图…</span><span class="motion-track" role="progressbar" aria-label="原图下载进度" aria-valuemin="0" aria-valuemax="100"><span class="motion-fill p0"></span></span></span>`;},
   hydrate(root=document){

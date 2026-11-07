@@ -4,21 +4,21 @@ const fs=require('node:fs');const vm=require('node:vm');const {parseHTML}=requir
 const tick=()=>new Promise(r=>setImmediate(r));
 function fixture({job={},pages=[]}={}){
  const {window}=parseHTML('<!doctype html><html><body><section id="root"></section></body></html>'),{document}=window;
- const sources=[],images=[],requests=[];let hidden=false;
+ const sources=[],images=[],requests=[],timers=new Map();let hidden=false,nextTimer=0;
  Object.defineProperty(document,'hidden',{get:()=>hidden});
  class EventSource{constructor(url){this.url=url;this.closed=false;sources.push(this);}close(){this.closed=true;}send(value){this.onmessage?.({data:JSON.stringify(value)});}error(){this.onerror?.(new Error('offline'));}}
  class Image{constructor(){images.push(this);}set src(value){this.url=value;}get src(){return this.url;}decode(){return Promise.resolve();}success(){this.onload?.();}fail(){this.onerror?.();}}
  const layers=[];
  function openSheet({html}){const sheet=document.createElement('section');sheet.innerHTML=html;document.body.append(sheet);layers.push({type:'sheet',sheet});return sheet;}
  function traverseHistory(count){if(count()){const {sheet}=layers.pop();sheet.cleanup?.();sheet.remove();}}
- const context=vm.createContext({document,window,EventSource,Image,MutationObserver:window.MutationObserver,console,openSheet,layers,traverseHistory,topSheet:()=>layers.at(-1)?.sheet,icon:()=>'<svg></svg>',esc:x=>String(x??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')});
+ const context=vm.createContext({document,window,EventSource,Image,AbortController,DOMException,setTimeout:(fn,ms)=>{timers.set(++nextTimer,{fn,ms});return nextTimer;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,console,openSheet,layers,traverseHistory,topSheet:()=>layers.at(-1)?.sheet,icon:()=>'<svg></svg>',esc:x=>String(x??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')});
  vm.runInContext(fs.readFileSync('static/studio-generation.js','utf8'),context,{filename:'studio-generation.js'});
  const generation=vm.runInContext('StudioGeneration',context),root=document.querySelector('#root');
  const adapter={async api(path){requests.push(path);const offset=Number(new URL(path,'https://fixture').searchParams.get('offset'));return structuredClone(pages.find(p=>p.offset===offset)?.data||{items:[],total:0});}};
  const j={id:'job',status:'running',options:{},outputs:[],generation_calls:{items:[],total:0},...job};
  const session=generation.mount(root,j,adapter);
  function openPicker(){root.querySelector('.generation-trigger').click();return layers.at(-1)?.sheet;}
- return {document,window,root,generation,session,sources,images,requests,openPicker,choose(id){openPicker().querySelector(`[data-call-id="${id}"]`).click();},visibility(value){hidden=value;document.dispatchEvent(new window.Event('visibilitychange'));},send(value){sources.at(-1).send(value);},async settle(){await tick();await tick();}};
+ return {document,window,root,generation,session,sources,images,requests,openPicker,choose(id){openPicker().querySelector(`[data-call-id="${id}"]`).click();},advance(ms){let count=0;for(const [id,t] of [...timers])if(t.ms<=ms){count++;timers.delete(id);t.fn();}return count;},visibility(value){hidden=value;document.dispatchEvent(new window.Event('visibilitychange'));},send(value){sources.at(-1).send(value);},async settle(){await tick();await tick();}};
 }
 function call(extra={}){return {id:'one',kind:'image',scope:'image-0',created:1,updated:1,status:'running',requested:{quality:'auto',size:'auto'},provider_reported:{},...extra};}
 
@@ -94,4 +94,31 @@ test('switching call scopes never shows the previous call image under the newly 
  const f=fixture({job:{generation_calls:{items:[newer,older],total:2}}});f.images[0].success();await f.settle();assert.equal(f.root.querySelector('.generation-image').getAttribute('src'),'/new/frame');
  f.choose('old');assert.match(f.root.querySelector('[data-generation-label]').textContent,/image-1/);
  assert.equal(f.root.querySelector('.generation-frame').hidden,true,'previous call image must not remain visible while the other scope loads');f.images.at(-1).success();await f.settle();assert.equal(f.root.querySelector('.generation-image').getAttribute('src'),'/old/frame');
+});
+
+
+test('a stalled generation preview decode exposes retry after its deadline',async()=>{
+ const f=fixture();f.send({status:'running',generation:call({preview:{url:'/frame/1'}})});
+ let finish;f.images[0].decode=()=>new Promise(resolve=>finish=resolve);f.images[0].success();await f.settle();
+ assert.ok(f.advance(20000),'the preview must have a deadline');await f.settle();
+ const retry=f.root.querySelector('.generation-preview-retry');assert.equal(retry.hidden,false);assert.equal(retry.disabled,false);
+ finish();await f.settle();assert.equal(f.root.querySelector('.generation-frame').hidden,true,'late decode must not paint');
+ retry.click();assert.equal(f.images.length,2);f.images[1].success();await f.settle();
+ assert.equal(f.root.querySelector('.generation-image').getAttribute('src'),'/frame/1');
+});
+
+test('backgrounding cancels a pending frame and preserves the last decoded frame',async()=>{
+ const f=fixture();f.send({status:'running',generation:call({preview:{url:'/frame/1'},updated:1})});f.images[0].success();await f.settle();
+ f.send({status:'running',generation:call({preview:{url:'/frame/2'},updated:2})});
+ let finish;f.images[1].decode=()=>new Promise(resolve=>finish=resolve);f.images[1].success();await f.settle();
+ f.visibility(true);assert.equal(f.sources[0].closed,true);finish();await f.settle();
+ assert.equal(f.root.querySelector('.generation-image').getAttribute('src'),'/frame/1');
+ assert.equal(f.root.querySelector('.generation-frame').hidden,false);
+});
+
+test('closing generation details aborts an in-flight records read',async()=>{
+ const f=fixture();await f.settle();let signal;
+ f.session.adapter.api=(path,options={})=>{signal=options.signal;return new Promise((resolve,reject)=>signal?.addEventListener('abort',()=>reject(Object.assign(new Error('cancelled'),{name:'AbortError'})),{once:true}));};
+ f.visibility(true);f.visibility(false);await f.settle();assert.ok(signal,'records GET must accept an abort signal');
+ f.generation.close(f.session);assert.equal(signal.aborted,true);
 });

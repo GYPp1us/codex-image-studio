@@ -212,7 +212,7 @@ function updateInto(){
   const c=S.composer,t=tpl(c.template),box=$("#into");if(!box)return;
   const cn=t?(S.collections.find(x=>x.template===t.id)?.name||t.name):null;
   const div=t&&!c.ack&&c.prompt.trim().length>4&&similarity(c.prompt,t.text)<.25;
-  const h=`<div class="file-into"><span>${icon("folder",14)}归入</span>${t?`<span class="into-chip" id="into-chip"><span class="t">${esc(cn)}</span><button data-act="detach" aria-label="解除模板">${icon("x",14)}</button></span>`:`<span class="into-chip none">无模板</span>`}</div>${div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:""}`;
+  const h=`<div class="file-into"><span>${icon("folder",14)}归入</span>${t||c.template?`<span class="into-chip" id="into-chip"><span class="t">${t?esc(cn):'模板读取中'}</span><button data-act="detach" aria-label="解除模板">${icon("x",14)}</button></span>`:`<span class="into-chip none">无模板</span>`}</div>${div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:""}`;
   if(box.dataset.h!==h){box.innerHTML=h;box.dataset.h=h;}
 }
 function updateCreate(){
@@ -456,17 +456,25 @@ function fitRect(im){if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wi
   let w=aw,h=w/R;if(h>ah){h=ah;w=h*R;}return{x:(W-w)/2,y:top+(ah-h)/2,w,h};}
 // The grid thumbnail is already decoded, so it paints on the first frame; the preview replaces it
 // only once fully decoded, so open, swipe and the fly handoff never show a blank or half-drawn slide.
+const previewRequests=new WeakMap(),livePreviews=new Set();
+function cancelPreview(image,paused=false){const job=previewRequests.get(image);if(!job)return;job.active=false;clearTimeout(job.timer);job.loader.onload=job.loader.onerror=null;job.loader.removeAttribute?.('src');livePreviews.delete(image);if(paused&&image.dataset.loading==='1'){image.dataset.loading='paused';image.parentElement?.setAttribute('data-loading','paused');image.setAttribute('aria-busy','false');}}
+function suspendViewerImages(){for(const image of [...livePreviews])cancelPreview(image,true);}
+function resumeViewerImages(){if(!V.open)return;for(const slide of $$('.slide',track)){const image=$('img',slide),asset=img(slide.dataset.id);if(image&&asset&&['paused','error','1'].includes(image.dataset.loading))showProgressive(image,asset,slide.dataset.o==='0');}}
 function showProgressive(image,im,urgent){
+  cancelPreview(image);
   const low=src(im),high=picture(im);
   const status=value=>{image.dataset.loading=value;image.parentElement?.setAttribute('data-loading',value);image.setAttribute('aria-busy',value==='1'?'true':'false');};
-  if(!high||high===low||typeof Image!=="function"){image.src=high||low;status('0');return;}
+  if(!high||typeof Image!=="function"){image.src=high||low;status('0');return;}
   image.src=low;image.dataset.want=high;status('1');
   const loader=new Image();loader.decoding="async";if("fetchPriority" in loader)loader.fetchPriority=urgent?"high":"low";
-  const clear=()=>{loader.onload=loader.onerror=null;};
-  const swap=()=>{clear();if(image.dataset.want===high){if(image.getAttribute("src")!==high)image.src=high;status('0');}};
-  const failed=()=>{clear();if(image.dataset.want===high)status('error');};
+  const job={loader,active:true,timer:null};previewRequests.set(image,job);livePreviews.add(image);
+  const valid=()=>job.active&&previewRequests.get(image)===job&&image.dataset.want===high;
+  const clear=()=>{job.active=false;clearTimeout(job.timer);loader.onload=loader.onerror=null;livePreviews.delete(image);};
+  const swap=()=>{if(!valid())return;clear();if(image.getAttribute("src")!==high)image.src=high;status('0');};
+  const failed=()=>{if(!valid())return;clear();loader.removeAttribute?.('src');status('error');};
+  job.timer=setTimeout(failed,20000);
   const canDecode=typeof loader.decode==="function";loader.onerror=failed;if(!canDecode)loader.onload=swap;loader.src=high;
-  if(canDecode)loader.decode().then(swap,failed);
+  if(canDecode){try{Promise.resolve(loader.decode()).then(swap,failed);}catch{failed();}}
 }
 function layoutSlides(){
   if(typeof StudioZoom!=="undefined")StudioZoom.reset();
@@ -474,9 +482,10 @@ function layoutSlides(){
   const old=new Map($$(".slide",track).map(el=>[el.dataset.id,el]));
   for(const o of [-1,0,1]){const id=V.list[V.i+o];if(!id||!img(id))continue;const im=img(id),r=fitRect(im);let slide=old.get(id);old.delete(id);
     if(!slide){slide=document.createElement("div");slide.className="slide";slide.dataset.id=id;const image=document.createElement("img");image.alt="";image.draggable=false;image.decoding="async";slide.append(image);const loading=document.createElement('button');loading.className='preview-loading';loading.innerHTML='<span class="spin"></span><span class="loading-label">高清预览加载中</span><span class="retry-label">预览未加载 · 轻点重试</span>';loading.setAttribute('aria-label','重试加载高清预览');loading.onclick=e=>{e.stopPropagation();if(slide.dataset.loading==='error')showProgressive(image,im,true);};slide.append(loading);showProgressive(image,im,o===0);}
+    if($('img',slide).dataset.loading==='paused')showProgressive($('img',slide),im,o===0);
     slide.dataset.o=o;slide.style.transform=`translateX(calc(${o} * (100% + 20px)))`;Object.assign($("img",slide).style,{left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px',transform:''});track.append(slide);
   }
-  for(const el of old.values())el.remove();
+  for(const el of old.values()){const image=$('img',el);if(image)cancelPreview(image);el.remove();}
   const im=img(V.list[V.i]),c=coll(im?.coll);
   $("#v-count").textContent=V.list.length>1?`${V.i+1} / ${V.list.length}`:"1 / 1";
   $("#v-sub").textContent=c?c.name:"参考图";
@@ -504,7 +513,7 @@ function openViewer(id,listKind,opts={}){
   if(opts.redraw)setTimeout(enterRedraw,D(420));
 }
 function closeViewer(){
-  if(!V.open)return;cancelViewerDrag();finishSlide?.();exitRedraw();V.open=false;
+  if(!V.open)return;cancelViewerDrag();finishSlide?.();exitRedraw();suspendViewerImages();V.open=false;
   const id=V.list[V.i],cur=curImg(),zoomed=StudioZoom.isZoomed(),visual=StudioZoom.stop()||cur;if(V.hidden){V.hidden.style.visibility="";V.hidden=null;}
   const tile=V.reference?null:srcTile(id),from=cur?rectOf(cur):null;
   const op=getComputedStyle(vbg).opacity;V.bgAnim?.cancel();

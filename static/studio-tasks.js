@@ -58,7 +58,7 @@ const StudioTasks=(()=>{
   function mount(c,showLog){
     const a=c.adapter;if(c.generation&&typeof StudioGeneration!=='undefined')StudioGeneration.close(c.generation);
     c.el.innerHTML=detailsHTML(c.job,a);hydrateIcons(c.el);StudioProgress.hydrate(c.el);
-    c.el.querySelector('[data-task-refresh]').onclick=()=>reload(c).catch(a.report);
+    c.el.querySelector('[data-task-refresh]').onclick=e=>reload(c,e.currentTarget).catch(a.report);
     c.el.querySelectorAll('[data-task-jump]').forEach(b=>b.onclick=()=>jump(c,b.dataset.taskJump));
     if(typeof StudioGeneration!=='undefined')c.generation=StudioGeneration.mount(c.el.querySelector('[data-generation-workspace]'),c.job,a);
     readLog(c);c.el.querySelector('[data-log-refresh]').onclick=e=>readLog(c,e.currentTarget);
@@ -66,9 +66,9 @@ const StudioTasks=(()=>{
     if(typeof StudioUpscalePrompts!=='undefined'&&c.job.options.stitch)StudioUpscalePrompts.mountTask(c.el.querySelector('[data-task-prompts]'),c.job,a.api);
   }
   async function fetchJob(c){const j=await c.adapter.api('/api/jobs/'+c.id);return j.options?.stitch?c.adapter.api('/api/upscale/jobs/'+c.id):j;}
-  async function reload(c){
+  async function reload(c,button=null){
     if(!alive(c))return;
-    return StudioFeedback.run('task-refresh:'+c.id,c.el.querySelector('[data-task-refresh]'),async()=>{
+    return StudioFeedback.run('task-refresh:'+c.id,button||c.el.querySelector('[data-task-refresh]'),async()=>{
       const job=await fetchJob(c);if(!alive(c))return;
       c.job=job;c.adapter.accept(job);const position=c.el.querySelector('.scroll')?.scrollTop||0;mount(c,false);c.el.querySelector('.scroll').scrollTop=position;
     });
@@ -79,7 +79,7 @@ const StudioTasks=(()=>{
     const el=openScreen(`${header('')}<div class="scroll"><p class="boot-state"><span class="spin"></span>正在读取任务…</p></div>`,{cls:'task-workspace task-details-workspace',onClose:()=>{if(c.generation&&typeof StudioGeneration!=='undefined')StudioGeneration.close(c.generation);if(current===c)current=previous&&alive(previous)?previous:null;}});
     c.el=el;el.dataset.taskId=id;current=c;
     try{const j=await fetchJob(c);if(!alive(c))return;c.job=j;adapter.accept(j);mount(c,showLog);}
-    catch(error){if(alive(c)){$('.scroll',el).innerHTML=`<p class="form-err">${esc(error.message)}</p><button class="secondary" data-task-retry>重新读取</button>`;$('[data-task-retry]',el).onclick=()=>reload(c).catch(adapter.report);}}
+    catch(error){if(alive(c)){$('.scroll',el).innerHTML=`<p class="form-err">${esc(error.message)}</p><button class="secondary" data-task-retry>重新读取</button>`;$('[data-task-retry]',el).onclick=e=>reload(c,e.currentTarget).catch(adapter.report);}}
     return el;
   }
   function update(){

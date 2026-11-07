@@ -58,16 +58,19 @@ const StudioGeneration=(()=>{
     const c={root,job,adapter,calls:new Map(),selected:null,source:null,closed:false,revision:0,imageToken:0,offset:0,total:0};
     root.innerHTML=`<h2>图像调用</h2><div class="generation-live"><div class="generation-live-head"><span data-generation-label>等待显影帧</span><span data-generation-state></span></div><div class="generation-frame" hidden><img class="generation-image" alt="当前调用的真实显影帧"><span class="generation-frame-badge">显影中 · 非最终作品</span></div><p class="note" data-generation-empty>服务端提供渐进帧时会在这里实时显示；未提供时等待最终图片。</p></div><div class="generation-select" hidden><span>调用记录</span><button type="button" class="generation-trigger" aria-haspopup="dialog" aria-expanded="false"><span class="generation-choice-text"><b data-call-title></b><small data-call-meta></small></span>${icon('chevd',16)}</button></div><div data-generation-observation></div><button class="secondary generation-more" hidden>更早的调用</button>`;
     c.trigger=root.querySelector('.generation-trigger');c.observation=root.querySelector('[data-generation-observation]');c.frame=root.querySelector('.generation-frame');c.image=root.querySelector('img');c.empty=root.querySelector('[data-generation-empty]');c.label=root.querySelector('[data-generation-label]');c.state=root.querySelector('[data-generation-state]');c.more=root.querySelector('.generation-more');
-    c.retry=document.createElement('button');c.retry.className='link-btn generation-preview-retry';c.retry.textContent='重试加载显影帧';c.retry.hidden=true;c.root.querySelector('.generation-live').append(c.retry);c.retry.onclick=()=>{c.imageURL=null;paint(c);};
+    c.retry=document.createElement('button');c.retry.className='link-btn generation-preview-retry';c.retry.textContent='重试加载显影帧';c.retry.hidden=true;c.root.querySelector('.generation-live').append(c.retry);c.retry.onclick=()=>feedback('generation-preview:'+c.job.id,c.retry,()=>{c.imageURL=null;paint(c);return c.previewLoad?.promise;});
     c.trigger.onclick=()=>openCallPicker(c);
-    c.more.onclick=()=>load(c,true);
+    c.more.onclick=()=>feedback('generation-records:'+c.job.id,c.more,()=>load(c,true));
     const prior=job.generation_calls;
     if(prior){accept(c,prior.items||[]);c.offset=(prior.items||[]).length;c.total=prior.total||0;}
     if(job.generation?.id)accept(c,[job.generation]);
     paint(c);if(!prior)load(c);
-    c.visibility=()=>{if(document.hidden)disconnect(c);else if(!c.closed){load(c);connect(c);}};
+    c.visibility=()=>{if(document.hidden){disconnect(c);cancelRead(c);stopPreview(c);c.imageURL=null;++c.imageToken;}else if(!c.closed){load(c);paint(c);connect(c);}};
     document.addEventListener('visibilitychange',c.visibility);sessions.add(c);connect(c);return c;
   }
+  function feedback(key,button,work){return typeof StudioFeedback!=='undefined'?StudioFeedback.run(key,button,work):work();}
+  function cancelRead(c){++c.revision;c.readController?.abort();c.readController=null;c.loading=false;}
+  function stopPreview(c){const p=c.previewLoad;if(!p)return;c.previewLoad=null;if(typeof clearTimeout==='function')clearTimeout(p.timer);p.image.onload=p.image.onerror=null;p.image.removeAttribute?.('src');p.resolve();}
   function accept(c,items){for(const item of items){if(!item.id)continue;const old=c.calls.get(item.id);if(old?.updated&&item.updated&&item.updated<old.updated)continue;const next={...old,...item};if(old?.preview?.revision>(item.preview?.revision??-1))next.preview=old.preview;if(old&&old.status!=='running'&&item.status==='running'&&old.updated>=item.updated)next.status=old.status;c.calls.set(item.id,next);}}
   function paint(c){
     if(c.closed)return;
@@ -79,7 +82,7 @@ const StudioGeneration=(()=>{
     c.trigger.querySelector('[data-call-title]').textContent=callTitle(call);
     c.trigger.querySelector('[data-call-meta]').textContent=callMeta(call);
     c.root.querySelector('.generation-live').hidden=call.kind!=='image';
-    if(c.displayCall!==call.id){c.displayCall=call.id;c.image.removeAttribute('src');c.frame.hidden=true;c.imageURL=null;++c.imageToken;c.retry.hidden=true;c.empty.textContent='服务端提供渐进帧时会在这里实时显示；未提供时等待最终图片。';}
+    if(c.displayCall!==call.id){stopPreview(c);c.displayCall=call.id;c.image.removeAttribute('src');c.frame.hidden=true;c.imageURL=null;++c.imageToken;c.retry.hidden=true;c.empty.textContent='服务端提供渐进帧时会在这里实时显示；未提供时等待最终图片。';}
     const detail=comparison(call);if(c.detailSignature!==detail){c.detailSignature=detail;c.observation.innerHTML=detail;}
     c.label.textContent=(call.kind==='image'?'真实显影 · ':call.kind==='polish'?'独立润色 · ':'视觉验收 · ')+(call.scope||'');
     c.state.textContent=states[call.status]||call.status||'';
@@ -87,17 +90,23 @@ const StudioGeneration=(()=>{
     const url=final?(final.preview||final.thumbnail||final.url):call.preview?.url;
     const badge=c.root.querySelector('.generation-frame-badge');badge.textContent=final?'最终作品':call.status==='failed'?'未完成显影 · 非最终作品':call.status==='cancelled'?'已取消 · 非最终作品':'显影帧 · 非最终作品';
     c.empty.hidden=!!url;
-    if(!url){c.frame.hidden=true;c.retry.hidden=true;c.image.removeAttribute('src');c.imageURL=null;++c.imageToken;return;}
-    if(url===c.imageURL)return;c.imageURL=url;const token=++c.imageToken,next=new Image();next.decoding='async';
+    if(!url){stopPreview(c);c.frame.hidden=true;c.retry.hidden=true;c.image.removeAttribute('src');c.imageURL=null;++c.imageToken;return;}
+    if(url===c.imageURL||document.hidden)return;stopPreview(c);c.imageURL=url;const token=++c.imageToken,next=new Image();next.decoding='async';
+    const p={image:next,timer:null};p.promise=new Promise(resolve=>p.resolve=resolve);c.previewLoad=p;
+    const valid=()=>!c.closed&&token===c.imageToken&&c.previewLoad===p;
     c.retry.disabled=true;c.retry.setAttribute('aria-busy','true');
-    next.onload=async()=>{try{await next.decode?.();}catch{}if(c.closed||token!==c.imageToken)return;c.image.src=url;c.image.classList.remove('frame-arrived');void c.image.offsetWidth;c.image.classList.add('frame-arrived');c.frame.hidden=false;c.retry.hidden=true;c.retry.disabled=false;c.retry.removeAttribute('aria-busy');};
-    next.onerror=()=>{if(c.closed||token!==c.imageToken)return;c.empty.hidden=false;c.empty.textContent='这张显影帧暂时不可用；任务与最终作品不受影响。';c.frame.hidden=!c.image.getAttribute('src');c.retry.hidden=false;c.retry.disabled=false;c.retry.removeAttribute('aria-busy');c.imageURL=null;};next.src=url;
+    if(!c.image.getAttribute('src')){c.empty.hidden=false;c.empty.textContent='正在加载显影预览…';}
+    const failed=()=>{if(!valid())return;stopPreview(c);c.empty.hidden=false;c.empty.textContent='这张显影帧暂时不可用；任务与最终作品不受影响。';c.frame.hidden=!c.image.getAttribute('src');c.retry.hidden=false;c.retry.disabled=false;c.retry.removeAttribute('aria-busy');c.imageURL=null;};
+    if(typeof setTimeout==='function')p.timer=setTimeout(failed,20000);
+    next.onload=async()=>{try{await next.decode?.();}catch{failed();return;}if(!valid())return;c.image.src=url;stopPreview(c);c.image.classList.remove('frame-arrived');void c.image.offsetWidth;c.image.classList.add('frame-arrived');c.empty.hidden=true;c.frame.hidden=false;c.retry.hidden=true;c.retry.disabled=false;c.retry.removeAttribute('aria-busy');};
+    next.onerror=failed;next.src=url;
   }
   async function load(c,more=false){
     if(c.loading||c.closed)return;c.loading=true;c.more.disabled=true;const revision=++c.revision;
-    try{const data=await c.adapter.api(`/api/jobs/${c.job.id}/generation-calls?limit=30&offset=${more?c.offset:0}`);if(c.closed||revision!==c.revision)return;accept(c,data.items);c.offset=more?c.offset+data.items.length:Math.max(c.offset,data.items.length);c.total=data.total;paint(c);}
-    catch(error){if(!c.closed){c.state.textContent='记录读取失败';c.more.hidden=false;c.more.textContent='重新读取调用记录';}}
-    finally{c.loading=false;if(!c.closed)c.more.disabled=false;}
+    c.readController=typeof AbortController==='function'?new AbortController():null;
+    try{const data=await c.adapter.api(`/api/jobs/${c.job.id}/generation-calls?limit=30&offset=${more?c.offset:0}`,c.readController?{signal:c.readController.signal}:{});if(c.closed||revision!==c.revision)return;accept(c,data.items);c.offset=more?c.offset+data.items.length:Math.max(c.offset,data.items.length);c.total=data.total;paint(c);}
+    catch(error){if(!c.closed&&revision===c.revision&&error.name!=='AbortError'){c.state.textContent='记录读取失败';c.more.hidden=false;c.more.textContent='重新读取调用记录';}}
+    finally{if(revision===c.revision){c.loading=false;c.readController=null;if(!c.closed)c.more.disabled=false;}}
   }
   function disconnect(c){c.source?.close();c.source=null;}
   function connect(c){
@@ -106,7 +115,7 @@ const StudioGeneration=(()=>{
     source.onmessage=event=>{if(c.closed||c.source!==source)return;try{const data=JSON.parse(event.data),previous=c.calls.size;if(!['running','queued','retrying'].includes(c.job.status)&&['running','queued','retrying'].includes(data.status))return;c.job={...c.job,status:data.status,generation:data.generation};if(data.generation?.id)accept(c,[data.generation]);paint(c);if(c.calls.size!==previous)load(c);if(!['running','queued','retrying'].includes(data.status)){disconnect(c);load(c);}}catch{}};
     source.onerror=()=>{if(c.closed||c.source!==source)return;c.state.textContent='连接恢复中';};
   }
-  function close(c){if(!c||c.closed)return;c.closed=true;if(c.picker)dismissCallPicker(c.picker);++c.revision;++c.imageToken;disconnect(c);document.removeEventListener('visibilitychange',c.visibility);sessions.delete(c);c.image.removeAttribute('src');}
+  function close(c){if(!c||c.closed)return;c.closed=true;if(c.picker)dismissCallPicker(c.picker);cancelRead(c);stopPreview(c);++c.imageToken;disconnect(c);document.removeEventListener('visibilitychange',c.visibility);sessions.delete(c);c.image.removeAttribute('src');}
   function mount(root,job,adapter){if(!root)return;for(const c of sessions)if(c.root===root)close(c);return create(root,job,adapter);}
   function update(root,job){for(const c of sessions)if(c.root===root&&!c.closed){c.job={...c.job,...job};if(job.generation?.id)accept(c,[job.generation]);paint(c);if(!['running','queued','retrying'].includes(job.status))disconnect(c);else connect(c);}}
   new MutationObserver(()=>{for(const c of sessions)if(!c.root.isConnected)close(c);}).observe(document.documentElement,{childList:true,subtree:true});
