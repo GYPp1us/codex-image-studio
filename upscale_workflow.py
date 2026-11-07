@@ -14,7 +14,7 @@ from call_errors import authentication_status_error
 
 import image_runtime as imaging
 import upscale_prompts
-from stitch_engine import REGISTRATION_VERSION, save_json,alignment_current
+from stitch_engine import save_json,alignment_current
 from stitch_planner import Policy, execution_plan, progressive_plan, public_plan, split_tile
 from stitch_workflow import (DEFAULT_STITCH_PROMPT, WorkflowError, cli_call, engine,
                              ensure_active, normalize_redraw_prompt, progress, tile_instruction,apply_local_repairs)
@@ -27,6 +27,15 @@ def link_or_copy(source,destination):
     if destination.exists():return
     try:destination.hardlink_to(Path(source))
     except OSError:shutil.copyfile(source,destination)
+
+
+def local_checkpoint_valid(folder,index):
+    folder=Path(folder)
+    try:
+        local=json.loads((folder/'diagnostics'/f'local-{index}.json').read_text(encoding='utf-8'))
+        return (local.get('source_sha256')==imaging.file_sha(folder/'crops'/f'{index}.png')
+                and local.get('output_sha256')==imaging.file_sha(folder/'redraw'/f'{index}.png'))
+    except (OSError,ValueError):return False
 
 
 class LevelStudio:
@@ -163,8 +172,11 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
     async def prepare_plan():
         await engine(proxy,jid,folder,'prepare')
         prepared=json.loads(plan_file.read_text(encoding='utf-8'))
+        repairs_file=folder/'diagnostics'/'local-repairs.json'
+        local_repairs=json.loads(repairs_file.read_text(encoding='utf-8')) if repairs_file.exists() else []
+        repaired={item['tile'] for item in local_repairs}
         for tile in prepared['tiles']:
-            if upscale_prompts.repair_for(options,stage['index'],tile['index']):
+            if tile['index'] in repaired or upscale_prompts.repair_for(options,stage['index'],tile['index']):
                 prepared.get('smooth_backgrounds',{}).pop(str(tile['index']),None)
         save_json(plan_file,prepared)
         sync_stage(stage,prepared,maximum);refresh_totals(manifest);save_json(manifest_file,manifest)
@@ -189,6 +201,12 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             save_json(plan_file,plan)
             sync_stage(stage,plan,maximum);refresh_totals(manifest);save_json(manifest_file,manifest)
 
+    def use_model(index):
+        plan.get('smooth_backgrounds',{}).pop(str(index),None)
+        (folder/'diagnostics'/f'local-{index}.json').unlink(missing_ok=True)
+        save_json(plan_file,plan)
+        sync_stage(stage,plan,maximum);refresh_totals(manifest);save_json(manifest_file,manifest)
+
     def publish():
         current=[states.get(t['index'],{'index':t['index']+1,'state':'queued','label':'等待并发名额'}) for t in plan['tiles']]
         done=sum(s['state']=='done' for s in current)
@@ -209,24 +227,27 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             if output.exists():retain_ai_checkpoint(index)
             states[index].update(state='done' if output.exists() else 'missing',stage='receiving' if output.exists() else 'queued',checkpoint=output.exists(),label='保留未选中的块' if output.exists() else '未选择重绘');publish();return None
         if output.exists():
+            reusable=False
             try:
                 local_file=folder/'diagnostics'/f'local-{index}.json'
                 if local_file.is_file():
                     if repair:raise ValueError('明确重绘要求不能复用本地背景插值')
-                    local=json.loads(local_file.read_text(encoding='utf-8'))
-                    if local.get('source_sha256')!=imaging.file_sha(folder/'crops'/f'{index}.png') or local.get('output_sha256')!=imaging.file_sha(output):
+                    if not local_checkpoint_valid(folder,index):
                         raise ValueError('平滑背景检查点与原图不一致')
                 if modern and (not provenance.is_file() or json.loads(provenance.read_text(encoding='utf-8')).get('identity')!=identity):
                     raise ValueError('图块指令版本与检查点不一致')
                 measured=imaging.assess_return(output,tile['size'])
-                if measured.decision=='accept':
-                    retain_ai_checkpoint(index)
-                    states[index].update(state='done',stage='receiving',checkpoint=True,label='已复用')
-                    if local_file.is_file():states[index].update(processing='local_interpolation',label='已复用本地插值')
-                    publish();return None
-            except (ValueError,OSError):
+                reusable=measured.decision=='accept'
+            except OSError as failure:
+                raise WorkflowError('暂时无法读取已有图块，已保留检查点，请稍后重试') from failure
+            except ValueError:
                 if no_generation:raise WorkflowError('审核放行所需图块检查点无效，未自动重绘')
                 output.unlink(missing_ok=True)
+            if reusable:
+                retain_ai_checkpoint(index)
+                states[index].update(state='done',stage='receiving',checkpoint=True,label='已复用')
+                if local_file.is_file():states[index].update(processing='local_interpolation',label='已复用本地插值')
+                publish();return None
         if no_generation:raise WorkflowError('审核放行所需图块检查点无效，未自动重绘')
         if str(index) in plan.get('smooth_backgrounds',{}) and not repair:
             ensure_active(studio,jid)
@@ -237,10 +258,12 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             except asyncio.CancelledError:
                 states[index].update(state='cancelled',label='本地插值已停止');publish();raise
             except (WorkflowError,ValueError,OSError) as error:
-                states[index].update(state='failed',label=str(error)[:160]);publish();raise
-            if modern:save_json(provenance,{'identity':identity,'processing':'local_interpolation','method':'bilinear'})
-            states[index].update(state='done',stage='receiving',checkpoint=True,processing='local_interpolation',label='平滑背景 · 双线性插值')
-            publish();return None
+                use_model(index);output.unlink(missing_ok=True)
+                states[index].pop('processing',None);states[index].update(state='queued',label='本地插值未完成，改用模型补绘');publish()
+            else:
+                if modern:save_json(provenance,{'identity':identity,'processing':'local_interpolation','method':'bilinear'})
+                states[index].update(state='done',stage='receiving',checkpoint=True,processing='local_interpolation',label='平滑背景 · 双线性插值')
+                publish();return None
         (folder/'diagnostics'/f'local-{index}.json').unlink(missing_ok=True)
         error=feedback.get(str(index),'')
         for attempt in range(attempts.get(index,0),maximum):
@@ -304,7 +327,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             save_json(plan_file,plan);save_json(manifest_file,manifest)
             plan=await prepare_plan()
         for number,tile in enumerate(plan['tiles']):
-            index=tile['index'];diagnostic=folder/'diagnostics'/f'alignment-{index}.json'
+            index=tile['index']
             progress(proxy,jid,'registration',number,len(plan['tiles']),detail=f"第 {number+1}/{len(plan['tiles'])} 块")
             if alignment_current(folder,index):continue
             if no_generation:raise WorkflowError('审核放行所需配准检查点无效，未自动重绘')
@@ -316,6 +339,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
                     if selected is not None and index not in selected:
                         raise WorkflowError(f'第 {index+1} 块仍未通过，已保留未选中的返回，请在失败处理中选择该块。{failure}') from failure
                     if attempt+1==maximum:raise
+                    use_model(index)
                     (folder/'redraw'/f'{index}.png').unlink(missing_ok=True)
                     refined=await redraw(tile)
                     if refined is not None:raise WorkflowError('配准重试返回尺寸不足，请从检查点重试以重新细分')
@@ -324,7 +348,18 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
             raw=folder/'canvas.rgb'
             if raw.exists():raw.unlink()
             studio.STORAGE.require(math.prod(stage['output_size'])*7,'融合本级大图')
-            await engine(proxy,jid,folder,'compose')
+            for attempt in range(maximum):
+                try:
+                    await engine(proxy,jid,folder,'compose');break
+                except WorkflowError as failure:
+                    match=re.search(r'第 (\d+) 块.*(?:覆盖|掩码)',str(failure))
+                    if not match or attempt+1==maximum:raise
+                    index=int(match[1])-1;tile=next((t for t in plan['tiles'] if t['index']==index),None)
+                    if tile is None or selected is not None and index not in selected:raise
+                    feedback[str(index)]=str(failure);save_json(feedback_file,feedback)
+                    use_model(index);(folder/'redraw'/f'{index}.png').unlink(missing_ok=True)
+                    if await redraw(tile) is not None:raise WorkflowError('覆盖重试返回尺寸不足，请从检查点重试以重新细分')
+                    await engine(proxy,jid,folder,'register','--tile',index)
         actual=imaging.info(folder/'candidate.png')
         stage['actual_size']=[actual['width'],actual['height']]
         if stage['actual_size']!=stage['output_size']:raise WorkflowError('本级融合结果尺寸与计划不一致')
@@ -332,10 +367,7 @@ async def run_level(studio,jid,job,options,folder,stage,manifest,manifest_file):
         review_file=folder/'diagnostics'/'visual-review.json'
         review=json.loads(review_file.read_text(encoding='utf-8')) if review_file.exists() else None
         if review is None and not plan.get('manual_calls') and len(plan.get('smooth_backgrounds',{}))==len(plan['tiles']) and all((folder/'diagnostics'/f"local-{tile['index']}.json").is_file() for tile in plan['tiles']):
-            local_valid=all(
-                (local:=json.loads((folder/'diagnostics'/f"local-{tile['index']}.json").read_text())).get('output_sha256')==imaging.file_sha(folder/'redraw'/f"{tile['index']}.png")
-                and local.get('source_sha256')==imaging.file_sha(folder/'crops'/f"{tile['index']}.png")
-                for tile in plan['tiles'])
+            local_valid=all(local_checkpoint_valid(folder,tile['index']) for tile in plan['tiles'])
             if local_valid:
                 review={'pass':True,'issues':[],'method':'deterministic_interpolation','label':'全图平滑区域插值，尺寸与覆盖检查通过'}
                 save_json(review_file,review)

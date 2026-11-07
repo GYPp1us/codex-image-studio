@@ -5,11 +5,12 @@ const html=fs.readFileSync('static/index.html','utf8');
 const prompt='Generate an image using {prompt}, preserving the requested native dimensions.';
 const baseAsset={id:'asset',width:900,height:1200,name:'山色.png',kind:'generated',bytes:1234,created:1000,job_id:'job',url:'/media/asset',thumbnail:'/media/asset?thumbnail=1',preview:'/media/asset?preview=1',favorite:0,tags:''};
 function makeJob(id,extra={}){return {id,batch_id:'batch',prompt:'静谧山色',status:'queued',created:1000,collection_id:'untemplated',template_id:'',refs:[],references:[],outputs:[],attempt:0,max_attempts:3,error:'',model:'gpt-test',effort:'high',options:{ratio:'1:1',size:'auto',model:'gpt-test',effort:'high',stitch:0},progress:{stage:'queued',label:'等待调度'},...extra};}
-async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',quickGate=null,settingsFail=false,bigFailure=false,chained=false,chainStatus='failed',defaultInjection='',rerollUpscale=false,savedDraft=null,previewGate=null,accountGate=null,loginGate=null,restoreGate=null,accountFail=false,loginFail=false,restoreFail=false,trashPaged=false,trashPageGate=null,connectGate=null,uploadGate=null,assetGate=null,renameGate=null,avatarGate=null,renameFail=false,passwordFail=false,staleStatusGate=null,settingsGate=null,logText="ACTUAL LOG LINE"}={}){
+async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',quickGate=null,settingsFail=false,bigFailure=false,chained=false,chainStatus='failed',defaultInjection='',rerollUpscale=false,rerollBackend=null,savedDraft=null,previewGate=null,accountGate=null,loginGate=null,restoreGate=null,accountFail=false,loginFail=false,restoreFail=false,trashPaged=false,trashPageGate=null,connectGate=null,uploadGate=null,assetGate=null,renameGate=null,avatarGate=null,renameFail=false,passwordFail=false,staleStatusGate=null,settingsGate=null,logText="ACTUAL LOG LINE"}={}){
  const {window}=parseHTML(html),{document}=window;const requests=[],timers=new Map(),stored={};let timerId=0,stateReads=0,statusReads=0;
  if(savedDraft)stored['studio-demo-composer:fixture']=JSON.stringify(savedDraft);
  const asset=huge?{...baseAsset,width:12000,height:8000,tile_template:'/api/assets/asset/tiles/{level}/{x}/{y}'}:baseAsset;
  const dataJobs=[makeJob('job',{status:'succeeded',outputs:[asset]}),...Array.from({length:19},(_,i)=>makeJob('job'+i))];
+ if(rerollBackend)dataJobs[0].options.generation={schema:1,image_backend:rerollBackend};
  const plan={factor:4,input_size:[900,1200],output_size:[1800,2400],budget:{images:3,reviews:1,max_calls:10},stages:[{index:1,input_size:[900,1200],output_size:[1800,2400],columns:1,rows:3,tile_count:3,status:'failed',cuts:{x:[],y:[400,800]},budget:{images:3,reviews:1,max_calls:10},diagnostic_available:true}]};
  if(bigFailure)plan.stages[0].tile_count=5000;
  const up=makeJob('up',{batch_id:'upbatch',status:'failed',options:{stitch:4,source_asset_id:'asset',upscale_requirements:'ORIGINAL-REQUIREMENT',upscale_injection:'ORIGINAL-REQUIREMENT',upscale_prompts:{policy:{append_system:false,include_source_context:true},revision:'old-revision'}},source_image:asset,upscale_plan:plan,error:'图块验收失败'});
@@ -688,4 +689,21 @@ test('moving before hold cancels pinning so scrolling cannot open the editor',as
  const f=await fixture();f.run('paramsSheet()');const option=f.document.querySelector('[data-act="backend-opt"][data-v="gpt-image-2.6-flare"]');
  quickPointer(f,option,'pointerdown',20,20);quickPointer(f,option,'pointermove',40,20);f.flushTimers(420);quickPointer(f,option,'pointerup',40,20);
  assert.equal(f.document.querySelector('.quick-editor'),null);assert.equal(f.run('S.settings.quickSettings.length'),0);
+});
+
+test('a quick backend choice persists only the selected key and inherits later global changes',async()=>{
+ const f=await fixture();f.run(`StudioQuickSettings.apply({key:'image_model',value:'gpt-image-2.6-flare'});S.settings.imageBackend.quality='low';S.settings.imageBackend.transport='responses'`);
+ assert.deepEqual(JSON.parse(f.run('JSON.stringify(S.composer.imageBackend)')),{image_model:'gpt-image-2.6-flare'});
+ assert.deepEqual(JSON.parse(f.run('JSON.stringify(StudioQuickSettings.backend())')),{transport:'responses',fallback:true,image_model:'gpt-image-2.6-flare',quality:'low',partial_images:2});
+ f.run("S.composer.prompt='partial backend';document.querySelector('#gen').disabled=false");await f.service.generate();
+ assert.deepEqual(f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST').body.image_backend,{image_model:'gpt-image-2.6-flare'});
+});
+test('a generation without backend overrides lets the server select current settings',async()=>{
+ const f=await fixture();f.run("S.composer.prompt='server defaults';document.querySelector('#gen').disabled=false");await f.service.generate();
+ const body=f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST').body;assert.equal(Object.hasOwn(body,'image_backend'),false);
+});
+test('reroll uses the original task frozen backend rather than current composer or global settings',async()=>{
+ const original={transport:'responses',fallback:false,image_model:'gpt-image-2.6-sunburst',quality:'high',partial_images:1};
+ const f=await fixture({rerollBackend:original});f.run("S.settings.imageBackend.image_model='gpt-image-2';S.composer.imageBackend={image_model:'gpt-image-2.6-flare'}");
+ await f.service.reroll('asset');const req=f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST');assert.ok(req);assert.deepEqual(req.body.image_backend,original);
 });

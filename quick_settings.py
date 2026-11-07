@@ -1,17 +1,19 @@
 """Validated, portable generation shortcuts stored independently of job settings."""
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 
-IMAGE_MODELS = ('gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare',
-                'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare')
+from generation_runtime import ImageSettings
+from generation_choices import AspectRatio,ImageSize,UpscaleFactor
+
+IMAGE_MODELS = get_args(ImageSettings.model_fields['image_model'].annotation)
 VALUES = {
-    'ratio': ('1:1', '3:2', '2:3', '16:9', '9:16', 'auto'),
-    'size': ('auto', '1024', '2048', '4096'),
-    'stitch': (0, 4, 16, 64),
-    'quality': ('auto', 'low', 'medium', 'high', 'xhigh', 'max'),
+    'ratio': get_args(AspectRatio),
+    'size': get_args(ImageSize),
+    'stitch': get_args(UpscaleFactor),
+    'quality': get_args(ImageSettings.model_fields['quality'].annotation),
     'image_model': IMAGE_MODELS,
-    'transport': ('images', 'responses', 'cli'),
+    'transport': get_args(ImageSettings.model_fields['transport'].annotation),
     'polish': ('toggle',), 'transparent': ('toggle',), 'fallback': ('toggle',),
 }
 

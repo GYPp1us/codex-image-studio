@@ -54,7 +54,7 @@ const StudioQuickSettings=(()=>{
   function apply(pin){
     if(!available(pin)){toast('当前文本模型不支持此选项，长按可编辑或移除');return;}
     const value=pin.value==='toggle'?!draftValue(pin):pin.value;
-    if(backendKeys.has(pin.key))S.composer.imageBackend={...backend(),[pin.key]:value};
+    if(backendKeys.has(pin.key))S.composer.imageBackend={...S.composer.imageBackend,[pin.key]:value};
     else{
       S.composer[pin.key]=pin.key==='ratio'?(value==='auto'?'自动':value):pin.key==='size'?({'auto':'自动','1024':'1K','2048':'2K','4096':'4K'}[value]||value):pin.key==='stitch'?(value?value+'×':'关'):value;
       if(pin.key==='model'){

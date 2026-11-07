@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 import image_runtime as imaging
-from stitch_engine import estimate_affine, registration_mask, save_json,read_bgr
+from stitch_engine import affine_register, alignment_current, registration_mask, save_json,read_bgr
 
 ARTIFACTS=('source','raw','affine','top','center-raw','center-affine')
 
@@ -50,7 +50,7 @@ def tile_comparison(folder,index,reserve=None):
 
 
 def fingerprint(folder):
-    folder=Path(folder);digest=hashlib.sha256(b'failure-preview-v2')
+    folder=Path(folder);digest=hashlib.sha256(b'failure-preview-v3')
     paths=[folder/'plan.json',folder/'base.png',*sorted((folder/'redraw').glob('*.png')),
            *sorted((folder/'diagnostics').glob('alignment*.json'))]
     for path in paths:
@@ -92,16 +92,17 @@ def render(folder):
             # Direct placement uses only the tile's disjoint core.
             direct=cv2.resize(proxy,(tw,th),interpolation=cv2.INTER_LINEAR)[sy:sy+ch,sx:sx+cw]
             raw[y0:y1,x0:x1]=cv2.resize(direct,(x1-x0,y1-y0),interpolation=cv2.INTER_AREA)[:,:,::-1]
-            a,metrics=estimate_affine(crop,proxy)
-            # A current accepted/rejected checkpoint is authoritative for the diagnostic.
+            a=metrics=None
+            # Read the accepted checkpoint before attempting feature registration.
             for name in (f'alignment-{i}.json',f'alignment-rejected-{i}.json'):
                 cached=folder/'diagnostics'/name
                 if cached.exists() and cached.stat().st_mtime_ns>=path.stat().st_mtime_ns:
                     saved=json.loads(cached.read_text(encoding='utf-8'))
-                    if saved.get('generated_dimensions')==[rw,rh] and 'matrix' in saved:
-                        a=np.array(saved['matrix']);metrics=saved
-                        singular=np.linalg.svd(a[:,:2],compute_uv=False)
-                        metrics['accepted']=saved.get('inliers',0)>=8 and saved.get('inlier_ratio',0)>=.25 and saved.get('rms_original_pixels',999)<=2.5 and min(singular)>=.75 and max(singular)<=1.25 and np.linalg.det(a[:,:2])>0 and saved.get('feature_spread',0)>=.035
+                    if saved.get('generated_dimensions')==[rw,rh] and 'matrix' in saved and (name.startswith('alignment-rejected') or alignment_current(folder,i)):
+                        a=np.array(saved['matrix'],dtype=float);metrics=saved.copy()
+                        if name.startswith('alignment-rejected'):metrics['accepted']=False
+                        break
+            if metrics is None:a,metrics=affine_register(crop,proxy)
             transform=a.copy();transform*=2
             if native_return:transform[:,:2]=transform[:,:2]@np.diag([w/rw,h/rh])
             # Both arrays are bounded to the planned crop, irrespective of native return dimensions.
@@ -115,8 +116,9 @@ def render(folder):
             native[missing&pattern]=[224,51,66];native[missing&~pattern]=[255,186,183]
             aligned[y0:y1,x0:x1]=cv2.resize(native,(x1-x0,y1-y0),interpolation=cv2.INTER_AREA)
             count=int(missing.sum());state='untrusted' if not metrics['accepted'] else 'coverage' if count else 'ready'
-            reason=f'特征内点比例 {metrics["inlier_ratio"]:.0%}，匹配不足' if state=='untrusted' else f'配准后核心缺失 {count:,} 像素' if count else '几何检查通过，仍需融合与验收'
-            record.update(state=state,reason=reason,missing_core_pixels=count,inlier_ratio=metrics['inlier_ratio'])
+            reason='几何检查未通过，请检查或重绘本块' if state=='untrusted' else f'配准后核心缺失 {count:,} 像素' if count else '几何检查通过，仍需融合与验收'
+            record.update(state=state,reason=reason,missing_core_pixels=count,method=metrics.get('method'))
+            if 'inlier_ratio' in metrics:record['inlier_ratio']=metrics['inlier_ratio']
         except Exception as error:record.update(state='untrusted',reason=str(error)[:400])
         tiles.append(record)
     images={'source':original,'raw':Image.fromarray(raw),'affine':Image.fromarray(aligned)}
