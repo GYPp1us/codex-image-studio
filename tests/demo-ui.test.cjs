@@ -403,3 +403,26 @@ test('failed task load places retry feedback on the button the user clicked',asy
  assert.equal(retry.getAttribute('aria-busy'),'true');assert.ok(retry.querySelector('.action-spinner'));const header=f.document.querySelector('[data-task-refresh]');assert.notEqual(header?.getAttribute('aria-busy'),'true');
  release();for(let i=0;i<5;i++)await previewTick();assert.equal(calls,2);assert.ok(f.document.querySelector('[data-task-refresh]'));
 });
+test('successful login while backgrounded resumes boot without returning to login',async()=>{
+ const f=await fixture({unauth:true});f.context.FormData=class{constructor(form){this.rows=[...form.querySelectorAll('input[name]')].map(input=>[input.name,input.value]);}[Symbol.iterator](){return this.rows[Symbol.iterator]();}};
+ const realFetch=f.context.fetch;let release;const gate=new Promise(resolve=>release=resolve);let signedIn=false;
+ f.context.fetch=async(path,opt={})=>{if(path==='/api/auth/login'){await gate;signedIn=true;return {ok:true,json:async()=>({ok:true})};}if(path==='/api/auth/state'&&signedIn)return {ok:true,json:async()=>({initialized:true,authenticated:true,csrf:'csrf-fixture',cache_scope:'fixture'})};return realFetch(path,opt);};
+ f.document.querySelector('#login-form').dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));await previewTick();
+ Object.defineProperty(f.document,'hidden',{configurable:true,value:true});f.document.dispatchEvent(new f.context.window.Event('visibilitychange'));release();for(let i=0;i<5;i++)await previewTick();
+ assert.equal(f.document.querySelector('#login-form'),null);
+ Object.defineProperty(f.document,'hidden',{configurable:true,value:false});f.document.dispatchEvent(new f.context.window.Event('visibilitychange'));for(let i=0;i<12;i++)await previewTick();
+ assert.equal(f.document.querySelector('#login-form'),null);assert.equal(f.document.querySelector('#tabbar').hidden,false);
+});
+test('session expiration and relogin reset batch pagination before loading more',async()=>{
+ const f=await fixture(),realFetch=f.context.fetch,batchOffsets=[];f.context.FormData=class{constructor(form){this.rows=[...form.querySelectorAll('input[name]')].map(input=>[input.name,input.value]);}[Symbol.iterator](){return this.rows[Symbol.iterator]();}};
+ f.context.fetch=async(path,opt={})=>{
+  if(path==='/api/expired')return {ok:false,status:401,json:async()=>({detail:'expired'})};
+  if(path==='/api/auth/login')return {ok:true,json:async()=>({ok:true})};
+  if(path.startsWith('/api/batches?limit=30&offset=')){const offset=Number(new URL(path,'http://fixture').searchParams.get('offset'));batchOffsets.push(offset);return {ok:true,json:async()=>({items:Array.from({length:30},(_,i)=>({id:'page-'+(offset+i),created:1000,jobs:[makeJob('j-'+(offset+i))]})),total:100})};}
+  return realFetch(path,opt);
+ };
+ const b=f.document.createElement('button');b.dataset.act='batch-more';await f.service.action('batch-more',b);await f.service.action('batch-more',b);assert.deepEqual(batchOffsets,[2,32]);
+ await assert.rejects(f.service.api('/api/expired'));assert.ok(f.document.querySelector('#login-form'));
+ f.document.querySelector('#login-form').dispatchEvent(new f.context.window.Event('submit',{bubbles:true,cancelable:true}));for(let i=0;i<15;i++)await previewTick();assert.equal(f.document.querySelector('#login-form'),null);
+ await f.service.action('batch-more',b);assert.deepEqual(batchOffsets.slice(-2),[0,30]);
+});
