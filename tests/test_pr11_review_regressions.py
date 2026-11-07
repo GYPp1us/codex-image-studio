@@ -13,6 +13,7 @@ import numpy as np
 import image_runtime as imaging
 import interaction_api
 import stitch_engine as engine
+import stitch_workflow
 import upscale_diagnostics
 import upscale_workflow as workflow
 from quick_settings import QuickSetting
@@ -89,7 +90,7 @@ class ReviewRegressionTests(unittest.TestCase):
 
 
 class WorkflowRegressions(unittest.TestCase):
-    def exercise_fallback(self, failure):
+    def exercise_fallback(self, failure, maximum=2):
         with tempfile.TemporaryDirectory() as temporary:
             folder=Path(temporary);engine.write_png(folder/'base.png',np.full((256,320,3),128,np.uint8))
             plan=engine.layout(320,256,4);engine.save_json(folder/'plan.json',plan)
@@ -101,8 +102,14 @@ class WorkflowRegressions(unittest.TestCase):
                 index=int(args[1]) if args else None
                 if command=='prepare':engine.prepare(directory,4)
                 elif command=='interpolate':
-                    if failure=='interpolate' and index==0 and not failures:
-                        failures.append(index);raise workflow.WorkflowError('local interpolation failed')
+                    if failure in ('interpolate','stitch_error','cv_error') and index==0 and not failures:
+                        failures.append(index)
+                        if failure in ('stitch_error','cv_error'):
+                            actual=engine.StitchError('local crop no longer smooth') if failure=='stitch_error' else cv2.error('fixture image operation failed')
+                            with patch.object(stitch_workflow,'interpolate_tile',side_effect=actual),patch.object(stitch_workflow,'ensure_active'):
+                                await stitch_workflow.engine(proxy,jid,directory,'interpolate','--tile',index)
+                            return
+                        raise workflow.WorkflowError('local interpolation failed')
                     engine.interpolate_tile(directory,index)
                 elif command=='register':
                     if failure=='register' and index==0 and not failures:
@@ -118,7 +125,7 @@ class WorkflowRegressions(unittest.TestCase):
             async def run():
                 with patch.object(workflow,'engine',run_engine),patch.object(workflow,'cli_call',call), \
                      patch.object(workflow,'progress'),patch.object(workflow,'ensure_active'):
-                    return await workflow.run_level(studio,'fixture',{'max_attempts':2,'prompt':''},{},folder,
+                    return await workflow.run_level(studio,'fixture',{'max_attempts':maximum,'prompt':''},{},folder,
                                                     stage,manifest,folder/'manifest.json')
             result=asyncio.run(run())
             self.assertTrue(result.is_file());self.assertEqual(len(failures),1)
@@ -237,8 +244,15 @@ class WorkflowRegressions(unittest.TestCase):
     def test_interpolation_failure_falls_back_to_ai_for_only_that_tile(self):
         self.exercise_fallback('interpolate')
 
+    def test_in_process_stitch_and_cv_errors_fall_back_to_ai_for_only_that_tile(self):
+        for failure in ('stitch_error','cv_error'):
+            with self.subTest(failure=failure):self.exercise_fallback(failure)
+
     def test_local_registration_failure_falls_back_to_ai_for_only_that_tile(self):
         self.exercise_fallback('register')
+
+    def test_local_registration_failure_preserves_single_model_attempt(self):
+        self.exercise_fallback('register',maximum=1)
 
 
 class ApiRegressions(unittest.TestCase):
@@ -266,6 +280,26 @@ class ApiRegressions(unittest.TestCase):
             self.assertEqual(job['options']['generation']['image_backend'],expected)
             self.helper.post('/api/jobs/'+jid+'/cancel')
         self.assertEqual(self.studio.setting('image_backend',{}),baseline)
+
+    def test_repairing_one_local_tile_budgets_one_image_not_two(self):
+        from PIL import Image
+        from stitch_planner import execution_plan,progressive_plan
+        job=self.studio.create_jobs(self.studio.JobInput(prompt='local budget fixture',source_asset_id=self.fixture_class.asset['id'],stitch=4))
+        jid=job['ids'][0];self.studio.write("UPDATE jobs SET status='failed' WHERE id=?",(jid,))
+        root=self.studio.DATA/'jobs'/jid/'stitch';root.mkdir(parents=True,exist_ok=True)
+        manifest=progressive_plan(512,384,4);manifest['status']='failed';stage=manifest['stages'][0]
+        stage['folder']='stages/01-'+'c'*16;stage['status']='failed';folder=root/stage['folder']
+        for sub in ('redraw','crops','diagnostics'):(folder/sub).mkdir(parents=True,exist_ok=True)
+        plan=execution_plan(stage);plan['smooth_backgrounds']={str(t['index']):{'eligible':True} for t in plan['tiles']}
+        stage['calls']={'images':0,'reviews':0};workflow.sync_stage(stage,plan,2)
+        engine.save_json(folder/'plan.json',plan);Image.new('RGB',tuple(stage['input_size']),'white').save(folder/'base.png')
+        workflow.refresh_totals(manifest);engine.save_json(root/'progressive.json',manifest)
+        response=self.helper.post(f'/api/upscale/jobs/{jid}/redraw',{'level':1,'tiles':[0]})
+        self.assertEqual(response.status_code,200,response.text)
+        updated=json.loads((root/'progressive.json').read_text(encoding='utf-8'))['stages'][0]
+        self.assertEqual(updated['budget']['images'],1,updated)
+        self.assertEqual(updated['budget']['reviews'],1,updated)
+        self.assertEqual(updated['local_tile_count'],updated['tile_count']-1)
 
     def test_repairing_earlier_level_does_not_charge_smooth_later_level(self):
         from PIL import Image
