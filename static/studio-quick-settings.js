@@ -6,7 +6,7 @@ const StudioQuickSettings=(()=>{
   const groups={ratio:'画幅',size:'尺寸',count:'数量',stitch:'生成后超分',polish:'帮我润色',transparent:'透明背景',model:'文本模型',effort:'思考强度',image_model:'图片模型',quality:'图片质量',transport:'生成通道',partial_images:'显影帧',fallback:'允许 CLI 降级'};
   const backendKeys=new Set(['image_model','quality','transport','partial_images','fallback']);
   const labels={auto:'自动',low:'低',medium:'中',high:'高',xhigh:'极高',max:'最大',images:'图片直连',responses:'Responses',cli:'CLI'};
-  let press=null,suppress=null,saving=false,manager=null,frame=0,queue=Promise.resolve(),pending=0,sequence=0;
+  let press=null,suppress=null,saving=false,frame=0,queue=Promise.resolve(),pending=0,sequence=0;
   const pins=()=>S.settings.quickSettings||[];
   const key=pin=>pin.key+'='+String(pin.value);
   const backend=()=>({...S.settings.imageBackend,...S.composer.imageBackend});
@@ -31,24 +31,17 @@ const StudioQuickSettings=(()=>{
     return true;
   }
   function html(){
-    return `<section class="card quick-settings" aria-label="快速设置"><div class="card-head"><span class="label">快速设置</span><span class="quick-save-state" role="status" aria-live="polite"></span><span class="grow"></span><button class="ghost-btn" data-quick-manage>管理</button><button class="icon-btn" data-act="params" aria-label="打开详细生成参数">${icon('sliders',17)}</button></div><div class="quick-strip" role="group" aria-label="固定的快速设置"></div></section>`;
+    return '<section class="card quick-settings" aria-label="快速设置" hidden><div class="quick-strip" role="group" aria-label="固定的快速设置"></div></section><span class="quick-save-state" role="status"></span>';
   }
   function render(){
     for(const box of document.querySelectorAll('.quick-strip')){
       if(press?.box===box)continue;
       const scroll=box.scrollLeft;
-      if(!pins().length){if(!box.querySelector('.quick-empty'))box.innerHTML='<button class="quick-empty" data-act="params">长按详细参数中的选项，固定到这里</button>';box.dataset.ready='1';}
-      else{
-        box.querySelector('.quick-empty')?.remove();
-        syncList(box,pins(),key,pin=>`<button type="button" class="quick-chip${active(pin)?' on':''}" data-quick-id="${esc(key(pin))}" aria-pressed="${active(pin)}" aria-disabled="${!available(pin)}" aria-label="${esc(groups[pin.key]+' · '+title(pin))}；长按排序或编辑"><span>${esc(title(pin))}</span><small>${esc(groups[pin.key])}</small></button>`);
-      }
+      box.parentElement.hidden=!pins().length;
+      syncList(box,pins(),key,pin=>`<button type="button" class="quick-chip${active(pin)?' on':''}" data-quick-id="${esc(key(pin))}" aria-pressed="${active(pin)}" aria-disabled="${!available(pin)}" aria-label="${esc(groups[pin.key]+' · '+title(pin))}；长按排序或编辑"><small>${esc(groups[pin.key])}</small><span>${esc(title(pin))}</span></button>`);
       box.scrollLeft=scroll;
     }
-    for(const state of document.querySelectorAll('.quick-save-state'))state.innerHTML=saving?'<span class="spin"></span> 保存中':'';
-    if(manager?.isConnected&&manager.style.pointerEvents!=='none'){
-      const list=manager.querySelector('.quick-manager-list');
-      setHTML(list,pins().map(pin=>`<button class="menu-row" data-quick-edit="${esc(key(pin))}"><span class="quick-choice-label"><b>${esc(title(pin))}</b><small>${esc(groups[pin.key])}</small></span>${icon('chevr',16)}</button>`).join('')||'<p class="note">还没有固定项目。长按详细参数里的选项即可添加。</p>');
-    }
+    for(const state of document.querySelectorAll('.quick-save-state'))state.textContent=saving?'正在保存快捷项':'';
     for(const button of document.querySelectorAll('[data-act="backend-opt"]'))button.classList.toggle('on',String(backend()[button.dataset.k])===button.dataset.v);
   }
   function apply(pin){
@@ -87,7 +80,7 @@ const StudioQuickSettings=(()=>{
     const layer=openSheet({stack:true,title:existing?'编辑快速设置':'固定到快速设置',cls:'quick-editor',html:`<p class="note">${esc(groups[pin.key])} · ${esc(title({...pin,label:''}))}</p><label class="field-label">显示名称<input class="input" data-quick-name value="${esc(title(original))}" maxlength="40" autocomplete="off"></label><p class="note">点按快捷项应用到本次生成。长按后左右拖动排序，原地松开可编辑。</p><div class="quick-editor-actions"><button class="primary" data-quick-save>${existing?'保存名称':'固定此选项'}</button>${existing?'<button class="secondary danger" data-quick-remove>移除快捷项</button><div class="btn-row"><button class="secondary" data-quick-shift="-1">向前移动</button><button class="secondary" data-quick-shift="1">向后移动</button></div>':''}</div>`});
     const revision=layer.dataset.revision;
     layer.cleanup=()=>{
-      const target=source?.isConnected?source:manager?.isConnected?manager.querySelector('[data-quick-edit]'):document.querySelector('[data-quick-manage]');
+      const target=source?.isConnected?source:document.querySelector('.gen-bar [data-act="params"]');
       target?.focus({preventScroll:true});
     };
     layer.querySelector('[data-quick-save]').onclick=async event=>{
@@ -107,11 +100,6 @@ const StudioQuickSettings=(()=>{
       if(await commit(current=>{const next=[...current],from=next.findIndex(item=>key(item)===key(pin));if(from<0)return next;const to=clamp(from+Number(button.dataset.quickShift),0,next.length-1);[next[from],next[to]]=[next[to],next[from]];return next;},button))toast('顺序已保存');
     });
     layer.querySelector('[data-quick-name]').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){event.preventDefault();layer.querySelector('[data-quick-save]').click();}});
-  }
-  function manage(){
-    manager=openSheet({title:'管理快速设置',stack:true,cls:'quick-manager',html:'<p class="note">点项目修改名称或移除。创作页中长按项目可左右拖动排序。</p><div class="quick-manager-list"></div>'});
-    manager.onclick=event=>{const button=event.target.closest('[data-quick-edit]');if(button){const pin=pins().find(pin=>key(pin)===button.dataset.quickEdit);if(pin)editor(pin,button);}};
-    render();
   }
   function fromButton(button){
     if(!button||button.disabled)return null;
@@ -194,9 +182,9 @@ const StudioQuickSettings=(()=>{
   document.addEventListener('contextmenu',event=>{if(fromButton(event.target.closest('button'))||event.target.closest('[data-quick-id]'))event.preventDefault();});
   document.addEventListener('click',event=>{
     if(suppress&&performance.now()<suppress.until&&suppress.button.contains(event.target)){event.preventDefault();event.stopImmediatePropagation();return;}
-    const button=event.target.closest('[data-quick-id],[data-quick-manage]');if(!button)return;
+    const button=event.target.closest('[data-quick-id]');if(!button)return;
     event.preventDefault();event.stopPropagation();
-    if(button.hasAttribute('data-quick-manage'))manage();else{const pin=pins().find(pin=>key(pin)===button.dataset.quickId);if(pin)apply(pin);}
+    const pin=pins().find(pin=>key(pin)===button.dataset.quickId);if(pin)apply(pin);
   },true);
   document.addEventListener('keydown',event=>{
     if(event.key==='Escape'&&press){event.preventDefault();finish(true);}
@@ -209,5 +197,5 @@ const StudioQuickSettings=(()=>{
   });
   addEventListener('resize',()=>finish(true));
   document.addEventListener('visibilitychange',()=>{if(document.hidden)finish(true);});
-  return {html,render,backend,apply,fromButton,imageModels,manage,cancel:()=>finish(true)};
+  return {html,render,backend,apply,fromButton,imageModels,cancel:()=>finish(true)};
 })();

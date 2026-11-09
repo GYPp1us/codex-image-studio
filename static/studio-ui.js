@@ -27,6 +27,7 @@ const P={
   imgplus:'<path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/><path d="M16 5h6M19 2v6"/><path d="M21 16l-5-5L5 21"/><circle cx="9" cy="9" r="2"/>',
   refresh:'<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 21v-5h-5"/>',
   select:'<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M9 12h6M12 9v6"/>',
+  expand:'<path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4"/>',
   grid:'<rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 16v-4.5M12 8h.01"/>',
   more:'<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>',
@@ -190,9 +191,9 @@ function updateUpCreate(){
 function genHTML(){const c=S.composer;return `${topBar("创作",modeSeg())}
 <div class="scroll" id="scroll">
   <section class="card" id="prompt-card">
-    <div class="card-head"><span class="label">提示词</span><span class="grow"></span><button class="clear-btn off" id="clear-btn" data-act="clear-all" aria-label="清空提示词与参考图">${icon("x",14)}清空</button><button class="ghost-btn" data-act="tpl-menu">${icon("book",16)}模板${icon("chevd",14)}</button></div>
+    <div class="card-head prompt-head"><label class="label" for="prompt">提示词</label><button class="icon-btn prompt-expand" data-act="prompt-full" aria-label="全屏编辑提示词">${icon("expand",17)}</button><span class="grow"></span><button class="clear-btn off" id="clear-btn" data-act="clear-all" aria-label="清空提示词与参考图">${icon("x",14)}清空</button><div id="into"></div></div>
+    <div id="template-warning"></div>
     <textarea id="prompt" placeholder="描述你想要的画面…" maxlength="24000">${esc(c.prompt)}</textarea>
-    <div id="into"></div>
   </section>
   <section class="card">
     <div class="card-head"><span class="label">参考图</span><span class="muted small" id="ref-count"></span></div>
@@ -210,10 +211,27 @@ function bigrams(s){s=s.replace(/[\s，。,.、·]/g,"");const o=new Set();for(l
 function similarity(a,b){const A=bigrams(a),B=bigrams(b);if(!A.size||!B.size)return 1;let n=0;A.forEach(x=>B.has(x)&&n++);return n/Math.min(A.size,B.size);}
 function updateInto(){
   const c=S.composer,t=tpl(c.template),box=$("#into");if(!box)return;
-  const cn=t?(S.collections.find(x=>x.template===t.id)?.name||t.name):null;
+  const name=t?(S.collections.find(x=>x.template===t.id)?.name||t.name):"模板读取中";
   const div=t&&!c.ack&&c.prompt.trim().length>4&&similarity(c.prompt,t.text)<.25;
-  const h=`<div class="file-into"><span>${icon("folder",14)}归入</span>${t||c.template?`<span class="into-chip" id="into-chip"><span class="t">${t?esc(cn):'模板读取中'}</span><button data-act="detach" aria-label="解除模板">${icon("x",14)}</button></span>`:`<span class="into-chip none">无模板</span>`}</div>${div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:""}`;
-  if(box.dataset.h!==h){box.innerHTML=h;box.dataset.h=h;}
+  setHTML(box,c.template?`<span class="into-chip" id="into-chip"><button class="into-choose" data-act="tpl-menu" aria-label="归入 ${esc(name)}，选择模板">${icon("folder",14)}<span class="into-prefix">归入</span><span class="t">${esc(name)}</span></button><button class="into-detach" data-act="detach" aria-label="解除模板">${icon("x",15)}</button></span>`:`<button class="ghost-btn" data-act="tpl-menu">${icon("book",16)}模板${icon("chevd",14)}</button>`);
+  setHTML($("#template-warning"),div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:"");
+}
+
+function openComposerPrompt(trigger){
+  const screen=openScreen(`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon("back")}</button><h1>编辑提示词</h1><span class="grow"></span><button class="pill-btn strong" data-act="scr-back">完成</button></header><div class="prompt-editor-body"><textarea aria-label="提示词" maxlength="24000" placeholder="描述你想要的画面…">${esc(S.composer.prompt)}</textarea></div>`,{
+    cls:"composer-prompt-editor",onClose:()=>{trigger?.focus({preventScroll:true});StudioService.saveDraft();}
+  });
+  const editor=$("textarea",screen),draft=$("#prompt");
+  if(draft){editor.selectionStart=draft.selectionStart;editor.selectionEnd=draft.selectionEnd;}
+  editor.addEventListener("input",()=>{
+    S.composer.prompt=editor.value;
+    if(draft?.isConnected)draft.value=editor.value;
+    updateInto();
+    $("#clear-btn")?.classList.toggle("off",!(editor.value.trim()||S.composer.refs.length||S.composer.template));
+    StudioService.saveDraft();
+  });
+  editor.focus({preventScroll:true});
+  return screen;
 }
 function updateCreate(){
   if(S.mode==="up")return updateUpCreate();
@@ -276,19 +294,27 @@ const legacyStagesHTML=t=>t.status==='done'?'':`<span class="stages" data-st="${
 function stagesHTML(t){const steps=t.raw?.progress?.steps;if(!steps?.length)return legacyStagesHTML(t);if(t.status==='done')return '';return `<span class="generation-stages" aria-label="${esc(t.raw.progress.label||'任务阶段')}">${steps.map(step=>`<i data-state="${step.state}" title="${esc(step.label)}"></i>`).join('')}</span>`;}
 function bstate(b){const st=b.tasks.map(t=>t.status);return{active:st.some(s=>s==="queued"||s==="running"),failed:st.filter(s=>s==="failed").length,done:st.filter(s=>s==="done").length,n:st.length};}
 const bfilter=(b,f)=>{const s=bstate(b);return f==="active"?s.active:f==="failed"?!s.active&&s.failed>0:!s.active&&!s.failed;};
+const terminalHistory=t=>["done","failed","cancelled"].includes(t.status);
+const historyBatch=b=>b.tasks.every(terminalHistory)?` data-history-batch="${esc(b.id)}" aria-description="长按或按 Shift+F10 删除记录"`:"";
+const historyTask=t=>terminalHistory(t)?` data-history-job="${esc(t.id)}" tabindex="0" aria-description="长按或按 Shift+F10 删除记录"`:"";
 function chainedBatchHTML(b){
   const open=S.expanded.has(b.id),s=bstate(b),collection=coll(b.coll),parents=b.tasks.filter(t=>!t.raw?.options.parent_job_id);
+  const parentIds=new Set(parents.map(task=>task.id));
+  const orphans=b.tasks.filter(task=>task.raw?.options.parent_job_id&&!parentIds.has(task.raw.options.parent_job_id));
   const chains=parents.map(parent=>({parent,child:b.tasks.find(t=>t.raw?.options.parent_job_id===parent.id)}));
-  const generationDone=parents.filter(t=>t.status==='done').length,upDone=chains.filter(x=>x.child?.status==='done').length,upRunning=chains.filter(x=>x.child?.status==='running').length,upQueued=chains.filter(x=>x.child?.status==='queued').length,upFailed=chains.filter(x=>x.child?.status==='failed').length;
-  const summary=[`${generationDone}/${parents.length} 张原图完成`,upDone&&`${upDone} 项超分完成`,upRunning&&`${upRunning} 项超分进行中`,upQueued&&`${upQueued} 项超分等待`,upFailed&&`${upFailed} 项超分失败`].filter(Boolean).join(' · ');
+  const upscale=b.tasks.filter(t=>t.raw?.options.parent_job_id);
+  const generationDone=parents.filter(t=>t.status==='done').length,upDone=upscale.filter(t=>t.status==='done').length,upRunning=upscale.filter(t=>t.status==='running').length,upQueued=upscale.filter(t=>t.status==='queued').length,upFailed=upscale.filter(t=>t.status==='failed').length;
+  const summary=[parents.length&&`${generationDone}/${parents.length} 张原图完成`,upDone&&`${upDone} 项超分完成`,upRunning&&`${upRunning} 项超分进行中`,upQueued&&`${upQueued} 项超分等待`,upFailed&&`${upFailed} 项超分失败`].filter(Boolean).join(' · ');
   const thumbnail=b.tasks.find(t=>t.up&&t.img&&img(t.img))||parents.find(t=>t.img&&img(t.img));
-  const bars=chains.flatMap(({parent,child})=>[parent,child?{status:child.status,stage:child.up?Math.min(3,Math.floor((child.raw.progress?.fraction||0)*4)):child.stage}:{status:'queued',stage:0}]);
-  const line=(task,label,index)=>`<div class="trow"><span class="n" aria-hidden="true">${index}</span><span class="chain-step">${label}</span>${task.up?StudioProgress.short(task,40):stagesHTML(task)}<button class="link-btn" data-act="task-info" data-id="${task.id}">详情</button><span class="lbl${task.status==='failed'?' err':''}">${esc(task.status==='done'?'已完成':task.status==='failed'?task.err||task.raw?.progress?.label||'超分失败':task.raw?.progress?.label||taskLabel(task)||task.status)}</span>${task.status==='done'&&img(task.img)?`<button class="link-btn" data-act="img" data-id="${task.img}" data-list="batch:${b.id}">查看</button>`:task.status==='failed'?`<button class="link-btn" data-act="${task.raw?.options.stitch?'failure-job':'retry-task'}" data-id="${task.id}" data-b="${b.id}" data-t="${task.id}">${task.raw?.options.stitch?'处理':'重试'}</button>`:''}</div>`;
-  const rows=chains.map(({parent,child},i)=>`<section class="task-chain">${line(parent,'原图生成',i+1)}${child?`${line(child,`${child.raw.options.stitch}× 超分`,'↳')}${open&&child.up?StudioProgress.html(child,{all:true,key:'chain'}):''}`:`<p class="chain-dependent">${parent.status==='done'?'正在同步后续超分任务':'原图完成后建立超分任务'}</p>`}</section>`).join('');
-  return `<article class="batch chained-batch${open?' open':''}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"><span class="b-thumb">${thumbnail?`<img src="${src(img(thumbnail.img))}" alt="">`:icon('layers',20)}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">生成 → 超分</span>${esc(b.prompt)}</span><span class="b-meta">${parents.length} 张原图 · 归入 ${esc(collection?.name||'—')} · ${fmtTime(b.created)}</span><span class="b-status col">${s.active||s.failed?segBar(bars):''}<span class="b-sum">${summary}</span></span></span><span class="chev">${icon('chevd',18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">取消未完成</button>`:''}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败阶段</button>`:''}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
+  const bars=b.tasks.map(task=>task.up?{status:task.status,stage:Math.min(3,Math.floor((task.raw.progress?.fraction||0)*4))}:task);
+  const line=(task,label,index)=>`<div class="trow"${historyTask(task)}><span class="n" aria-hidden="true">${index}</span><span class="chain-step">${label}</span>${task.up?StudioProgress.short(task,40):stagesHTML(task)}<button class="link-btn" data-act="task-info" data-id="${task.id}">详情</button><span class="lbl${task.status==='failed'?' err':''}">${esc(task.status==='done'?'已完成':task.status==='failed'?task.err||task.raw?.progress?.label||'超分失败':task.raw?.progress?.label||taskLabel(task)||task.status)}</span>${task.status==='done'&&img(task.img)?`<button class="link-btn" data-act="img" data-id="${task.img}" data-list="batch:${b.id}">查看</button>`:task.status==='failed'?`<button class="link-btn" data-act="${task.raw?.options.stitch?'failure-job':'retry-task'}" data-id="${task.id}" data-b="${b.id}" data-t="${task.id}">${task.raw?.options.stitch?'处理':'重试'}</button>`:''}</div>`;
+  const upscaleLine=(task,index)=>line(task,`${task.raw.options.stitch}× 超分`,index)+(open&&task.up?StudioProgress.html(task,{all:true,key:'chain'}):'');
+  const rows=chains.map(({parent,child},i)=>`<section class="task-chain">${line(parent,'原图生成',i+1)}${child?upscaleLine(child,'↳'):parent.raw?.options.after_upscale&&!parent.raw.options.after_upscale_job_id?`<p class="chain-dependent">${parent.status==='done'?'正在同步后续超分任务':'原图完成后建立超分任务'}</p>`:''}</section>`).join('')
+    +orphans.map((task,i)=>`<section class="task-chain">${upscaleLine(task,parents.length+i+1)}</section>`).join('');
+  return `<article class="batch chained-batch${open?' open':''}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"${historyBatch(b)}><span class="b-thumb">${thumbnail?`<img src="${src(img(thumbnail.img))}" alt="">`:icon('layers',20)}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">生成 → 超分</span>${esc(b.prompt)}</span><span class="b-meta">${parents.length} 张原图 · 归入 ${esc(collection?.name||'—')} · ${fmtTime(b.created)}</span><span class="b-status col">${s.active||s.failed?segBar(bars):''}<span class="b-sum">${summary}</span></span></span><span class="chev">${icon('chevd',18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">取消未完成</button>`:''}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败阶段</button>`:''}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
 }
 function batchHTML(b){
-  if(b.tasks.some(t=>t.raw?.options.after_upscale||t.raw?.options.parent_job_id))return chainedBatchHTML(b);
+  if(b.tasks.some(t=>t.raw?.options.after_upscale)||b.tasks.some(t=>t.raw?.options.parent_job_id)&&b.tasks.some(t=>!t.raw?.options.stitch))return chainedBatchHTML(b);
   if(b.kind==="upscale"&&b.tasks.length===1&&b.tasks[0].up)return upBatchHTML(b);
   const s=bstate(b),c=coll(b.coll),open=S.expanded.has(b.id),thumb=b.tasks.find(t=>t.img&&img(t.img)),t0=b.tasks[0],m=t0.multi;
   const cnt=k=>b.tasks.filter(t=>t.status===k).length,run=b.tasks.filter(t=>t.status==='running'&&!t.waitingForSlot).length,q=b.tasks.filter(t=>t.status==='queued'||t.waitingForSlot).length;
@@ -298,10 +324,10 @@ function batchHTML(b){
       +(t0.status==="done"&&img(t0.img)?`<div class="trow"><span class="n"></span><span class="lbl">已合成为一张新图，选区外像素保持原图</span><button class="link-btn" data-act="img" data-id="${t0.img}" data-list="batch:${b.id}">查看</button></div>`:m.phase==="merge"?`<div class="trow"><span class="n"></span><span class="spin"></span><span class="lbl">合成中：只替换各选区内像素</span></div>`:"")
     :b.tasks.map((t,i)=>{const lbl=t.status==="queued"?"等待调度":t.status==="running"?(t.raw?.progress?.label||STAGE[t.stage]):t.status==="done"?"完成":t.status==="failed"?`失败 · ${t.err}`:"已取消";
       const a=t.status==="queued"||t.status==="running"?`<button class="link-btn danger" data-act="cancel-task" data-b="${b.id}" data-t="${t.id}">取消</button>`:t.status==="failed"?`<button class="link-btn" data-act="${t.raw?.options.stitch?"failure-job":"retry-task"}" data-id="${t.id}" data-b="${b.id}" data-t="${t.id}">${t.raw?.options.stitch?"处理":"重试"}</button>`:t.status==="done"&&img(t.img)?`<button class="link-btn" data-act="img" data-id="${t.img}" data-list="batch:${b.id}">查看</button>`:"";
-      return `<div class="trow"><span class="n" aria-hidden="true">#${i+1}</span>${stagesHTML(t)}<span class="lbl${t.status==="failed"?" err":""}">${esc(lbl)}</span><button class="link-btn" data-act="task-info" data-id="${t.id}">详情</button>${a}</div>`;}).join("");
+      return `<div class="trow"${historyTask(t)}><span class="n" aria-hidden="true">#${i+1}</span>${stagesHTML(t)}<span class="lbl${t.status==="failed"?" err":""}">${esc(lbl)}</span><button class="link-btn" data-act="task-info" data-id="${t.id}">详情</button>${a}</div>`;}).join("");
   const bars=m?m.parts.map(x=>({status:x.state,stage:x.stage})):b.tasks;
   const thumbSrc=thumb?src(img(thumb.img)):srcIm?src(srcIm):null;
-  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"><span class="b-thumb">${thumbSrc?`<img src="${thumbSrc}" alt="">`:icon(s.active?"clock":"alert",20)}</span><span class="b-text"><span class="b-prompt"><span class="kind ${b.kind}">${KIND[b.kind]}${m&&m.parts.length>1?` ×${m.parts.length}`:""}</span>${esc(b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${b.ratio} · ${b.tasks.length>1?b.tasks.length+" 张 · ":""}${fmtTime(b.created)}</span><span class="b-status col">${s.active||s.failed?segBar(bars):""}<span class="b-sum">${sum}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${m?`<button class="pill-btn" data-act="task-info" data-id="${t0.id}">详情</button>`:""}${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">${b.tasks.length>1?"全部取消":"取消"}</button>`:""}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败</button>`:""}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
+  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"${historyBatch(b)}><span class="b-thumb">${thumbSrc?`<img src="${thumbSrc}" alt="">`:icon(s.active?"clock":"alert",20)}</span><span class="b-text"><span class="b-prompt"><span class="kind ${b.kind}">${KIND[b.kind]}${m&&m.parts.length>1?` ×${m.parts.length}`:""}</span>${esc(b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${b.ratio} · ${b.tasks.length>1?b.tasks.length+" 张 · ":""}${fmtTime(b.created)}</span><span class="b-status col">${s.active||s.failed?segBar(bars):""}<span class="b-sum">${sum}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${m?`<button class="pill-btn" data-act="task-info" data-id="${t0.id}">详情</button>`:""}${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">${b.tasks.length>1?"全部取消":"取消"}</button>`:""}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败</button>`:""}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
 }
 function upBatchHTML(b){
   const t=b.tasks[0],u=t.up,c=coll(b.coll),open=S.expanded.has(b.id),srcIm=img(u.src),done=t.img&&img(t.img);
@@ -310,7 +336,7 @@ function upBatchHTML(b){
   const acts=(active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">取消</button>`:"")
     +(t.status==="failed"?`<button class="pill-btn strong" data-act="failure" data-id="${b.id}">失败处理</button>`:"")
     +(done?`<button class="pill-btn" data-act="img" data-id="${t.img}" data-list="batch:${b.id}">查看结果</button>`:"");
-  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"><span class="b-thumb">${srcIm?`<img src="${src(done?img(t.img):srcIm)}" alt="">`:""}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">${KIND.upscale} ${u.factor}</span>${esc(srcIm?.name||b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${u.levels.length} 级 · ${fmtTime(b.created)}</span><span class="b-status col up">${StudioProgress.short(t)}<span class="b-sum"${t.status==="failed"?' data-layout="color:var(--red)"':""}>${upLabel(t)}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div><div class="up-detail"><span class="up-levels">${lv}</span>${open?StudioProgress.html(t,{all:true}):""}</div>${t.status==="failed"&&t.err?`<p class="err-sum">${esc(t.err)}</p>`:""}<div class="b-actions"><button class="pill-btn" data-act="task-info" data-id="${t.id}">详情</button>${acts}</div></div></div></article>`;
+  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"${historyBatch(b)}><span class="b-thumb">${srcIm?`<img src="${src(done?img(t.img):srcIm)}" alt="">`:""}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">${KIND.upscale} ${u.factor}</span>${esc(srcIm?.name||b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${u.levels.length} 级 · ${fmtTime(b.created)}</span><span class="b-status col up">${StudioProgress.short(t)}<span class="b-sum"${t.status==="failed"?' data-layout="color:var(--red)"':""}>${upLabel(t)}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div><div class="up-detail"><span class="up-levels">${lv}</span>${open?StudioProgress.html(t,{all:true}):""}</div>${t.status==="failed"&&t.err?`<p class="err-sum">${esc(t.err)}</p>`:""}<div class="b-actions"><button class="pill-btn" data-act="task-info" data-id="${t.id}">详情</button>${acts}</div></div></div></article>`;
 }
 function updateQueue(){
   const counts={active:0,done:0,failed:0};S.batches.forEach(b=>["active","done","failed"].forEach(f=>bfilter(b,f)&&counts[f]++));
@@ -328,7 +354,7 @@ function updateQueue(){
 function tplsHTML(){return `${topBar("模板",`<button class="ghost-btn" data-act="tpl-new">${icon("plus",16)}新建</button>`)}<div class="scroll"><div id="tpls"></div></div>`;}
 function updateTpls(){
   syncList($("#tpls"),S.templates,t=>t.id,t=>{const c=S.collections.find(x=>x.template===t.id),ims=c?imagesOf(c.id):[];
-    return `<button class="tpl${S.templateFocus===t.id?" inspected":""}" data-act="tpl" data-id="${t.id}"><span class="tpl-cover">${ims[0]?`<img src="${src(ims[0])}" alt="">`:""}</span><span class="tpl-body"><b>${esc(t.name)}</b><span class="ex">${esc(t.text)}</span><span class="chips"><span class="chip">${t.ratio}</span><span class="chip">${t.refs} 张参考</span><span class="chip">${c?.image_count??ims.length} 张作品</span></span></span></button>`;});
+    return `<button class="tpl${S.templateFocus===t.id?" inspected":""}" data-act="tpl" data-id="${t.id}"><span class="tpl-cover">${ims[0]?`<img src="${src(ims[0])}" alt="">`:""}</span><span class="tpl-body"><b>${esc(t.name)}</b><span class="ex">${esc(t.text)}</span><span class="chips"><span class="chip">${t.refs} 张参考</span><span class="chip">${c?.image_count??ims.length} 张作品</span></span></span></button>`;});
 }
 
 /* ================= navigation ================= */
@@ -646,16 +672,13 @@ function paramsBody(){
   const c=S.composer,o=(k,v,lab=v,sub="")=>`<button class="opt${sub?" tall":""}${c[k]===v?" on":""}" data-act="opt" data-k="${k}" data-v="${v}">${lab}${sub?`<small>${sub}</small>`:""}</button>`;
   const sw=(k,lab,sub)=>`<button class="row" data-act="sw" data-k="${k}" data-layout="width:100%"><span class="rl">${lab}<small>${sub}</small></span><span class="switch ${c[k]?"on":""}"></span></button>`;
   return `
-    <p class="note">长按选项可固定到快速设置。本页参数应用到本次创作。</p>
-    <div class="field-label">图片模型</div><div class="opts backend-options">${typeof StudioQuickSettings!=='undefined'?StudioQuickSettings.imageModels.map(([value,label])=>`<button class="opt${StudioQuickSettings.backend().image_model===value?' on':''}" data-act="backend-opt" data-k="image_model" data-v="${value}">${label}</button>`).join(''):''}</div>
+    <div class="field-label">图片模型</div><p class="note parameter-hint">长按参数选项可固定到创作页，点按应用到本次生成。</p><div class="opts backend-options">${typeof StudioQuickSettings!=='undefined'?StudioQuickSettings.imageModels.map(([value,label])=>`<button class="opt${StudioQuickSettings.backend().image_model===value?' on':''}" data-act="backend-opt" data-k="image_model" data-v="${value}">${label}</button>`).join(''):''}</div>
     <div class="field-label">图片质量</div><div class="opts c4">${[['auto','自动'],['low','低'],['medium','中'],['high','高'],['xhigh','极高'],['max','最大']].map(([value,label])=>`<button class="opt${typeof StudioQuickSettings!=='undefined'&&StudioQuickSettings.backend().quality===value?' on':''}" data-act="backend-opt" data-k="quality" data-v="${value}">${label}</button>`).join('')}</div>
     <div class="field-label">画幅</div><div class="opts">${["1:1","3:2","2:3","16:9","9:16","自动"].map(v=>o("ratio",v)).join("")}</div>
     <div class="row" data-layout="margin-top:8px"><span class="rl">数量<small>每张为独立会话</small></span><span class="stepper"><button data-act="cnt" data-d="-1" aria-label="减少">${icon("minus",18)}</button><output id="cnt">${c.count}</output><button data-act="cnt" data-d="1" aria-label="增加">${icon("plus",18)}</button></span></div>
-    <div class="field-label">图像尺寸</div><div class="opts c4">${["自动","1K","2K","4K"].map(v=>o("size",v)).join("")}</div>
-    <p class="note">作为原生生图要求传给模型；实际尺寸以图片详情为准。</p>
+    <div class="field-label">图像尺寸</div><p class="note parameter-hint">请求原生生图尺寸，实际尺寸见图片详情。</p><div class="opts c4">${["自动","1K","2K","4K"].map(v=>o("size",v)).join("")}</div>
     ${sw("polish","帮我润色","由模型补全构图、光线与风格")}${sw("transparent","透明背景","由生图工具决定是否支持")}
-    <div class="field-label">生成后超分</div><div class="opts c4">${o("stitch","关")}${Object.keys(FACTORS).map(v=>o("stitch",v,v,FACTORS[v]+" 级")).join("")}</div>
-    <p class="note">每张生成完成后自动加入该倍率的超分任务。只超分已有图片，请用创作页顶部的“超分”。</p>
+    <div class="field-label">生成后超分</div><p class="note parameter-hint">每张生成完成后自动加入该倍率的超分任务。</p><div class="opts c4">${o("stitch","关")}${Object.keys(FACTORS).map(v=>o("stitch",v,v,FACTORS[v]+" 级")).join("")}</div>
     ${StudioUpscalePrompts.entry('composer')}
     <button class="field-label model-choice" data-act="model-composer">思考强度 · ${esc(StudioService.modelName(c.model))}${icon("chevd",14)}</button><div class="opts c5">${(StudioService.models().find(m=>m.id===c.model)?.efforts||[c.effort]).map(v=>o("effort",v)).join("")}</div>
     <div class="btn-row" data-layout="margin-top:18px"><button class="secondary" data-act="params-reset" data-layout="flex:1;justify-content:center">${icon("refresh",16)}恢复默认值</button><button class="secondary" data-act="params-default" data-layout="flex:1;justify-content:center">${icon("check",16)}设为默认</button></div>`;
@@ -681,6 +704,61 @@ function tplSheet(...args){return StudioService.tplSheet(...args);}
 
 /* ---- dispatcher ---- */
 let lp=null,lpFired=false;
+let taskHold=null,taskHoldClick=null;
+function taskHistoryTarget(event){
+  const target=event.target.closest("#batches [data-history-job], #batches [data-history-batch]");
+  if(!target||event.target.closest("button")&&!target.matches("button"))return null;
+  return target;
+}
+function cancelTaskHold(){
+  if(!taskHold)return;
+  clearTimeout(taskHold.timer);
+  taskHold.target.classList.remove("task-holding");
+  taskHold=null;
+}
+function showTaskDelete(target){
+  if(!target.isConnected||S.tab!=="queue"||layers.length)return;
+  const batch=target.dataset.historyBatch;
+  taskHoldClick=target;
+  navigator.vibrate?.(10);
+  StudioService.confirmTaskDeletion(batch||target.dataset.historyJob,Boolean(batch));
+}
+app.addEventListener("pointerdown",event=>{
+  if(event.button>0||event.isPrimary===false)return;
+  taskHoldClick=null;
+  cancelTaskHold();
+  const target=taskHistoryTarget(event);
+  if(!target)return;
+  target.classList.add("task-holding");
+  taskHold={target,x:event.clientX,y:event.clientY,pointer:event.pointerId,timer:setTimeout(()=>{
+    cancelTaskHold();
+    showTaskDelete(target);
+  },420)};
+});
+app.addEventListener("pointermove",event=>{
+  if(taskHold?.pointer===event.pointerId&&Math.hypot(event.clientX-taskHold.x,event.clientY-taskHold.y)>10)cancelTaskHold();
+});
+for(const type of ["pointerup","pointercancel","pointerleave"]){
+  app.addEventListener(type,event=>{if(taskHold?.pointer===event.pointerId)cancelTaskHold();});
+}
+app.addEventListener("click",event=>{
+  if(!taskHoldClick?.contains(event.target))return;
+  taskHoldClick=null;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+},true);
+app.addEventListener("contextmenu",event=>{
+  const target=taskHistoryTarget(event);
+  if(!target)return;
+  event.preventDefault();
+  cancelTaskHold();
+  showTaskDelete(target);
+});
+app.addEventListener("keydown",event=>{
+  if(!(event.shiftKey&&event.key==="F10")&&event.key!=="ContextMenu")return;
+  const target=taskHistoryTarget(event);
+  if(target){event.preventDefault();showTaskDelete(target);}
+});
 app.addEventListener("pointerdown",e=>{const t=e.target.closest("#page .tile");if(!t||e.button>0)return;
   lp={t,x:e.clientX,y:e.clientY,timer:setTimeout(()=>{lpFired=true;t.classList.remove("pressing");t.animate([{transform:"scale(.94)"},{transform:"scale(1.03)"},{transform:"scale(1)"}],{duration:D(320),easing:E.std});navigator.vibrate?.(10);if(S.tab==='works')StudioSelection.begin(t.dataset.id);else imageMenu(t.dataset.id);lp=null;},420)};t.classList.add("pressing");});
 const lpCancel=()=>{if(lp){clearTimeout(lp.timer);lp.t.classList.remove("pressing");lp=null;}};
@@ -734,6 +812,7 @@ app.addEventListener("click",async e=>{
     case"sw":{const kk=a.dataset.k;S.composer[kk]=!S.composer[kk];$(".switch",a).classList.toggle("on",S.composer[kk]);refresh();break;}
     case"cnt":{const c=S.composer;c.count=clamp(c.count+ +a.dataset.d,1,20);const o=$('output',a.closest('.stepper'));o.textContent=c.count;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});refresh();break;}
     case"tpl-menu":tplMenuSheet();break;
+    case"prompt-full":openComposerPrompt(a);break;
     case"tpl-load":loadTemplate(id);break;
     case"sw-bind":$("#bind-sw").classList.toggle("on");break;
     case"detach":S.composer.template=null;S.composer.ack=false;updateInto();toast("已改为无模板");break;
