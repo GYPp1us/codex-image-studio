@@ -56,9 +56,13 @@ Android APK 使用原生沉浸模式隐藏图片查看页的状态栏和导航�
 
 脚本使用 aapt2、javac、d8、zipalign 和 apksigner，在指定输出目录生成 APK 与校验文件并验证签名。必须显式指定已有签名目录和隔离输出目录的绝对路径；缺少密钥或密码会停止，不生成替代签名。签名目录包含 `image-studio.jks` 和 `store-password.txt`，仅在本地读取，请私下备份。私钥、密码、构建缓存和 APK 不进入 Git。原生能力更新需要覆盖安装同签名新版 APK。
 
+也可以在 GitHub Actions 中从 `main` 手动运行「Android 签名构建」。`android-release` 环境应只允许 `main` 分支，配置 `ANDROID_SIGNING_KEYSTORE_B64` 和 `ANDROID_SIGNING_PASSWORD` 两个 Secret，以及公开的证书指纹变量 `ANDROID_SIGNING_CERT_SHA256`。构建核验签名证书后，将 APK 和 SHA-256 校验文件放入 `image-studio-android` 构建产物。发布需要单独上传经过验证的 APK。
+
+从旧证书迁移到新证书时，同包名的新版需要先卸载旧 Android APK 再安装。卸载会清除本机应用数据，需要重新登录。之后继续使用同一新证书签名即可覆盖更新。
+
 客户端固定连接 `https://image.arcol.site/`。自行部署需要同步修改 HOME、可信主机、两个通道的目标源和前端来源校验。禁止明文网络、文件 URL、混合内容与第三方 Cookie，不使用通用 JavaScriptInterface。系统栏通道仅接受查看器状态和两个颜色；独立缓存保存通道仅接受文件名、图像类型、大小与有界字节块，不能选择任意路径或发起网络请求。两个通道均向精确信任来源的主框架移交，导航后失效。上传使用文档选择器，无需整个相册或存储权限。
 
-下载 APK 后放在服务端源码目录的 `downloads/image-studio.apk`，应用会通过 `/downloads/image-studio.apk` 提供下载。发布前比较新旧证书摘要，保持同一签名以支持覆盖安装。Web App 清单在 `/static/manifest.webmanifest`，Service Worker 从 `/sw.js` 注册；Android WebView 同样启用该缓存。
+下载 APK 后放在服务端源码目录的 `downloads/image-studio.apk`，应用会通过 `/downloads/image-studio.apk` 提供下载。发布前核对证书指纹，常规更新沿用当前发布证书，主动更换证书时按上面的步骤迁移。Web App 清单在 `/static/manifest.webmanifest`，Service Worker 从 `/sw.js` 注册；Android WebView 同样启用该缓存。
 
 原图、缩略图与固定的超分原图使用本机持久 Cache Storage，合并同一文件的同时请求。缓存最多 192 MB、300 项，超额时删除较早缓存；大于总预算的单文件直接联网加载。重启页面或应用后可以复用缓存，浏览器仍可能因系统存储压力清理。登录状态在工作进程首次使用缓存时验证，此后最多缓存 30 秒授权检查结果；页面 API 返回未登录或主动退出登录时会清除图片缓存。账户设置可查看占用并清空。鉴权失败响应、下载附件、API JSON、临时候选图、会话及订阅凭据不会缓存；缓存不可用时继续从网络加载。
 
