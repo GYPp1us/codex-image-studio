@@ -1,0 +1,62 @@
+name: Android 签名构建
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    environment: android-release
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 构建并核验发布签名
+        shell: pwsh
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
+        run: |
+          if (!$env:KEYSTORE_B64 -or !$env:KEYSTORE_PASSWORD -or
+              $env:EXPECTED_CERT_SHA256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'android-release 签名配置缺失'
+          }
+          $signingDir = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString('N'))
+          $keystore = Join-Path $signingDir 'image-studio.jks'
+          $passwordFile = Join-Path $signingDir 'store-password.txt'
+          $outputDir = Join-Path $env:RUNNER_TEMP 'image-studio-android-release'
+          New-Item -ItemType Directory -Path $signingDir | Out-Null
+          try {
+            [IO.File]::WriteAllBytes($keystore, [Convert]::FromBase64String($env:KEYSTORE_B64))
+            [IO.File]::WriteAllText($passwordFile, $env:KEYSTORE_PASSWORD)
+            Remove-Item Env:KEYSTORE_B64, Env:KEYSTORE_PASSWORD
+            ./android/build.ps1 -SdkRoot $env:ANDROID_HOME -JdkRoot $env:JAVA_HOME_21_X64 -SigningDir $signingDir -OutputDir $outputDir
+            $apk = Join-Path $outputDir 'image-studio.apk'
+            $apksigner = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/apksigner.bat'
+            $report = & $apksigner verify --print-certs $apk
+            if ($LASTEXITCODE -ne 0) { throw 'APK 签名验证失败' }
+            $certificates = @($report | Select-String '^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]{64})$')
+            if ($certificates.Count -ne 1 -or $certificates[0].Matches[0].Groups[1].Value -ne $env:EXPECTED_CERT_SHA256) {
+              throw 'APK 签名证书与发布指纹不一致'
+            }
+            Write-Output "Signer certificate SHA-256: $env:EXPECTED_CERT_SHA256"
+          } finally {
+            Remove-Item -LiteralPath $keystore, $passwordFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $signingDir -ErrorAction SilentlyContinue
+          }
+
+      - name: 保存签名 APK 与校验文件
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-studio-android
+          path: |
+            ${{ runner.temp }}/image-studio-android-release/image-studio.apk
+            ${{ runner.temp }}/image-studio-android-release/image-studio.apk.sha256
+          if-no-files-found: error
