@@ -61,7 +61,11 @@ test('stop and reset cancel an in-progress tween without recreating the closed s
 });
 
 test('instant native-pixel viewing cancels an earlier animated target',()=>{
- const f=fixture();f.zoom.toggleAt({clientX:190,clientY:350});for(let i=0;i<4;i++)f.frame();f.zoom.toggleNative();f.frame();assert.equal(!!f.document.querySelector('.zoom-plane'),false);for(let i=0;i<30;i++)f.frame();assert.equal(!!f.document.querySelector('.zoom-plane'),false);
+ const f=fixture();f.zoom.toggleAt({clientX:190,clientY:350});for(let i=0;i<4;i++)f.frame();
+ f.zoom.toggleNative();f.frame();assert.equal(f.zoom.isNative(),true);
+ for(let i=0;i<30;i++)f.frame();
+ assert.equal(surfaceScale(f),f.asset.w/390);
+ f.zoom.toggleNative();f.frame();assert.equal(!!f.document.querySelector('.zoom-plane'),false);
 });
 
 test('stalled tile loads release their slots so queued visible tiles can start',()=>{

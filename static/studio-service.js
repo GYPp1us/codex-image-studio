@@ -72,7 +72,9 @@ const StudioService=(()=>{
       return StudioFeedback.run(key,button,()=>send(values)).catch(failure=>{if(error&&form.isConnected)error.textContent=failure.message;else report(failure);});
     };
   }
-  async function closeOwnedSheet(layer,revision){if(layer?.isConnected&&layer.style.pointerEvents!=='none'&&layer.dataset.revision===revision&&layers.at(-1)?.type==='sheet'&&topSheet()===layer)await back();}
+  function closeOwnedSheet(layer,revision){
+    return traverseHistory(()=>layer?.isConnected&&layer.dataset.revision===revision&&layers.at(-1)?.surface===layer?1:0);
+  }
   function rememberAsset(a,origin){if(!a)return null;const previous=assets.get(a.id)||{};
     const j=origin||jobs.get(a.job_id),cid=j?.collection_id||previous.coll;
     const mapped={...previous,...a,w:a.width,h:a.height,fav:!!a.favorite,created:a.created*1000,coll:cid,
@@ -234,7 +236,7 @@ const StudioService=(()=>{
     }catch(error){if(version!==bootVersion||stopped||error.name==='AbortError')return;if(!authenticated&&authState?.authenticated===false)return login();$('#page').innerHTML=`<div class="boot-state"><p>${esc(error.message)}</p><button class="secondary" data-act="boot-retry">重新连接</button></div>`;}
     finally{if(bootFlight===task)bootFlight=null;}})();bootFlight=task;return task;
   }
-  function login(){StudioSelection.reset();releaseReferenceOwners();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;historyRevision=null;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;layers.splice(0);history.replaceState({depth:0},'');
+  function login(){StudioSelection.reset();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;historyRevision=null;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;V.gen++;layers.splice(0);syncSurfaces();history.replaceState({depth:0},'');
     $('#page').innerHTML=`<div class="auth-wrap"><div class="auth-brand">${icon('sparkle',28)}<h1>Image Studio</h1><p>${authState?.initialized?'登录私人图片工作台':'设置私人图片工作台'}</p></div><form id="login-form" class="card"><div class="field-label">用户名</div><input class="input" name="username" autocomplete="username" minlength="2" maxlength="64" required><div class="field-label">密码</div><input class="input" name="password" type="password" autocomplete="${authState?.initialized?'current-password':'new-password'}" minlength="10" maxlength="256" required>${authState?.initialized?'':'<div class="field-label">初始化密钥</div><input class="input" name="setup_token" type="password" required>'}<p class="form-err" role="alert"></p><button class="primary" type="submit">${authState?.initialized?'登录':'创建工作台'}</button></form></div>`;
     bindPendingForm($('#login-form'),'form:login',async values=>{await post('/api/auth/'+(authState.initialized?'login':'setup'),values);authState=null;$('#page').innerHTML='<div class="boot-state"><span class="spin"></span>正在打开工作台</div>';firstSync=true;await boot();});
   }
@@ -483,8 +485,15 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   function loginStatusHTML(value){const v=value||{},url=typeof v.url==='string'&&v.url.startsWith('https://auth.openai.com/')?v.url:null;return `${v.output?`<pre class="prompt-box task-log">${esc(v.output)}</pre>`:''}${url?`<a class="primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">在浏览器中继续授权${icon('arrow',18)}</a>`:''}`;}
   async function loadCollection(cid,more=false){const offset=more?(collectionPages.get(cid)||0):0,data=await api(`/api/jobs?collection=${cid}&limit=100&offset=${offset}`);data.items.forEach(rememberJob);collectionPages.set(cid,offset+data.items.length);projectImages();if(S.coll===cid){refresh();const hint=$('#grid')?.nextElementSibling;if(hint){let button=$('[data-act="collection-more"]',hint.parentElement);if(!button){button=document.createElement('button');button.className='secondary load-more';button.dataset.act='collection-more';hint.before(button);}button.dataset.id=cid;button.textContent='加载更多作品';button.hidden=offset+data.items.length>=data.total;}}}
   async function batchOperation(bid,verb,only){const b=S.batches.find(b=>b.id===bid);if(!b)return;const tasks=b.tasks.filter(t=>!only||t.id===only).filter(t=>verb==='cancel'?['queued','running'].includes(t.status):['failed','cancelled'].includes(t.status));let failed=0;for(const t of tasks){try{await post(`/api/jobs/${t.id}/${verb}`);}catch(e){failed++;report(e);}}await refreshData();toast(failed?`${tasks.length-failed} 项已处理，${failed} 项未完成`:(verb==='cancel'?'已取消':'已重新排队'));}
-  async function redraw(){const im=img(V.list[V.i]),r=rectOf(curImg()),regions=V.regions.map(g=>({x:Math.round((g.x-r.x)/r.w*im.w),y:Math.round((g.y-r.y)/r.h*im.h),width:Math.round(g.w/r.w*im.w),height:Math.round(g.h/r.h*im.h),prompt:(V.shared?V.sharedText:g.text).trim()}));for(const q of regions){q.x=clamp(q.x,0,im.w);q.y=clamp(q.y,0,im.h);q.width=Math.min(q.width,im.w-q.x);q.height=Math.min(q.height,im.h-q.y);if(q.width<16||q.height<16)throw new Error('每个选区的原图宽高至少需要 16 像素');if(!q.prompt)throw new Error('请填写每个选区的重绘要求');}
-    const result=await submit(`/api/assets/${im.id}/inpaint`,{regions,model:S.composer.model,effort:S.composer.effort});await back();toast(`${regions.length} 个区域已加入重绘任务`,{action:'查看',run:()=>goBatch(result.batch_id)});}
+  async function redraw(){
+    const editor=layers.at(-1);
+    const im=img(V.list[V.i]),r=V.fitRect||fitRect(im);
+    const regions=V.regions.map(g=>({x:Math.round((g.x-r.x)/r.w*im.w),y:Math.round((g.y-r.y)/r.h*im.h),width:Math.round(g.w/r.w*im.w),height:Math.round(g.h/r.h*im.h),prompt:(V.shared?V.sharedText:g.text).trim()}));
+    for(const q of regions){q.x=clamp(q.x,0,im.w);q.y=clamp(q.y,0,im.h);q.width=Math.min(q.width,im.w-q.x);q.height=Math.min(q.height,im.h-q.y);if(q.width<16||q.height<16)throw new Error('每个选区的原图宽高至少需要 16 像素');if(!q.prompt)throw new Error('请填写每个选区的重绘要求');}
+    const result=await submit(`/api/assets/${im.id}/inpaint`,{regions,model:S.composer.model,effort:S.composer.effort});
+    await traverseHistory(()=>editor?.type==='redraw'&&layers.at(-1)===editor?1:0);
+    toast(`${regions.length} 个区域已加入重绘任务`,{action:'查看',run:()=>goBatch(result.batch_id)});
+  }
 
   function renderFailure(bid){return StudioRecovery.render(FX.job,FX.diag,{bid,api,post,assets,planHTML,budget,bytes,report,refreshData,invalidate:id=>details.delete(id)});}
   let failureVersion=0;
@@ -577,11 +586,11 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'im-dl':download(id);break;
       case 'works-tab':{const tab=a.dataset.v;if(!['generated','references','favorites'].includes(tab))break;if(StudioSelection.active())await StudioSelection.leave();S.worksTab=tab;renderPage();if(tab!=='generated')await loadWorks(tab);break;}
       case 'works-more':await loadWorks(S.worksTab,workState(S.worksTab).ready&&!workState(S.worksTab).error);break;
-      case 'im-fav':rememberAsset(await api('/api/assets/'+id,{method:'PATCH',body:{favorite:!assets.get(id).fav}}));projectImages();await back();if(S.worksTab==='favorites')await loadWorks('favorites');if(!V.open)refresh();toast(assets.get(id).fav?'已收藏':'已取消收藏');break;
+      case 'im-fav':{const layer=a.closest('.sheet-layer'),revision=layer?.dataset.revision;rememberAsset(await api('/api/assets/'+id,{method:'PATCH',body:{favorite:!assets.get(id).fav}}));projectImages();await closeOwnedSheet(layer,revision);if(S.worksTab==='favorites')await loadWorks('favorites');if(!V.open)refresh();toast(assets.get(id).fav?'已收藏':'已取消收藏');break;}
       case 'copy-prompt':await navigator.clipboard.writeText(assets.get(id)?.prompt||'');toast('提示词已复制');break;
-      case 'rd-submit':a.disabled=true;try{await redraw();}finally{if(a.isConnected)a.disabled=false;}break;
+      case 'rd-submit':await redraw();break;
       case 'up-f':{const L=a.closest('.sheet-layer');L.dataset.f=a.dataset.v;$$('#upo .opt',L).forEach(b=>b.classList.toggle('on',b===a));paintSheetPlan(L);break;}
-      case 'up-go':a.disabled=true;try{const L=a.closest('.sheet-layer');await startUpscale(id,L.dataset.f,$('#up-inj',L).value.trim(),null,L.dataset.promptScope);await back();}finally{a.disabled=false;}break;
+      case 'up-go':{const L=a.closest('.sheet-layer'),revision=L.dataset.revision;await startUpscale(id,L.dataset.f,$('#up-inj',L).value.trim(),null,L.dataset.promptScope);await closeOwnedSheet(L,revision);break;}
       case 'up-start':{if(!S.upc.src)throw new Error('先选择要超分的原图');if(!getPlan(assets.get(S.upc.src),S.upc.factor)?.stages)throw new Error('请等待切图预算计算完成');a.disabled=true;try{const f=S.upc.factor;await startUpscale(S.upc.src,f,$('#cu-inj').value.trim(),()=>{if(!a.isConnected)return;$('#gen-done').textContent='已加入 '+f;a.classList.add('done');flyDot(a,$('.tab[data-tab="queue"] .ti'));setTimeout(()=>a.classList.remove('done'),1700);});}finally{a.disabled=false;}break;}
       case 'up-detail':await upDetail(id,a.dataset.inspectOnly==='true');break;
       case 'failure':await openFailure(a.dataset.t||id);break;

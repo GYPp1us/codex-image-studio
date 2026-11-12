@@ -5,7 +5,7 @@ const html=fs.readFileSync('static/index.html','utf8');
 const prompt='Generate an image using {prompt}, preserving the requested native dimensions.';
 const baseAsset={id:'asset',width:900,height:1200,name:'山色.png',kind:'generated',bytes:1234,created:1000,job_id:'job',url:'/media/asset',thumbnail:'/media/asset?thumbnail=1',preview:'/media/asset?preview=1',favorite:0,tags:''};
 function makeJob(id,extra={}){return {id,batch_id:'batch',prompt:'静谧山色',status:'queued',created:1000,collection_id:'untemplated',template_id:'',refs:[],references:[],outputs:[],attempt:0,max_attempts:3,error:'',model:'gpt-test',effort:'high',options:{ratio:'1:1',size:'auto',model:'gpt-test',effort:'high',stitch:0},progress:{stage:'queued',label:'等待调度'},...extra};}
-async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',blockedPaths=[],failOncePaths=[],skipReady=false,savedDraft=null,storageFixture=null}={}){
+async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,redrawGate=null,failSync=false,legacyDraft=null,gallery=false,paginated=false,systemReduce=true,motion='reduce',legacyMotion=false,systemDark=false,avatarURL='',blockedPaths=[],failOncePaths=[],skipReady=false,savedDraft=null,storageFixture=null}={}){
  const {window}=parseHTML(html),{document}=window;const stored=new Map(savedDraft?[["studio-demo-composer:fixture",JSON.stringify(savedDraft)]]:[]);const requests=[],timers=new Map();let timerId=0,stateReads=0,clock=0;
  const asset=huge?{...baseAsset,width:12000,height:8000,tile_template:'/api/assets/asset/tiles/{level}/{x}/{y}'}:baseAsset;
  const dataJobs=[makeJob('job',{status:'succeeded',outputs:[asset]}),...Array.from({length:19},(_,i)=>makeJob('job'+i))];
@@ -35,6 +35,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
   else if(path.includes('/diagnostics?'))d={input_size:[900,1200],images:{source:'/source.webp',raw:'/raw.webp',affine:'/affine.webp'},tiles:[{index:4,core:[0,0,900,400],state:'ready',reason:'几何正常'},{index:7,core:[0,400,900,800],state:'coverage',reason:'配准后缺失'},{index:8,core:[0,800,900,1200],state:'missing',reason:'尚未返回'}]};
   else if(path.includes('/comparison?'))d={input_size:[600,400],output_size:[1024,768],images:{input:'/input.webp',output:'/output.webp'}};
   else if(path.endsWith('/redraw'))d={ok:true};
+  else if(path.endsWith('/inpaint')){if(redrawGate)await redrawGate;d={batch_id:'batch',ids:['queued-job']};}
   else if(path.endsWith('/quick-edit')){if(failQuick)return {ok:false,status:503,json:async()=>({detail:'模拟临时失败'})};d={batch_id:'batch',ids:['queued-job']};}
   else if(path==='/api/jobs'&&opt.method)d={batch_id:'batch',ids:['queued-job']};
   else if(path==='/api/storage')d=storage;
@@ -128,16 +129,98 @@ test('failure workspace uses diagnostic images, stable adaptive tile IDs and nat
 test('settings persist demo quick switches and all three motion modes',async()=>{const f=await fixture();f.run('S.settings.quick.keepSpec=false;S.settings.quick.useRef=false;S.settings.motion="full"');await f.service.settingChanged('motion');const req=f.requests.find(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(req.body.motion_mode,'full');assert.equal(req.body.quick.keep_spec,false);assert.equal(req.body.quick.use_ref,false);assert.equal(req.body.paused,undefined);});
 test('unauthenticated boot shows login and hides workspace navigation',async()=>{const f=await fixture({unauth:true});assert.ok(f.document.querySelector('#login-form'));assert.equal(f.document.querySelector('#tabbar').hidden,true);assert.equal(f.requests.some(r=>r.path==='/api/assets?kind=all&limit=200'),false);});
 
-test('demo component rules are retained except simulated distortions and the replaced motion policy',()=>{
+test('demo component rules are retained except viewport, motion and overlay stacking rules',()=>{
  const demo=fs.readFileSync('docs/ui-proposal/index.html','utf8'),css=fs.readFileSync('static/studio.css','utf8');
  const start='/* ---------- page chrome ---------- */';
  const withoutMotion=text=>text.replace(/^html\.rm .*$/gm,'').replace(/@media \(prefers-reduced-motion:reduce\)\{[\s\S]*?\n\}/g,'');
- const unchanged=text=>text.replace(/#prompt\{[\s\S]*?(?=@keyframes flash)/,'');
+ const unchanged=text=>text.replace(/#prompt\{[\s\S]*?(?=@keyframes flash)/,'')
+   .replace(/^#(?:overlays|layers|screens)[^{]*\{[^\n]+\}\n/gm,'')
+   .replace(/^\.viewer\{([^\n]+)\}/m,(_,rules)=>'.viewer{'+rules.replace('z-index:50;','').replace(';pointer-events:auto','')+'}');
  const source=unchanged(withoutMotion(demo.slice(demo.indexOf(start),demo.indexOf('</style>')))).split('\n').filter(line=>!line.startsWith('.cmp-l.out.')).join('\n').replace(/\s+/g,' ').trim();
  const product=unchanged(withoutMotion(css.slice(css.indexOf(start),css.indexOf('/* Real viewport:')))).replace(/\s+/g,' ').trim();assert.equal(product,source);
 });
 test('sheet content switches preserve one history layer and serialized back closes one at a time',async()=>{const f=await fixture();f.run('openViewer("asset","recent");openSheet({title:"第一步",html:"内容"});openSheet({title:"第二步",html:"新内容"})');assert.equal(f.run('layers.length'),2);assert.equal(f.document.querySelectorAll('.sheet-layer').length,1);assert.equal(f.document.querySelector('.sheet-head h2').textContent,'第二步');await Promise.all([f.run('back()'),f.run('back()')]);assert.equal(f.run('layers.length'),0);assert.equal(f.run('V.open'),false);});
+test('screens and viewers open over the surface that launched them and Back restores its controls',async()=>{
+ const f=await fixture();
+ const sheet=f.run('openSheet({title:"账户",html:"选项"})');
+ const screen=f.run('openScreen("<h1>最近删除</h1>")');
+ const viewer=f.document.querySelector('#viewer');
+ assert.ok(+screen.style.zIndex>+sheet.style.zIndex);
+ assert.equal(sheet.inert,true);
+ f.run('openViewer("asset","recent")');
+ assert.ok(+viewer.style.zIndex>+screen.style.zIndex);
+ assert.equal(screen.inert,true);
+ assert.equal(viewer.inert,false);
+ await f.run('back()');
+ assert.equal(viewer.inert,true);
+ assert.equal(screen.inert,false);
+ await f.run('back()');
+ assert.equal(sheet.inert,false);
+});
+test('landscape rail changes page after closing the previous workspace',async()=>{
+ const f=await fixture();
+ f.run('StudioLandscape.wide=()=>true;S.tab="queue";renderPage();openScreen("任务详情",{cls:"task-details-workspace"})');
+ const screen=f.document.querySelector('.screen');
+ assert.equal(f.document.querySelector('#tabbar').inert,false);
+ await f.run('go("create")');
+ assert.equal(f.run('S.tab'),'create');
+ assert.equal(f.run('layers.length'),0);
+ assert.equal(screen.inert,true);
+ assert.equal(f.document.querySelector('#page').inert,false);
+});
+test('cancelled edge swipes restore the screen and keep its history entry',async()=>{
+ const f=await fixture();
+ const screen=f.run('openScreen("任务详情")');
+ const pointer=(type,x,id=1)=>{
+   const event=new f.context.window.Event(type,{bubbles:true});
+   Object.assign(event,{pointerId:id,button:0,clientX:x});
+   screen.dispatchEvent(event);
+ };
+ pointer('pointerdown',10);
+ pointer('pointermove',190);
+ assert.equal(screen.style.transform,'translateX(180px)');
+ pointer('pointercancel',190,2);
+ assert.equal(screen.style.transform,'translateX(180px)');
+ pointer('pointercancel',190);
+ assert.equal(screen.style.transform,'');
+ assert.equal(f.run('layers.length'),1);
+});
 test('Android back hook consumes a sheet or viewer and returns false at root',async()=>{const f=await fixture();assert.equal(f.run('studioBack()'),false);f.run('openSheet({title:"详情",html:"内容"})');assert.equal(f.run('studioBack()'),true);await f.run('historyQueue');assert.equal(f.run('layers.length'),0);});
+
+test('viewer tools are inert while their controls are offscreen',async()=>{
+ const f=await fixture();
+ f.run('openViewer("asset","recent")');
+ await previewTick();
+ assert.equal(f.document.querySelector('.v-redraw').inert,true);
+ f.run('vw.classList.add("chrome-off")');
+ await previewTick();
+ for(const selector of ['.v-top','.v-actions','.v-quick'])assert.equal(f.document.querySelector(selector).inert,true);
+ f.run('enterRedraw()');
+ await previewTick();
+ assert.equal(f.document.querySelector('.v-top').inert,false);
+ assert.equal(f.document.querySelector('.v-redraw').inert,false);
+ assert.equal(f.document.querySelector('.v-actions').inert,true);
+ await f.run('back()');
+ await previewTick();
+ assert.equal(f.document.querySelector('.v-redraw').inert,true);
+ assert.equal(f.document.querySelector('.v-actions').inert,false);
+});
+
+test('a late redraw response leaves a newly opened viewer sheet in place',async()=>{
+ let release;
+ const redrawGate=new Promise(resolve=>{release=resolve;});
+ const f=await fixture({redrawGate});
+ f.run('openViewer("asset","recent");enterRedraw();V.regions=[{x:V.fitRect.x+20,y:V.fitRect.y+20,w:40,h:40,text:"重绘"}];updRedraw()');
+ const pending=f.run('StudioService.action("rd-submit",$("#rd-submit"))');
+ await previewTick();
+ assert.ok(f.requests.some(request=>request.path==='/api/assets/asset/inpaint'));
+ await f.run('back()');
+ const sheet=f.run('openSheet({title:"图片信息",html:"保留当前面板"})');
+ release();
+ await pending;
+ assert.equal(f.run('currentSurface().surface'),sheet);
+ assert.equal(f.run('V.open'),true);
+});
 
 test('native-pixel view loads only visible bounded DZI tiles and returns to fit',async()=>{const f=await fixture({huge:true});f.run('openViewer("asset","recent");StudioZoom.toggleNative()');await new Promise(resolve=>setImmediate(resolve));const surface=f.document.querySelector('.zoom-plane');assert.ok(surface);assert.ok(Math.abs(Number(surface.style.transform.match(/scale\(([^)]+)\)/)[1])*390-12000)<.001);const tiles=f.document.querySelectorAll('.native-tiles img');assert.ok(tiles.length>0&&tiles.length<=56);for(const image of tiles)assert.match(image.src,/\/tiles\/14\//);f.run('StudioZoom.fit()');assert.equal(f.document.querySelector('.slide img').style.width,'390px');assert.equal(f.document.querySelectorAll('.native-tiles img').length,0);});
 
@@ -188,6 +271,19 @@ test('progressive preview keeps its thumbnail until the high-resolution image ha
  const f=await fixture(),loads=previewLoads(f);f.run('openViewer("asset","recent")');const image=f.document.querySelector('.slide[data-o="0"] img');
  assert.equal(image.getAttribute('src'),baseAsset.thumbnail);await previewTick();assert.equal(image.getAttribute('src'),baseAsset.thumbnail);
  loads[0].resolve();await previewTick();assert.equal(image.getAttribute('src'),baseAsset.preview);
+});
+
+test('a high-resolution preview clears the slide loading state while zoomed',async()=>{
+ const f=await fixture(),loads=previewLoads(f);
+ f.run('openViewer("asset","recent");StudioZoom.toggleNative()');
+ await previewTick();
+ const slide=f.document.querySelector('.slide[data-o="0"]');
+ assert.ok(slide.querySelector('.zoom-plane img'));
+ assert.equal(slide.dataset.loading,'1');
+ loads[0].resolve();
+ await previewTick();
+ assert.equal(slide.dataset.loading,'0');
+ assert.equal(slide.querySelector('.zoom-plane img').getAttribute('src'),baseAsset.preview);
 });
 
 test('a failed preview decode preserves the working thumbnail',async()=>{

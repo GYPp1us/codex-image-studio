@@ -21,10 +21,8 @@ const StudioChrome=(()=>{
     const x=app.getBoundingClientRect().left+app.clientWidth/2;
     // Include fading-out layers even after pointer events have been disabled.
     const surfaces=[document.querySelector('#tabbar'),...document.querySelectorAll('#screens .screen,#layers .scrim,#layers .sheet')].filter(Boolean);
-    surfaces.sort((a,b)=>{
-      const z=el=>+(getComputedStyle(el.closest('#layers,#screens')||el).zIndex)||0;
-      return z(a)-z(b);
-    });
+    const z=el=>el.id==='tabbar'?-1:Number(getComputedStyle(el.closest('.sheet-layer,.screen')||el).zIndex)||0;
+    surfaces.sort((a,b)=>z(a)-z(b));
     for(const el of surfaces){
       const rect=el.getBoundingClientRect();if(x<rect.left||x>rect.right||y<rect.top||y>rect.bottom)continue;
       let opacity=1,visible=true;

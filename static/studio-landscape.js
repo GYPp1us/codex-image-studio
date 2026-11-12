@@ -45,7 +45,7 @@ const StudioLandscape=(()=>{
     parameters();overview();for(const screen of $$('#screens .screen'))settingsNavigation(screen);
   }
   function schedule(){if(frame)return;frame=requestAnimationFrame(()=>{frame=0;refresh();});}
-  media.addEventListener?.('change',()=>{StudioReferences.cancel();lpCancel();cancelViewerDrag();selCancel();schedule();});
+  media.addEventListener?.('change',()=>{StudioReferences.cancel();lpCancel();cancelViewerDrag(true);selCancel();syncSurfaces();syncViewerControls();schedule();});
   addEventListener('resize',schedule);
   new MutationObserver(records=>{for(const record of records){for(const node of record.addedNodes)if(node.nodeType===1&&node.matches?.('.screen.settings'))settingsNavigation(node);for(const node of record.removedNodes)if(node.nodeType===1)settingsObservers.get(node)?.disconnect();}}).observe($('#screens'),{childList:true});
   schedule();return {wide,fit,viewport,refresh,parameters};
