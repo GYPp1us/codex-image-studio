@@ -171,6 +171,8 @@ def initialize():
                 c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
         if "progress_detail" not in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}:
             c.execute("ALTER TABLE jobs ADD COLUMN progress_detail TEXT NOT NULL DEFAULT '{}'")
+        if "history_deleted" not in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}:
+            c.execute("ALTER TABLE jobs ADD COLUMN history_deleted INTEGER NOT NULL DEFAULT 0")
         for table in ('jobs','attempts'):
             columns={r[1] for r in c.execute(f'PRAGMA table_info({table})')}
             for name,definition in (('polished_prompt',"TEXT NOT NULL DEFAULT ''"),('polish_source',"TEXT NOT NULL DEFAULT ''")):
@@ -447,7 +449,7 @@ def change_password(body: dict, request: Request, session=Depends(require_user))
 
 @app.get("/api/state")
 def state(session=Depends(require_user)):
-    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "calls":CALL_POOL.snapshot() if CALL_POOL else {"active":0,"waiting":0}, "counts": query("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"], 'storage':STORAGE.usage(), 'preferences':preferences(sys.modules[__name__])}
+    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "calls":CALL_POOL.snapshot() if CALL_POOL else {"active":0,"waiting":0}, "counts": query("SELECT status,COUNT(*) AS count FROM jobs WHERE history_deleted=0 GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"], 'storage':STORAGE.usage(), 'preferences':preferences(sys.modules[__name__])}
 
 
 @app.get("/api/account")
@@ -1160,7 +1162,7 @@ async def probe(session=Depends(require_user)):
 
 @app.get("/api/jobs")
 def list_jobs(status: str = "", collection: str = "", limit: int = 50, offset: int = 0, session=Depends(require_user)):
-    clauses, args = [], []
+    clauses, args = ["history_deleted=0"], []
     if status:
         clauses.append("status=?")
         args.append(status)
@@ -1290,7 +1292,7 @@ async def retry_job(jid: str, session=Depends(require_user)):
                     if state:stage.update(progress=state,status=state['status'])
                 manifest.update(status='queued');manifest.pop('error',None)
                 save_json(root_for(sys.modules[__name__],jid)/'progressive.json',manifest)
-        write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail=? WHERE id=?", (json.dumps(options),json.dumps(detail),jid))
+        write("UPDATE jobs SET status='queued',history_deleted=0,options=?,attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail=? WHERE id=?", (json.dumps(options),json.dumps(detail),jid))
         WAKE.set()
         return {"ok": True}
 

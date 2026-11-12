@@ -27,6 +27,7 @@ const P={
   imgplus:'<path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/><path d="M16 5h6M19 2v6"/><path d="M21 16l-5-5L5 21"/><circle cx="9" cy="9" r="2"/>',
   refresh:'<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 21v-5h-5"/>',
   select:'<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M9 12h6M12 9v6"/>',
+  expand:'<path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4"/>',
   grid:'<rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 16v-4.5M12 8h.01"/>',
   more:'<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>',
@@ -93,10 +94,37 @@ function multiLabel(t){const m=t.multi,n=m.parts.length,done=m.parts.filter(x=>x
 const taskBar=t=>t.status==='done'?'':t.up?StudioProgress.short(t,40):segBar(units(t),40);
 const taskLabel=t=>t.multi?multiLabel(t):t.up?upLabel(t):t.status==="running"?(t.raw?.progress?.label||STAGE[t.stage]):t.status==="queued"?(S.paused?"调度已暂停":"等待调度"):"";
 /* ================= history / layers ================= */
-const layers=[];let waiters=[];
+const layers=[];let waiters=[],surfaceOrder=0;
 history.replaceState({depth:0},"");
-function pushLayer(type,close){layers.push({type,close});history.pushState({depth:layers.length},"");}
-addEventListener("popstate",e=>{const depth=e.state?.depth||0;while(layers.length>depth){layers.pop().close();}const w=waiters;waiters=[];w.forEach(f=>f());});
+const currentSurface=()=>layers.findLast(layer=>layer.surface);
+function syncSurfaces(){
+  const top=currentSurface();
+  const rail=top?.type==="screen"&&!top.surface.classList.contains("over-viewer")&&typeof StudioLandscape!=="undefined"&&StudioLandscape.wide();
+  for(const layer of layers){if(layer.surface)layer.surface.inert=layer!==top;}
+  $("#page").inert=!!top&&!(rail&&top.surface.classList.contains("template-inspector"));
+  $("#tabbar").inert=!!top&&!rail;
+}
+function pushLayer(type,close,surface=null){
+  if(surface){
+    pageTransition?.skipTransition?.();
+    if(typeof StudioReferences!=="undefined")StudioReferences.cancel();
+    if(typeof StudioQuickSettings!=="undefined")StudioQuickSettings.cancel();
+    // Closing surfaces keep their old order until the animation ends.
+    surface.style.zIndex=String(++surfaceOrder);
+  }
+  layers.push({type,close,surface});history.pushState({depth:layers.length},"");
+  syncSurfaces();
+}
+addEventListener("popstate",e=>{
+  const depth=e.state?.depth||0;
+  while(layers.length>depth){
+    const layer=layers.pop();
+    if(layer.surface)layer.surface.inert=true;
+    syncSurfaces();
+    layer.close();
+  }
+  const w=waiters;waiters=[];w.forEach(f=>f());
+});
 let historyQueue=Promise.resolve();
 function traverseHistory(count){historyQueue=historyQueue.then(()=>new Promise(resolve=>{const k=count();if(!k)return resolve();waiters.push(resolve);history.go(-k);}));return historyQueue;}
 function back(){return traverseHistory(()=>layers.length?1:0);}
@@ -121,11 +149,16 @@ function syncList(box,items,key,html){
 }
 
 /* ================= view transitions ================= */
+let pageTransition=null;
 function vt(kind,fn){
-  if(RM||!document.startViewTransition){fn();return Promise.resolve();}
+  pageTransition?.skipTransition?.();
+  if(RM||!document.startViewTransition||$("#overlays .screen,#overlays .sheet-layer,#viewer.open")){fn();return Promise.resolve();}
   document.documentElement.dataset.vt=kind;
-  const t=document.startViewTransition(fn);
-  return t.finished.catch(()=>{}).finally(()=>{if(document.documentElement.dataset.vt===kind)delete document.documentElement.dataset.vt;});
+  const transition=document.startViewTransition(fn);
+  pageTransition=transition;
+  return transition.finished.catch(()=>{}).finally(()=>{
+    if(pageTransition===transition){pageTransition=null;delete document.documentElement.dataset.vt;}
+  });
 }
 
 /* ================= render ================= */
@@ -190,9 +223,9 @@ function updateUpCreate(){
 function genHTML(){const c=S.composer;return `${topBar("创作",modeSeg())}
 <div class="scroll" id="scroll">
   <section class="card" id="prompt-card">
-    <div class="card-head"><span class="label">提示词</span><span class="grow"></span><button class="clear-btn off" id="clear-btn" data-act="clear-all" aria-label="清空提示词与参考图">${icon("x",14)}清空</button><button class="ghost-btn" data-act="tpl-menu">${icon("book",16)}模板${icon("chevd",14)}</button></div>
+    <div class="card-head prompt-head"><label class="label" for="prompt">提示词</label><button class="icon-btn prompt-expand" data-act="prompt-full" aria-label="全屏编辑提示词">${icon("expand",17)}</button><span class="grow"></span><button class="clear-btn off" id="clear-btn" data-act="clear-all" aria-label="清空提示词与参考图">${icon("x",14)}清空</button><div id="into"></div></div>
+    <div id="template-warning"></div>
     <textarea id="prompt" placeholder="描述你想要的画面…" maxlength="24000">${esc(c.prompt)}</textarea>
-    <div id="into"></div>
   </section>
   <section class="card">
     <div class="card-head"><span class="label">参考图</span><span class="muted small" id="ref-count"></span></div>
@@ -210,10 +243,27 @@ function bigrams(s){s=s.replace(/[\s，。,.、·]/g,"");const o=new Set();for(l
 function similarity(a,b){const A=bigrams(a),B=bigrams(b);if(!A.size||!B.size)return 1;let n=0;A.forEach(x=>B.has(x)&&n++);return n/Math.min(A.size,B.size);}
 function updateInto(){
   const c=S.composer,t=tpl(c.template),box=$("#into");if(!box)return;
-  const cn=t?(S.collections.find(x=>x.template===t.id)?.name||t.name):null;
+  const name=t?(S.collections.find(x=>x.template===t.id)?.name||t.name):"模板读取中";
   const div=t&&!c.ack&&c.prompt.trim().length>4&&similarity(c.prompt,t.text)<.25;
-  const h=`<div class="file-into"><span>${icon("folder",14)}归入</span>${t||c.template?`<span class="into-chip" id="into-chip"><span class="t">${t?esc(cn):'模板读取中'}</span><button data-act="detach" aria-label="解除模板">${icon("x",14)}</button></span>`:`<span class="into-chip none">无模板</span>`}</div>${div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:""}`;
-  if(box.dataset.h!==h){box.innerHTML=h;box.dataset.h=h;}
+  setHTML(box,c.template?`<span class="into-chip" id="into-chip"><button class="into-choose" data-act="tpl-menu" aria-label="归入 ${esc(name)}，选择模板">${icon("folder",14)}<span class="into-prefix">归入</span><span class="t">${esc(name)}</span></button><button class="into-detach" data-act="detach" aria-label="解除模板">${icon("x",15)}</button></span>`:`<button class="ghost-btn" data-act="tpl-menu">${icon("book",16)}模板${icon("chevd",14)}</button>`);
+  setHTML($("#template-warning"),div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:"");
+}
+
+function openComposerPrompt(trigger){
+  const screen=openScreen(`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon("back")}</button><h1>编辑提示词</h1><span class="grow"></span><button class="pill-btn strong" data-act="scr-back">完成</button></header><div class="prompt-editor-body"><textarea aria-label="提示词" maxlength="24000" placeholder="描述你想要的画面…">${esc(S.composer.prompt)}</textarea></div>`,{
+    cls:"composer-prompt-editor",onClose:()=>{trigger?.focus({preventScroll:true});StudioService.saveDraft();}
+  });
+  const editor=$("textarea",screen),draft=$("#prompt");
+  if(draft){editor.selectionStart=draft.selectionStart;editor.selectionEnd=draft.selectionEnd;}
+  editor.addEventListener("input",()=>{
+    S.composer.prompt=editor.value;
+    if(draft?.isConnected)draft.value=editor.value;
+    updateInto();
+    $("#clear-btn")?.classList.toggle("off",!(editor.value.trim()||S.composer.refs.length||S.composer.template));
+    StudioService.saveDraft();
+  });
+  editor.focus({preventScroll:true});
+  return screen;
 }
 function updateCreate(){
   if(S.mode==="up")return updateUpCreate();
@@ -276,19 +326,27 @@ const legacyStagesHTML=t=>t.status==='done'?'':`<span class="stages" data-st="${
 function stagesHTML(t){const steps=t.raw?.progress?.steps;if(!steps?.length)return legacyStagesHTML(t);if(t.status==='done')return '';return `<span class="generation-stages" aria-label="${esc(t.raw.progress.label||'任务阶段')}">${steps.map(step=>`<i data-state="${step.state}" title="${esc(step.label)}"></i>`).join('')}</span>`;}
 function bstate(b){const st=b.tasks.map(t=>t.status);return{active:st.some(s=>s==="queued"||s==="running"),failed:st.filter(s=>s==="failed").length,done:st.filter(s=>s==="done").length,n:st.length};}
 const bfilter=(b,f)=>{const s=bstate(b);return f==="active"?s.active:f==="failed"?!s.active&&s.failed>0:!s.active&&!s.failed;};
+const terminalHistory=t=>["done","failed","cancelled"].includes(t.status);
+const historyBatch=b=>b.tasks.every(terminalHistory)?` data-history-batch="${esc(b.id)}" aria-description="长按或按 Shift+F10 删除记录"`:"";
+const historyTask=t=>terminalHistory(t)?` data-history-job="${esc(t.id)}" tabindex="0" aria-description="长按或按 Shift+F10 删除记录"`:"";
 function chainedBatchHTML(b){
   const open=S.expanded.has(b.id),s=bstate(b),collection=coll(b.coll),parents=b.tasks.filter(t=>!t.raw?.options.parent_job_id);
+  const parentIds=new Set(parents.map(task=>task.id));
+  const orphans=b.tasks.filter(task=>task.raw?.options.parent_job_id&&!parentIds.has(task.raw.options.parent_job_id));
   const chains=parents.map(parent=>({parent,child:b.tasks.find(t=>t.raw?.options.parent_job_id===parent.id)}));
-  const generationDone=parents.filter(t=>t.status==='done').length,upDone=chains.filter(x=>x.child?.status==='done').length,upRunning=chains.filter(x=>x.child?.status==='running').length,upQueued=chains.filter(x=>x.child?.status==='queued').length,upFailed=chains.filter(x=>x.child?.status==='failed').length;
-  const summary=[`${generationDone}/${parents.length} 张原图完成`,upDone&&`${upDone} 项超分完成`,upRunning&&`${upRunning} 项超分进行中`,upQueued&&`${upQueued} 项超分等待`,upFailed&&`${upFailed} 项超分失败`].filter(Boolean).join(' · ');
+  const upscale=b.tasks.filter(t=>t.raw?.options.parent_job_id);
+  const generationDone=parents.filter(t=>t.status==='done').length,upDone=upscale.filter(t=>t.status==='done').length,upRunning=upscale.filter(t=>t.status==='running').length,upQueued=upscale.filter(t=>t.status==='queued').length,upFailed=upscale.filter(t=>t.status==='failed').length;
+  const summary=[parents.length&&`${generationDone}/${parents.length} 张原图完成`,upDone&&`${upDone} 项超分完成`,upRunning&&`${upRunning} 项超分进行中`,upQueued&&`${upQueued} 项超分等待`,upFailed&&`${upFailed} 项超分失败`].filter(Boolean).join(' · ');
   const thumbnail=b.tasks.find(t=>t.up&&t.img&&img(t.img))||parents.find(t=>t.img&&img(t.img));
-  const bars=chains.flatMap(({parent,child})=>[parent,child?{status:child.status,stage:child.up?Math.min(3,Math.floor((child.raw.progress?.fraction||0)*4)):child.stage}:{status:'queued',stage:0}]);
-  const line=(task,label,index)=>`<div class="trow"><span class="n" aria-hidden="true">${index}</span><span class="chain-step">${label}</span>${task.up?StudioProgress.short(task,40):stagesHTML(task)}<button class="link-btn" data-act="task-info" data-id="${task.id}">详情</button><span class="lbl${task.status==='failed'?' err':''}">${esc(task.status==='done'?'已完成':task.status==='failed'?task.err||task.raw?.progress?.label||'超分失败':task.raw?.progress?.label||taskLabel(task)||task.status)}</span>${task.status==='done'&&img(task.img)?`<button class="link-btn" data-act="img" data-id="${task.img}" data-list="batch:${b.id}">查看</button>`:task.status==='failed'?`<button class="link-btn" data-act="${task.raw?.options.stitch?'failure-job':'retry-task'}" data-id="${task.id}" data-b="${b.id}" data-t="${task.id}">${task.raw?.options.stitch?'处理':'重试'}</button>`:''}</div>`;
-  const rows=chains.map(({parent,child},i)=>`<section class="task-chain">${line(parent,'原图生成',i+1)}${child?`${line(child,`${child.raw.options.stitch}× 超分`,'↳')}${open&&child.up?StudioProgress.html(child,{all:true,key:'chain'}):''}`:`<p class="chain-dependent">${parent.status==='done'?'正在同步后续超分任务':'原图完成后建立超分任务'}</p>`}</section>`).join('');
-  return `<article class="batch chained-batch${open?' open':''}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"><span class="b-thumb">${thumbnail?`<img src="${src(img(thumbnail.img))}" alt="">`:icon('layers',20)}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">生成 → 超分</span>${esc(b.prompt)}</span><span class="b-meta">${parents.length} 张原图 · 归入 ${esc(collection?.name||'—')} · ${fmtTime(b.created)}</span><span class="b-status col">${s.active||s.failed?segBar(bars):''}<span class="b-sum">${summary}</span></span></span><span class="chev">${icon('chevd',18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">取消未完成</button>`:''}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败阶段</button>`:''}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
+  const bars=b.tasks.map(task=>task.up?{status:task.status,stage:Math.min(3,Math.floor((task.raw.progress?.fraction||0)*4))}:task);
+  const line=(task,label,index)=>`<div class="trow"${historyTask(task)}><span class="n" aria-hidden="true">${index}</span><span class="chain-step">${label}</span>${task.up?StudioProgress.short(task,40):stagesHTML(task)}<button class="link-btn" data-act="task-info" data-id="${task.id}">详情</button><span class="lbl${task.status==='failed'?' err':''}">${esc(task.status==='done'?'已完成':task.status==='failed'?task.err||task.raw?.progress?.label||'超分失败':task.raw?.progress?.label||taskLabel(task)||task.status)}</span>${task.status==='done'&&img(task.img)?`<button class="link-btn" data-act="img" data-id="${task.img}" data-list="batch:${b.id}">查看</button>`:task.status==='failed'?`<button class="link-btn" data-act="${task.raw?.options.stitch?'failure-job':'retry-task'}" data-id="${task.id}" data-b="${b.id}" data-t="${task.id}">${task.raw?.options.stitch?'处理':'重试'}</button>`:''}</div>`;
+  const upscaleLine=(task,index)=>line(task,`${task.raw.options.stitch}× 超分`,index)+(open&&task.up?StudioProgress.html(task,{all:true,key:'chain'}):'');
+  const rows=chains.map(({parent,child},i)=>`<section class="task-chain">${line(parent,'原图生成',i+1)}${child?upscaleLine(child,'↳'):parent.raw?.options.after_upscale&&!parent.raw.options.after_upscale_job_id?`<p class="chain-dependent">${parent.status==='done'?'正在同步后续超分任务':'原图完成后建立超分任务'}</p>`:''}</section>`).join('')
+    +orphans.map((task,i)=>`<section class="task-chain">${upscaleLine(task,parents.length+i+1)}</section>`).join('');
+  return `<article class="batch chained-batch${open?' open':''}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"${historyBatch(b)}><span class="b-thumb">${thumbnail?`<img src="${src(img(thumbnail.img))}" alt="">`:icon('layers',20)}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">生成 → 超分</span>${esc(b.prompt)}</span><span class="b-meta">${parents.length} 张原图 · 归入 ${esc(collection?.name||'—')} · ${fmtTime(b.created)}</span><span class="b-status col">${s.active||s.failed?segBar(bars):''}<span class="b-sum">${summary}</span></span></span><span class="chev">${icon('chevd',18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">取消未完成</button>`:''}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败阶段</button>`:''}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
 }
 function batchHTML(b){
-  if(b.tasks.some(t=>t.raw?.options.after_upscale||t.raw?.options.parent_job_id))return chainedBatchHTML(b);
+  if(b.tasks.some(t=>t.raw?.options.after_upscale)||b.tasks.some(t=>t.raw?.options.parent_job_id)&&b.tasks.some(t=>!t.raw?.options.stitch))return chainedBatchHTML(b);
   if(b.kind==="upscale"&&b.tasks.length===1&&b.tasks[0].up)return upBatchHTML(b);
   const s=bstate(b),c=coll(b.coll),open=S.expanded.has(b.id),thumb=b.tasks.find(t=>t.img&&img(t.img)),t0=b.tasks[0],m=t0.multi;
   const cnt=k=>b.tasks.filter(t=>t.status===k).length,run=b.tasks.filter(t=>t.status==='running'&&!t.waitingForSlot).length,q=b.tasks.filter(t=>t.status==='queued'||t.waitingForSlot).length;
@@ -298,10 +356,10 @@ function batchHTML(b){
       +(t0.status==="done"&&img(t0.img)?`<div class="trow"><span class="n"></span><span class="lbl">已合成为一张新图，选区外像素保持原图</span><button class="link-btn" data-act="img" data-id="${t0.img}" data-list="batch:${b.id}">查看</button></div>`:m.phase==="merge"?`<div class="trow"><span class="n"></span><span class="spin"></span><span class="lbl">合成中：只替换各选区内像素</span></div>`:"")
     :b.tasks.map((t,i)=>{const lbl=t.status==="queued"?"等待调度":t.status==="running"?(t.raw?.progress?.label||STAGE[t.stage]):t.status==="done"?"完成":t.status==="failed"?`失败 · ${t.err}`:"已取消";
       const a=t.status==="queued"||t.status==="running"?`<button class="link-btn danger" data-act="cancel-task" data-b="${b.id}" data-t="${t.id}">取消</button>`:t.status==="failed"?`<button class="link-btn" data-act="${t.raw?.options.stitch?"failure-job":"retry-task"}" data-id="${t.id}" data-b="${b.id}" data-t="${t.id}">${t.raw?.options.stitch?"处理":"重试"}</button>`:t.status==="done"&&img(t.img)?`<button class="link-btn" data-act="img" data-id="${t.img}" data-list="batch:${b.id}">查看</button>`:"";
-      return `<div class="trow"><span class="n" aria-hidden="true">#${i+1}</span>${stagesHTML(t)}<span class="lbl${t.status==="failed"?" err":""}">${esc(lbl)}</span><button class="link-btn" data-act="task-info" data-id="${t.id}">详情</button>${a}</div>`;}).join("");
+      return `<div class="trow"${historyTask(t)}><span class="n" aria-hidden="true">#${i+1}</span>${stagesHTML(t)}<span class="lbl${t.status==="failed"?" err":""}">${esc(lbl)}</span><button class="link-btn" data-act="task-info" data-id="${t.id}">详情</button>${a}</div>`;}).join("");
   const bars=m?m.parts.map(x=>({status:x.state,stage:x.stage})):b.tasks;
   const thumbSrc=thumb?src(img(thumb.img)):srcIm?src(srcIm):null;
-  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"><span class="b-thumb">${thumbSrc?`<img src="${thumbSrc}" alt="">`:icon(s.active?"clock":"alert",20)}</span><span class="b-text"><span class="b-prompt"><span class="kind ${b.kind}">${KIND[b.kind]}${m&&m.parts.length>1?` ×${m.parts.length}`:""}</span>${esc(b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${b.ratio} · ${b.tasks.length>1?b.tasks.length+" 张 · ":""}${fmtTime(b.created)}</span><span class="b-status col">${s.active||s.failed?segBar(bars):""}<span class="b-sum">${sum}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${m?`<button class="pill-btn" data-act="task-info" data-id="${t0.id}">详情</button>`:""}${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">${b.tasks.length>1?"全部取消":"取消"}</button>`:""}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败</button>`:""}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
+  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"${historyBatch(b)}><span class="b-thumb">${thumbSrc?`<img src="${thumbSrc}" alt="">`:icon(s.active?"clock":"alert",20)}</span><span class="b-text"><span class="b-prompt"><span class="kind ${b.kind}">${KIND[b.kind]}${m&&m.parts.length>1?` ×${m.parts.length}`:""}</span>${esc(b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${b.ratio} · ${b.tasks.length>1?b.tasks.length+" 张 · ":""}${fmtTime(b.created)}</span><span class="b-status col">${s.active||s.failed?segBar(bars):""}<span class="b-sum">${sum}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div>${rows}<div class="b-actions">${m?`<button class="pill-btn" data-act="task-info" data-id="${t0.id}">详情</button>`:""}${s.active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">${b.tasks.length>1?"全部取消":"取消"}</button>`:""}${s.failed?`<button class="pill-btn" data-act="retry-batch" data-id="${b.id}">重试失败</button>`:""}<button class="pill-btn" data-act="open-coll" data-id="${b.coll}">打开列表</button></div></div></div></article>`;
 }
 function upBatchHTML(b){
   const t=b.tasks[0],u=t.up,c=coll(b.coll),open=S.expanded.has(b.id),srcIm=img(u.src),done=t.img&&img(t.img);
@@ -310,7 +368,7 @@ function upBatchHTML(b){
   const acts=(active?`<button class="pill-btn" data-act="cancel-batch" data-id="${b.id}">取消</button>`:"")
     +(t.status==="failed"?`<button class="pill-btn strong" data-act="failure" data-id="${b.id}">失败处理</button>`:"")
     +(done?`<button class="pill-btn" data-act="img" data-id="${t.img}" data-list="batch:${b.id}">查看结果</button>`:"");
-  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"><span class="b-thumb">${srcIm?`<img src="${src(done?img(t.img):srcIm)}" alt="">`:""}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">${KIND.upscale} ${u.factor}</span>${esc(srcIm?.name||b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${u.levels.length} 级 · ${fmtTime(b.created)}</span><span class="b-status col up">${StudioProgress.short(t)}<span class="b-sum"${t.status==="failed"?' data-layout="color:var(--red)"':""}>${upLabel(t)}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div><div class="up-detail"><span class="up-levels">${lv}</span>${open?StudioProgress.html(t,{all:true}):""}</div>${t.status==="failed"&&t.err?`<p class="err-sum">${esc(t.err)}</p>`:""}<div class="b-actions"><button class="pill-btn" data-act="task-info" data-id="${t.id}">详情</button>${acts}</div></div></div></article>`;
+  return `<article class="batch${open?" open":""}" data-id="${b.id}"><button class="b-main" data-act="bt" data-id="${b.id}"${historyBatch(b)}><span class="b-thumb">${srcIm?`<img src="${src(done?img(t.img):srcIm)}" alt="">`:""}</span><span class="b-text"><span class="b-prompt"><span class="kind upscale">${KIND.upscale} ${u.factor}</span>${esc(srcIm?.name||b.prompt)}</span><span class="b-meta">归入 ${esc(c?.name||"—")} · ${u.levels.length} 级 · ${fmtTime(b.created)}</span><span class="b-status col up">${StudioProgress.short(t)}<span class="b-sum"${t.status==="failed"?' data-layout="color:var(--red)"':""}>${upLabel(t)}</span></span></span><span class="chev">${icon("chevd",18)}</span></button><div class="b-more"><div><div class="up-detail"><span class="up-levels">${lv}</span>${open?StudioProgress.html(t,{all:true}):""}</div>${t.status==="failed"&&t.err?`<p class="err-sum">${esc(t.err)}</p>`:""}<div class="b-actions"><button class="pill-btn" data-act="task-info" data-id="${t.id}">详情</button>${acts}</div></div></div></article>`;
 }
 function updateQueue(){
   const counts={active:0,done:0,failed:0};S.batches.forEach(b=>["active","done","failed"].forEach(f=>bfilter(b,f)&&counts[f]++));
@@ -328,12 +386,12 @@ function updateQueue(){
 function tplsHTML(){return `${topBar("模板",`<button class="ghost-btn" data-act="tpl-new">${icon("plus",16)}新建</button>`)}<div class="scroll"><div id="tpls"></div></div>`;}
 function updateTpls(){
   syncList($("#tpls"),S.templates,t=>t.id,t=>{const c=S.collections.find(x=>x.template===t.id),ims=c?imagesOf(c.id):[];
-    return `<button class="tpl${S.templateFocus===t.id?" inspected":""}" data-act="tpl" data-id="${t.id}"><span class="tpl-cover">${ims[0]?`<img src="${src(ims[0])}" alt="">`:""}</span><span class="tpl-body"><b>${esc(t.name)}</b><span class="ex">${esc(t.text)}</span><span class="chips"><span class="chip">${t.ratio}</span><span class="chip">${t.refs} 张参考</span><span class="chip">${c?.image_count??ims.length} 张作品</span></span></span></button>`;});
+    return `<button class="tpl${S.templateFocus===t.id?" inspected":""}" data-act="tpl" data-id="${t.id}"><span class="tpl-cover">${ims[0]?`<img src="${src(ims[0])}" alt="">`:""}</span><span class="tpl-body"><b>${esc(t.name)}</b><span class="ex">${esc(t.text)}</span><span class="chips"><span class="chip">${t.refs} 张参考</span><span class="chip">${c?.image_count??ims.length} 张作品</span></span></span></button>`;});
 }
 
 /* ================= navigation ================= */
 function go(tab){
-  if(typeof StudioSelection!=='undefined'&&StudioSelection.active())return StudioSelection.leave().then(()=>go(tab));
+  if(layers.length&&layers.at(-1).type!=="coll")return closeOverlays().then(()=>go(tab));
   if(tab===S.tab){if(tab==="works"&&S.coll)back();else $("#page .scroll")?.scrollTo({top:0,behavior:RM?"auto":"smooth"});return Promise.resolve();}
   return vt("tab",()=>{S.tab=tab;renderPage();});
 }
@@ -366,7 +424,7 @@ function openSheet({title,html,cls="",onMount,stack=false}){
   scr.animate([{opacity:0},{opacity:1}],{duration:D(220),easing:E.std});
   const wide=typeof StudioLandscape!=='undefined'&&StudioLandscape.wide();
   sh.animate(wide?[{opacity:0,transform:'translateX(24px) scale(.98)'},{opacity:1,transform:'none'}]:[{transform:"translateY(100%)"},{transform:"translateY(0)"}],{duration:D(wide?280:360),easing:E.emph});
-  dragDismiss(L);pushLayer("sheet",()=>dismissSheet(L));onMount&&onMount(L);placeToast();return L;
+  dragDismiss(L);pushLayer("sheet",()=>dismissSheet(L),L);onMount&&onMount(L);placeToast();return L;
 }
 function dismissSheet(L){
   L.cleanup?.();L.cleanup=null;L.onclick=null;const sh=$(".sheet",L),scr=$(".scrim",L),y=parseFloat(L.dataset.y||0);L.style.pointerEvents="none";
@@ -404,8 +462,8 @@ function toast(msg,o={}){
   if(o.action)el.querySelector("button").onclick=()=>{clearTimeout(toastT);el.remove();o.run();};
   clearTimeout(toastT);toastT=setTimeout(hide,o.ms||3400);placeToast();
 }
-function placeToast(){const t=$("#toast"),sheet=topSheet(),scr=typeof topScreen==="function"&&topScreen();
-  if(scr&&!sheet){t.style.top="auto";t.style.bottom=scr.classList.contains("fail-screen")?"128px":"24px";return;}
+function placeToast(){const t=$("#toast"),top=currentSurface(),sheet=top?.type==="sheet",scr=top?.type==="screen"&&top.surface;
+  if(scr){t.style.top="auto";t.style.bottom=scr.classList.contains("fail-screen")?"128px":"24px";return;}
   t.style.top=sheet?"calc(var(--safe-top) + 8px)":"auto";
   t.style.bottom=sheet?"auto":V.open?(vw.classList.contains("qe-on")?"108px":"236px"):S.tab==="create"?(app.classList.contains("typing")?"84px":$("#bp")&&!$("#bp").classList.contains("hide")?"calc(var(--tab-h) + 128px)":"calc(var(--tab-h) + 88px)"):"calc(var(--tab-h) + 12px)";}
 
@@ -430,7 +488,17 @@ function flyDot(fromEl,toEl){
 /* ================= viewer ================= */
 const V={gen:0,open:false,list:[],i:0,redraw:false,sel:null,bgAnim:null,hidden:null};
 const vw=$("#viewer"),track=$("#v-track"),stage=$("#v-stage"),vbg=$(".v-bg",vw);
-function releaseReferenceOwners(){for(const [element,inert] of V.referenceOwners||[])element.inert=inert;V.referenceOwners=null;}
+const viewerHeader=$(".v-top",vw),viewerActions=$(".v-actions",vw),viewerQuick=$(".v-quick",vw),viewerRedraw=$(".v-redraw",vw);
+const viewerMenuButtons=$$(".v-info,.v-more",viewerHeader),viewerReferenceActions=$(".v-reference-actions",vw);
+function syncViewerControls(){
+  const hidden=vw.classList.contains("chrome-off"),redraw=vw.classList.contains("redraw");
+  viewerHeader.inert=hidden;
+  viewerActions.inert=viewerQuick.inert=hidden||redraw;
+  viewerRedraw.inert=!redraw;
+  for(const button of viewerMenuButtons)button.inert=redraw;
+  viewerReferenceActions.inert=hidden&&!(typeof StudioLandscape!=="undefined"&&StudioLandscape.wide());
+}
+new MutationObserver(syncViewerControls).observe(vw,{attributes:true,attributeFilter:["class"]});
 function listFor(kind,id){
   if(kind==="references"||kind==="favorites")return StudioService.workItems(kind).map(i=>i.id);
   if(kind==="recent")return S.images.slice(0,10).map(i=>i.id);
@@ -457,13 +525,18 @@ function fitRect(im){if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wi
 // The grid thumbnail is already decoded, so it paints on the first frame; the preview replaces it
 // only once fully decoded, so open, swipe and the fly handoff never show a blank or half-drawn slide.
 const previewRequests=new WeakMap(),livePreviews=new Set();
-function cancelPreview(image,paused=false){const job=previewRequests.get(image);if(!job)return;job.active=false;clearTimeout(job.timer);job.loader.onload=job.loader.onerror=null;job.loader.removeAttribute?.('src');livePreviews.delete(image);if(paused&&image.dataset.loading==='1'){image.dataset.loading='paused';image.parentElement?.setAttribute('data-loading','paused');image.setAttribute('aria-busy','false');}}
+function setPreviewState(image,value){
+  image.dataset.loading=value;
+  const slide=image.closest('.slide');if(slide)slide.dataset.loading=value;
+  image.setAttribute('aria-busy',String(value==='1'));
+}
+function cancelPreview(image,paused=false){const job=previewRequests.get(image);if(!job)return;job.active=false;clearTimeout(job.timer);job.loader.onload=job.loader.onerror=null;job.loader.removeAttribute?.('src');livePreviews.delete(image);if(paused&&image.dataset.loading==='1')setPreviewState(image,'paused');}
 function suspendViewerImages(){for(const image of [...livePreviews])cancelPreview(image,true);}
 function resumeViewerImages(){if(!V.open)return;for(const slide of $$('.slide',track)){const image=$('img',slide),asset=img(slide.dataset.id);if(image&&asset&&['paused','error','1'].includes(image.dataset.loading))showProgressive(image,asset,slide.dataset.o==='0');}}
 function showProgressive(image,im,urgent){
   cancelPreview(image);
   const low=src(im),high=picture(im);
-  const status=value=>{image.dataset.loading=value;image.parentElement?.setAttribute('data-loading',value);image.setAttribute('aria-busy',value==='1'?'true':'false');};
+  const status=value=>setPreviewState(image,value);
   if(!high||typeof Image!=="function"){image.src=high||low;status('0');return;}
   image.src=low;image.dataset.want=high;status('1');
   const loader=new Image();loader.decoding="async";if("fetchPriority" in loader)loader.fetchPriority=urgent?"high":"low";
@@ -477,6 +550,7 @@ function showProgressive(image,im,urgent){
   if(canDecode){try{Promise.resolve(loader.decode()).then(swap,failed);}catch{failed();}}
 }
 function layoutSlides(){
+  clearViewerTap();
   if(typeof StudioZoom!=="undefined")StudioZoom.reset();
   track.style.transform="";
   const old=new Map($$(".slide",track).map(el=>[el.dataset.id,el]));
@@ -493,62 +567,74 @@ function layoutSlides(){
   updQuickMeta();
 }
 const curImg=()=>$('.slide[data-o="0"] img',track);
-const srcTile=id=>{const t=$(`#page .tile[data-id="${id}"]`);if(!t)return null;const s=t.closest(".scroll,.recent");const r=t.getBoundingClientRect(),a=$("#page .scroll").getBoundingClientRect();return r.bottom>a.top+4&&r.top<a.bottom-4&&r.right>a.left&&r.left<a.right?t:null;};
+const srcTile=id=>{const t=$(`#page .tile[data-id="${id}"]`),scroll=$("#page .scroll");if(!t||!scroll)return null;const r=t.getBoundingClientRect(),a=scroll.getBoundingClientRect();return r.bottom>a.top+4&&r.top<a.bottom-4&&r.right>a.left&&r.left<a.right?t:null;};
 function openViewer(id,listKind,opts={}){
-  if(V.open)return;V.gen++;V.reference=opts.reference?opts:null;V.list=opts.ids||listFor(listKind,id);V.i=Math.max(0,V.list.indexOf(id));V.open=true;
-  releaseReferenceOwners();if(V.reference){V.referenceOwners=$$('#page,#tabbar,#layers,#screens').map(el=>[el,el.inert]);for(const [el] of V.referenceOwners)el.inert=true;}
+  if(V.open||!img(id))return;
+  const owner=currentSurface(),generation=++V.gen,list=opts.ids||listFor(listKind,id);
+  V.reference=opts.reference?opts:null;V.list=list.includes(id)?list:[id];V.i=V.list.indexOf(id);V.open=true;
   vw.classList.toggle('reference-preview',!!V.reference);
   vw.classList.toggle('reference-readonly',!!V.reference&&!V.reference.onSelect);
   StudioChrome.enterViewer();
-  vw.classList.add("open");vw.classList.remove("chrome-off","redraw");app.classList.add("dark-sb");layoutSlides();
-  const cur=curImg(),tile=V.reference?null:srcTile(id),to=rectOf(cur);
+  vw.classList.add("open");vw.classList.remove("chrome-off","redraw","qe-on");app.classList.add("dark-sb");layoutSlides();
+  const cur=curImg(),tile=V.reference||owner?null:srcTile(id),to=rectOf(cur);
   V.bgAnim?.cancel();vbg.style.opacity="0";
-  V.bgAnim=vbg.animate([{opacity:0},{opacity:1}],{duration:D(280),easing:E.std,fill:"forwards"});
-  V.bgAnim.finished.then(()=>{vbg.style.opacity="1";V.bgAnim?.cancel();V.bgAnim=null;}).catch(()=>{});
+  const background=V.bgAnim=vbg.animate([{opacity:0},{opacity:1}],{duration:D(280),easing:E.std,fill:"forwards"});
+  background.finished.then(()=>{if(V.bgAnim===background){vbg.style.opacity="1";background.cancel();V.bgAnim=null;}}).catch(()=>{});
   $$(".v-top,.v-actions",vw).forEach(e=>e.animate([{opacity:0},{opacity:1}],{duration:D(220),delay:D(160),fill:"backwards",easing:E.std}));
   if(tile&&!RM){const from=rectOf(tile);cur.style.visibility="hidden";tile.style.visibility="hidden";V.hidden=tile;
     fly(from,to,src(img(id)),380,12,3,vw).then(()=>{cur.style.visibility="";});}
   else cur.animate([{opacity:0,transform:"scale(.94)"},{opacity:1,transform:"none"}],{duration:D(260),easing:E.emph});
-  pushLayer("viewer",closeViewer);placeToast();
-  if(opts.redraw)setTimeout(enterRedraw,D(420));
+  pushLayer("viewer",closeViewer,vw);placeToast();
+  if(opts.redraw)setTimeout(()=>{if(V.open&&V.gen===generation&&currentSurface()?.surface===vw)enterRedraw();},D(420));
 }
 function closeViewer(){
-  if(!V.open)return;cancelViewerDrag();finishSlide?.();exitRedraw();suspendViewerImages();V.open=false;
+  if(!V.open)return;clearViewerTap();cancelViewerDrag();finishSlide?.();exitRedraw();suspendViewerImages();V.open=false;
   const id=V.list[V.i],cur=curImg(),zoomed=StudioZoom.isZoomed(),visual=StudioZoom.stop()||cur;if(V.hidden){V.hidden.style.visibility="";V.hidden=null;}
-  const tile=V.reference?null:srcTile(id),from=cur?rectOf(cur):null;
+  const tile=V.reference||currentSurface()?null:srcTile(id),from=cur?rectOf(cur):null;
   const op=getComputedStyle(vbg).opacity;V.bgAnim?.cancel();
   vbg.animate([{opacity:op},{opacity:0}],{duration:D(260),easing:E.std,fill:"forwards"});vbg.style.opacity="0";
   $$(".v-top,.v-actions",vw).forEach(e=>e.animate([{opacity:1},{opacity:0}],{duration:D(120),fill:"forwards"}).finished.then(a=>a.cancel()));
-  const g=V.gen,finish=()=>{if(V.gen!==g||V.open)return;releaseReferenceOwners();vw.classList.remove("open","reference-preview");V.reference=null;app.classList.remove("dark-sb");StudioChrome.leaveViewer();StudioZoom.reset();track.innerHTML="";placeToast();if($("#page .top")&&!topScreen())refresh();};
+  const g=V.gen,finish=()=>{if(V.gen!==g||V.open)return;vw.classList.remove("open","reference-preview");V.reference=null;app.classList.remove("dark-sb");StudioChrome.leaveViewer();StudioZoom.reset();track.innerHTML="";placeToast();if($("#page .top")&&!topScreen())refresh();};
   if(!zoomed&&tile&&from&&!RM){cur.style.visibility="hidden";tile.style.visibility="hidden";
     fly(from,rectOf(tile),src(img(id)),320,3,12,vw).then(()=>{tile.style.visibility="";finish();});}
   else if(visual)visual.animate(zoomed?[{opacity:1},{opacity:0}]:[{opacity:1,transform:visual.style.transform||"none"},{opacity:0,transform:"scale(.9)"}],{duration:D(220),easing:E.exit,fill:"forwards"}).finished.then(finish);
   else finish();
 }
 let finishSlide=null,viewerFrame=null,tapTimer=null,lastTap=null;
+function clearViewerTap(){clearTimeout(tapTimer);tapTimer=null;lastTap=null;}
 function viewerTap(e){
   const t=performance.now(),p={clientX:e.clientX,clientY:e.clientY};
-  if(lastTap&&t-lastTap.t<280&&Math.hypot(p.clientX-lastTap.clientX,p.clientY-lastTap.clientY)<32){clearTimeout(tapTimer);tapTimer=null;lastTap=null;StudioZoom.toggleAt(p);return;}
+  if(lastTap&&t-lastTap.t<280&&Math.hypot(p.clientX-lastTap.clientX,p.clientY-lastTap.clientY)<32){clearViewerTap();StudioZoom.toggleAt(p);return;}
   lastTap={...p,t};clearTimeout(tapTimer);
-  tapTimer=setTimeout(()=>{tapTimer=null;lastTap=null;if(V.open&&!V.redraw)vw.classList.toggle("chrome-off");},260);
+  tapTimer=setTimeout(()=>{clearViewerTap();if(V.open&&!V.redraw&&currentSurface()?.surface===vw)vw.classList.toggle("chrome-off");},260);
 }
 function slideTo(dir,dx=0,velocity=0){
-  const W=app.offsetWidth+20,target=-dir*W,generation=V.gen;
+  const W=stage.offsetWidth+20,target=-dir*W,generation=V.gen;
   const animation=track.animate([{transform:`translate3d(${dx}px,0,0)`},{transform:`translate3d(${target}px,0,0)`}],{duration:D(clamp(Math.abs(target-dx)/Math.max(1.4,Math.abs(velocity)),140,260)),easing:E.emph});
   track.style.transform=`translate3d(${target}px,0,0)`;
   const commit=()=>{if(finishSlide!==commit)return;finishSlide=null;animation.cancel();if(!V.open||V.gen!==generation)return;V.i+=dir;layoutSlides();};finishSlide=commit;animation.finished.then(commit,()=>{});
 }
 let drag=null;
-function cancelViewerDrag(){if(viewerFrame!==null)cancelAnimationFrame(viewerFrame);viewerFrame=null;drag=null;}
+function cancelViewerDrag(restore=false){
+  if(viewerFrame!==null)cancelAnimationFrame(viewerFrame);
+  viewerFrame=null;
+  const previous=drag;drag=null;
+  if(!restore||!previous)return;
+  if(previous.axis==="x")track.style.transform="";
+  if(previous.axis==="y"){
+    const image=curImg();if(image)image.style.transform="";
+    vbg.style.opacity="1";vw.classList.toggle("chrome-off",previous.chromeHidden);
+  }
+}
 function paintViewerDrag(){viewerFrame=null;if(!drag||!V.open||V.redraw)return;const d=drag;
   if(d.axis==="x")track.style.transform=`translate3d(${d.dx}px,0,0)`;
   else if(d.axis==="y"){const c=curImg();if(c)c.style.transform=`translate3d(${d.dx*.6}px,${d.dy}px,0) scale(${Math.max(.72,1-d.dy/1100)})`;vbg.style.opacity=String(1-Math.min(d.dy/420,.9));}
 }
-stage.addEventListener("pointerdown",e=>{if(!V.open||e.button>0)return;if(V.redraw){if(e.pointerType!=="touch")selStart(e);return;}finishSlide?.();track.getAnimations?.().forEach(a=>a.cancel());curImg()?.getAnimations?.().forEach(a=>a.cancel());const r=app.getBoundingClientRect();drag={pointer:e.pointerId,x:e.clientX,y:e.clientY,t:performance.now(),lastX:e.clientX,lastT:performance.now(),s:r.width/app.offsetWidth||1,axis:null,dx:0,dy:0,velocity:0};stage.setPointerCapture(e.pointerId);});
+stage.addEventListener("pointerdown",e=>{if(!V.open||e.button>0||e.target.closest("button"))return;if(V.redraw){if(e.pointerType!=="touch")selStart(e);return;}finishSlide?.();track.getAnimations?.().forEach(a=>a.cancel());curImg()?.getAnimations?.().forEach(a=>a.cancel());const r=app.getBoundingClientRect();drag={pointer:e.pointerId,x:e.clientX,y:e.clientY,t:performance.now(),lastX:e.clientX,lastT:performance.now(),s:r.width/app.offsetWidth||1,axis:null,dx:0,dy:0,velocity:0,chromeHidden:vw.classList.contains("chrome-off")};stage.setPointerCapture(e.pointerId);});
 stage.addEventListener("pointermove",e=>{
   if(V.redraw){if(e.pointerType!=="touch")selMove(e);return;}if(!drag||e.pointerId!==drag.pointer)return;const s=drag.s;let dx=(e.clientX-drag.x)/s,dy=(e.clientY-drag.y)/s;
   const time=performance.now(),dt=Math.max(1,time-drag.lastT);drag.velocity=drag.velocity*.4+(e.clientX-drag.lastX)/s/dt*.6;drag.lastX=e.clientX;drag.lastT=time;
-  if(!drag.axis){if(Math.hypot(dx,dy)<8)return;drag.axis=Math.abs(dx)>Math.abs(dy)?"x":dy>0?"y":"n";if(drag.axis==="y")vw.classList.add("chrome-off");}
+  if(!drag.axis){if(Math.hypot(dx,dy)<8)return;clearViewerTap();drag.axis=Math.abs(dx)>Math.abs(dy)?"x":dy>0?"y":"n";if(drag.axis==="y")vw.classList.add("chrome-off");}
   if(drag.axis==="x"){if((V.i===0&&dx>0)||(V.i===V.list.length-1&&dx<0))dx*=.3;drag.dx=dx;}
   else if(drag.axis==="y"){drag.dy=Math.max(0,dy);drag.dx=dx;}
   if(viewerFrame===null)viewerFrame=requestAnimationFrame(paintViewerDrag);
@@ -559,7 +645,7 @@ const dragEnd=e=>{
   if(d.axis==="x"){const velocity=performance.now()-d.lastT<90?d.velocity:0,advance=Math.abs(d.dx)>64||Math.abs(d.dx)>24&&Math.abs(velocity)>.35&&Math.sign(velocity)===Math.sign(d.dx);
     if(e.type!=="pointercancel"&&advance&&d.dx<0&&V.i<V.list.length-1)slideTo(1,d.dx,velocity);else if(e.type!=="pointercancel"&&advance&&d.dx>0&&V.i>0)slideTo(-1,d.dx,velocity);
     else{track.animate([{transform:`translate3d(${d.dx}px,0,0)`},{transform:"none"}],{duration:D(180),easing:E.emph});track.style.transform="";}}
-  else if(d.axis==="y"){if(e.type!=="pointercancel"&&d.dy>110)back();else{const c=curImg();c.animate([{transform:c.style.transform},{transform:"none"}],{duration:D(280),easing:E.emph});c.style.transform="";vbg.style.opacity="1";vw.classList.remove("chrome-off");}}
+  else if(d.axis==="y"){if(e.type!=="pointercancel"&&d.dy>110)back();else{const c=curImg();c.animate([{transform:c.style.transform},{transform:"none"}],{duration:D(280),easing:E.emph});c.style.transform="";vbg.style.opacity="1";vw.classList.toggle("chrome-off",d.chromeHidden);}}
 };
 stage.addEventListener("pointerup",dragEnd);stage.addEventListener("pointercancel",dragEnd);
 
@@ -646,16 +732,13 @@ function paramsBody(){
   const c=S.composer,o=(k,v,lab=v,sub="")=>`<button class="opt${sub?" tall":""}${c[k]===v?" on":""}" data-act="opt" data-k="${k}" data-v="${v}">${lab}${sub?`<small>${sub}</small>`:""}</button>`;
   const sw=(k,lab,sub)=>`<button class="row" data-act="sw" data-k="${k}" data-layout="width:100%"><span class="rl">${lab}<small>${sub}</small></span><span class="switch ${c[k]?"on":""}"></span></button>`;
   return `
-    <p class="note">长按选项可固定到快速设置。本页参数应用到本次创作。</p>
-    <div class="field-label">图片模型</div><div class="opts backend-options">${typeof StudioQuickSettings!=='undefined'?StudioQuickSettings.imageModels.map(([value,label])=>`<button class="opt${StudioQuickSettings.backend().image_model===value?' on':''}" data-act="backend-opt" data-k="image_model" data-v="${value}">${label}</button>`).join(''):''}</div>
+    <div class="field-label">图片模型</div><p class="note parameter-hint">长按参数选项可固定到创作页，点按应用到本次生成。</p><div class="opts backend-options">${typeof StudioQuickSettings!=='undefined'?StudioQuickSettings.imageModels.map(([value,label])=>`<button class="opt${StudioQuickSettings.backend().image_model===value?' on':''}" data-act="backend-opt" data-k="image_model" data-v="${value}">${label}</button>`).join(''):''}</div>
     <div class="field-label">图片质量</div><div class="opts c4">${[['auto','自动'],['low','低'],['medium','中'],['high','高'],['xhigh','极高'],['max','最大']].map(([value,label])=>`<button class="opt${typeof StudioQuickSettings!=='undefined'&&StudioQuickSettings.backend().quality===value?' on':''}" data-act="backend-opt" data-k="quality" data-v="${value}">${label}</button>`).join('')}</div>
     <div class="field-label">画幅</div><div class="opts">${["1:1","3:2","2:3","16:9","9:16","自动"].map(v=>o("ratio",v)).join("")}</div>
     <div class="row" data-layout="margin-top:8px"><span class="rl">数量<small>每张为独立会话</small></span><span class="stepper"><button data-act="cnt" data-d="-1" aria-label="减少">${icon("minus",18)}</button><output id="cnt">${c.count}</output><button data-act="cnt" data-d="1" aria-label="增加">${icon("plus",18)}</button></span></div>
-    <div class="field-label">图像尺寸</div><div class="opts c4">${["自动","1K","2K","4K"].map(v=>o("size",v)).join("")}</div>
-    <p class="note">作为原生生图要求传给模型；实际尺寸以图片详情为准。</p>
+    <div class="field-label">图像尺寸</div><p class="note parameter-hint">请求原生生图尺寸，实际尺寸见图片详情。</p><div class="opts c4">${["自动","1K","2K","4K"].map(v=>o("size",v)).join("")}</div>
     ${sw("polish","帮我润色","由模型补全构图、光线与风格")}${sw("transparent","透明背景","由生图工具决定是否支持")}
-    <div class="field-label">生成后超分</div><div class="opts c4">${o("stitch","关")}${Object.keys(FACTORS).map(v=>o("stitch",v,v,FACTORS[v]+" 级")).join("")}</div>
-    <p class="note">每张生成完成后自动加入该倍率的超分任务。只超分已有图片，请用创作页顶部的“超分”。</p>
+    <div class="field-label">生成后超分</div><p class="note parameter-hint">每张生成完成后自动加入该倍率的超分任务。</p><div class="opts c4">${o("stitch","关")}${Object.keys(FACTORS).map(v=>o("stitch",v,v,FACTORS[v]+" 级")).join("")}</div>
     ${StudioUpscalePrompts.entry('composer')}
     <button class="field-label model-choice" data-act="model-composer">思考强度 · ${esc(StudioService.modelName(c.model))}${icon("chevd",14)}</button><div class="opts c5">${(StudioService.models().find(m=>m.id===c.model)?.efforts||[c.effort]).map(v=>o("effort",v)).join("")}</div>
     <div class="btn-row" data-layout="margin-top:18px"><button class="secondary" data-act="params-reset" data-layout="flex:1;justify-content:center">${icon("refresh",16)}恢复默认值</button><button class="secondary" data-act="params-default" data-layout="flex:1;justify-content:center">${icon("check",16)}设为默认</button></div>`;
@@ -667,7 +750,7 @@ function tplMenuSheet(){
 function tplSaveForm(...args){return StudioService.tplSaveForm(...args);}
 function imageMenu(id,fromViewer){
   const im=img(id);if(!im)return;
-  const rows=fromViewer?[["native","以原始像素查看","select"],["fav",im.fav?"取消收藏":"收藏","star"],["info","名称与标签","edit"],["dl","下载原图","download"]]
+  const rows=fromViewer?[["native",StudioZoom.isNative()?"适应屏幕":"以原始像素查看","select"],["fav",im.fav?"取消收藏":"收藏","star"],["info","名称与标签","edit"],["dl","下载原图","download"]]
     :[["quick","速改…","edit"],["fav",im.fav?"取消收藏":"收藏","star"],["ref","用作参考图","imgplus"],["reroll","再抽一张","refresh"],["redraw","局部重绘","select"],["up","发送到超分","grid"],["dl","下载","download"]];
   openSheet({html:`<div class="sheet-hd"><img src="${src(im)}" alt=""><div><b>${esc(im.name)}</b><span>${im.w} × ${im.h} · ${esc(coll(im.coll)?.name||"")}</span></div></div>
     ${rows.map(([a,l,i])=>`<button class="menu-row" data-act="im-${a}" data-id="${id}">${icon(i,20)}<span>${l}</span></button>`).join("")}
@@ -681,6 +764,61 @@ function tplSheet(...args){return StudioService.tplSheet(...args);}
 
 /* ---- dispatcher ---- */
 let lp=null,lpFired=false;
+let taskHold=null,taskHoldClick=null;
+function taskHistoryTarget(event){
+  const target=event.target.closest("#batches [data-history-job], #batches [data-history-batch]");
+  if(!target||event.target.closest("button")&&!target.matches("button"))return null;
+  return target;
+}
+function cancelTaskHold(){
+  if(!taskHold)return;
+  clearTimeout(taskHold.timer);
+  taskHold.target.classList.remove("task-holding");
+  taskHold=null;
+}
+function showTaskDelete(target){
+  if(!target.isConnected||S.tab!=="queue"||layers.length)return;
+  const batch=target.dataset.historyBatch;
+  taskHoldClick=target;
+  navigator.vibrate?.(10);
+  StudioService.confirmTaskDeletion(batch||target.dataset.historyJob,Boolean(batch));
+}
+app.addEventListener("pointerdown",event=>{
+  if(event.button>0||event.isPrimary===false)return;
+  taskHoldClick=null;
+  cancelTaskHold();
+  const target=taskHistoryTarget(event);
+  if(!target)return;
+  target.classList.add("task-holding");
+  taskHold={target,x:event.clientX,y:event.clientY,pointer:event.pointerId,timer:setTimeout(()=>{
+    cancelTaskHold();
+    showTaskDelete(target);
+  },420)};
+});
+app.addEventListener("pointermove",event=>{
+  if(taskHold?.pointer===event.pointerId&&Math.hypot(event.clientX-taskHold.x,event.clientY-taskHold.y)>10)cancelTaskHold();
+});
+for(const type of ["pointerup","pointercancel","pointerleave"]){
+  app.addEventListener(type,event=>{if(taskHold?.pointer===event.pointerId)cancelTaskHold();});
+}
+app.addEventListener("click",event=>{
+  if(!taskHoldClick?.contains(event.target))return;
+  taskHoldClick=null;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+},true);
+app.addEventListener("contextmenu",event=>{
+  const target=taskHistoryTarget(event);
+  if(!target)return;
+  event.preventDefault();
+  cancelTaskHold();
+  showTaskDelete(target);
+});
+app.addEventListener("keydown",event=>{
+  if(!(event.shiftKey&&event.key==="F10")&&event.key!=="ContextMenu")return;
+  const target=taskHistoryTarget(event);
+  if(target){event.preventDefault();showTaskDelete(target);}
+});
 app.addEventListener("pointerdown",e=>{const t=e.target.closest("#page .tile");if(!t||e.button>0)return;
   lp={t,x:e.clientX,y:e.clientY,timer:setTimeout(()=>{lpFired=true;t.classList.remove("pressing");t.animate([{transform:"scale(.94)"},{transform:"scale(1.03)"},{transform:"scale(1)"}],{duration:D(320),easing:E.std});navigator.vibrate?.(10);if(S.tab==='works')StudioSelection.begin(t.dataset.id);else imageMenu(t.dataset.id);lp=null;},420)};t.classList.add("pressing");});
 const lpCancel=()=>{if(lp){clearTimeout(lp.timer);lp.t.classList.remove("pressing");lp=null;}};
@@ -734,6 +872,7 @@ app.addEventListener("click",async e=>{
     case"sw":{const kk=a.dataset.k;S.composer[kk]=!S.composer[kk];$(".switch",a).classList.toggle("on",S.composer[kk]);refresh();break;}
     case"cnt":{const c=S.composer;c.count=clamp(c.count+ +a.dataset.d,1,20);const o=$('output',a.closest('.stepper'));o.textContent=c.count;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});refresh();break;}
     case"tpl-menu":tplMenuSheet();break;
+    case"prompt-full":openComposerPrompt(a);break;
     case"tpl-load":loadTemplate(id);break;
     case"sw-bind":$("#bind-sw").classList.toggle("on");break;
     case"detach":S.composer.template=null;S.composer.ack=false;updateInto();toast("已改为无模板");break;
@@ -805,7 +944,17 @@ function quickSheet(id){const im=img(id);
       L.addEventListener("click",e=>{const c=e.target.closest('[data-act="qs-chip"]');if(c){inp.value=c.textContent;btn.disabled=StudioFeedback.busy(key);inp.focus();}});
       setTimeout(()=>inp.focus({preventScroll:true}),D(360));}});
 }
-$("#qe-form").addEventListener("submit",async e=>{e.preventDefault();const inp=$("#qe-input"),btn=$("#qe-send"),value=inp.value,id=V.list[V.i];if(btn.disabled||StudioFeedback.busy('quick-viewer'))return;try{await StudioFeedback.run('quick-viewer',btn,async()=>{if(await sendQuick(id,value)&&inp.value===value){inp.value="";inp.blur();}});}catch(e){StudioService.report(e);}finally{btn.disabled=!inp.value.trim();}});
+$("#qe-form").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const inp=$("#qe-input"),btn=$("#qe-send"),value=inp.value,id=V.list[V.i],generation=V.gen;
+  if(btn.disabled||StudioFeedback.busy('quick-viewer'))return;
+  try{
+    await StudioFeedback.run('quick-viewer',btn,async()=>{
+      const accepted=await sendQuick(id,value);
+      if(accepted&&V.open&&V.gen===generation&&V.list[V.i]===id&&inp.value===value){inp.value="";inp.blur();}
+    });
+  }catch(e){StudioService.report(e);}finally{btn.disabled=!inp.value.trim();}
+});
 $("#qe-input").addEventListener("input",e=>{$("#qe-send").disabled=StudioFeedback.busy('quick-viewer')||!e.target.value.trim();});
 $("#qe-input").addEventListener("focus",()=>{vw.classList.add("qe-on");placeToast();});
 ["#qe-chips","#qe-send"].forEach(sel=>$(sel).addEventListener("mousedown",e=>e.preventDefault()));
@@ -814,12 +963,32 @@ $("#qe-input").addEventListener("blur",()=>setTimeout(()=>{if(document.activeEle
 /* ================= full-screen screens ================= */
 function openScreen(html,{cls="",onMount,onClose}={}){
   const el=document.createElement("section");el.className="screen "+cls;el.innerHTML=html;$("#screens").append(el);hydrateIcons(el);
+  el.classList.toggle("over-viewer",layers.some(layer=>layer.type==="viewer"));
   el.animate([{transform:"translateX(100%)"},{transform:"none"}],{duration:D(380),easing:E.emph});
-  let d=null;
-  el.addEventListener("pointerdown",e=>{const edge=e.clientX-el.getBoundingClientRect().left;if(edge>=0&&edge<22&&!e.target.closest('button,input,textarea')){d={x:e.clientX,dx:0};el.setPointerCapture(e.pointerId);}});
-  el.addEventListener("pointermove",e=>{if(!d)return;d.dx=Math.max(0,(e.clientX-d.x)/sc());el.style.transform=`translateX(${d.dx}px)`;});
-  el.addEventListener("pointerup",()=>{if(!d)return;if(d.dx>110){el.dataset.x=d.dx;back();}else{el.animate([{transform:`translateX(${d.dx}px)`},{transform:"none"}],{duration:D(240),easing:E.emph});el.style.transform="";}d=null;});
-  pushLayer("screen",()=>{onClose&&onClose();el.style.pointerEvents="none";const x=+(el.dataset.x||0);el.animate([{transform:`translateX(${x}px)`},{transform:"translateX(100%)"}],{duration:D(260),easing:E.exit,fill:"forwards"}).finished.then(()=>{el.remove();placeToast();});});
+  let drag=null;
+  el.addEventListener("pointerdown",e=>{
+    const edge=e.clientX-el.getBoundingClientRect().left;
+    if(drag||e.button!==0||edge<0||edge>=22||e.target.closest("button,input,textarea,select,a"))return;
+    drag={id:e.pointerId,x:e.clientX,dx:0};
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener("pointermove",e=>{
+    if(!drag||drag.id!==e.pointerId)return;
+    drag.dx=Math.max(0,(e.clientX-drag.x)/sc());el.style.transform=`translateX(${drag.dx}px)`;
+  });
+  function endDrag(e){
+    if(!drag||drag.id!==e.pointerId)return;
+    const {dx}=drag;drag=null;
+    if(e.type==="pointerup"&&dx>110){el.dataset.x=dx;back();return;}
+    el.style.transform="";
+    if(dx)el.animate([{transform:`translateX(${dx}px)`},{transform:"none"}],{duration:D(240),easing:E.emph});
+  }
+  for(const type of ["pointerup","pointercancel","lostpointercapture"])el.addEventListener(type,endDrag);
+  pushLayer("screen",()=>{
+    el.style.pointerEvents="none";onClose?.();
+    const x=+(el.dataset.x||0);
+    el.animate([{transform:`translateX(${x}px)`},{transform:"translateX(100%)"}],{duration:D(260),easing:E.exit,fill:"forwards"}).finished.then(()=>{el.remove();placeToast();});
+  },el);
   onMount&&onMount(el);placeToast();return el;
 }
 const topScreen=()=>$$("#screens .screen").filter(e=>e.style.pointerEvents!=="none").pop();

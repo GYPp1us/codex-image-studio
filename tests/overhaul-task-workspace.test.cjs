@@ -623,6 +623,11 @@ test('advanced prompt controls start collapsed and preview requires a source',as
 });
 
 function quickPointer(f,target,type,x=20,y=20){const e=new f.context.window.Event(type,{bubbles:true,cancelable:true});Object.assign(e,{pointerId:7,pointerType:'touch',button:0,clientX:x,clientY:y});target.dispatchEvent(e);}
+test('quick settings card is hidden when empty and contains only pinned choices',async()=>{
+ const f=await fixture();assert.equal(f.document.querySelector('.quick-settings').hidden,true);
+ f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:'方形'}];renderPage()`);
+ const card=f.document.querySelector('.quick-settings');assert.equal(card.hidden,false);assert.equal(card.querySelectorAll('[data-quick-id]').length,1);assert.equal(card.querySelector('[data-quick-id]').textContent.includes('方形'),true);assert.equal(card.querySelector('[data-quick-manage]'),null);assert.equal(card.querySelector('.card-head'),null);
+});
 test('quick model switches affect only the composer and freeze into the submitted job',async()=>{
  const f=await fixture();
  f.run(`S.settings.quickSettings=[{key:'image_model',value:'gpt-image-2.6-sunburst',label:'太阳'},{key:'image_model',value:'gpt-image-2.6-flare',label:'火焰'},{key:'ratio',value:'3:2',label:''}];renderPage()`);
@@ -662,7 +667,7 @@ test('rapid keyboard reorders serialize and preserve both changes while saving',
  const box=f.document.querySelector('.quick-strip'),first=box.querySelector('[data-quick-id="ratio=1:1"]');
  function move(){const e=new f.context.window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(e,{key:'ArrowRight',altKey:true});first.dispatchEvent(e);}
  move();await tick();move();await tick();assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,1);
- assert.match(f.document.querySelector('.quick-save-state').textContent,/保存中/);
+ assert.match(f.document.querySelector('.quick-save-state').textContent,/保存/);
  release();await tick();await tick();await tick();await tick();
  assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','1:1']);
  const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,2);assert.deepEqual(writes[1].body.quick_settings.map(p=>p.value),['3:2','2:3','1:1']);

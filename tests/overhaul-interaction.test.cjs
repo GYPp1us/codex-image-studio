@@ -181,6 +181,17 @@ function rotatingZoomFixture({dpr=1,width=12017,height=8003}={}){
  async function pan(dx,dy=0){pointer('pointerdown',100,350);pointer('pointermove',100+dx,350+dy);pointer('pointerup',100+dx,350+dy);frame();await loaded();}
  return {setView(nextFit,nextViewport){fit=nextFit;viewport=nextViewport;},document,context,zoom,asset,V,stage,preview,requests,loading,writes,events,frames,pointer,wheel,frame,loaded,native,pan,get reads(){return reads;},clear(){reads=0;writes.length=0;},get maxLoading(){return maxLoading;},advance(ms){clock+=ms;for(const [id,t] of [...timers])if(t.at<=clock){timers.delete(id);t.fn();}}};
 }
+test('native pixel zoom is centered on the landscape image canvas',()=>{
+ const f=rotatingZoomFixture({width:900,height:1200});
+ const fit={x:180,y:52,w:216,h:288};
+ f.setView(fit,{w:800,h:360});
+ f.context.StudioLandscape={wide:()=>true,viewport:()=>({left:16,right:560,top:52,bottom:340})};
+ f.zoom.toggleNative();
+ f.frame();
+ const plane=f.document.querySelector('.zoom-plane');
+ const [,x,scale]=plane.style.transform.match(/translate3d\(([-\d.]+)px,[-\d.]+px,0\) scale\(([-\d.]+)\)/);
+ assert.ok(Math.abs(Number(x)+fit.w*Number(scale)/2-(fit.x+fit.w/2))<.001);
+});
 test('rotation preserves native pixel scale and the visible source anchor in zoom mode',async()=>{
  const f=rotatingZoomFixture();await f.native();await f.pan(200,60);
  const old={x:0,y:200,w:390,h:260},parse=()=>f.document.querySelector('.zoom-plane').style.transform.match(/translate3d\(([-\d.]+)px,([-\d.]+)px,0\) scale\(([-\d.]+)\)/),before=parse();

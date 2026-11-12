@@ -17,7 +17,7 @@ const StudioService=(()=>{
     try{const d=await api(`/api/assets?kind=${tab==='references'?'reference':'all'}${tab==='favorites'?'&favorite=true':''}&limit=80&offset=${offset}`);if(epoch!==sessionEpoch)return;d.items.forEach(a=>rememberAsset(a));page.ids=[...new Set([...(more?page.ids:[]),...d.items.map(a=>a.id)])];page.offset=offset+d.items.length;page.total=d.total;page.ready=true;projectImages();}
     catch(error){page.error=true;throw error;}finally{page.loading=false;if(epoch===sessionEpoch&&S.tab==='works'&&!S.coll&&S.worksTab===tab&&!V.open)refresh();}
   }
-  let batchOffset=0,batchTotal=0,stopped=false,firstSync=true,lastActive=new Set();
+  let batchOffset=0,batchTotal=0,historyRevision=null,stopped=false,firstSync=true,lastActive=new Set();
   const factor=v=>Number(String(v).replace('×',''))||0,ratio=v=>v==='自动'?'auto':v,size=v=>({'自动':'auto','1K':'1024','2K':'2048','4K':'4096'}[v]||v);
   const labelRatio=v=>v==='auto'?'自动':v,labelSize=v=>({auto:'自动',1024:'1K',2048:'2K',4096:'4K'}[v]||v);
   const bytes=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GB':n>=1048576?(n/1048576).toFixed(1)+' MB':Math.round((n||0)/1024)+' KB';
@@ -72,7 +72,9 @@ const StudioService=(()=>{
       return StudioFeedback.run(key,button,()=>send(values)).catch(failure=>{if(error&&form.isConnected)error.textContent=failure.message;else report(failure);});
     };
   }
-  async function closeOwnedSheet(layer,revision){if(layer?.isConnected&&layer.style.pointerEvents!=='none'&&layer.dataset.revision===revision&&layers.at(-1)?.type==='sheet'&&topSheet()===layer)await back();}
+  function closeOwnedSheet(layer,revision){
+    return traverseHistory(()=>layer?.isConnected&&layer.dataset.revision===revision&&layers.at(-1)?.surface===layer?1:0);
+  }
   function rememberAsset(a,origin){if(!a)return null;const previous=assets.get(a.id)||{};
     const j=origin||jobs.get(a.job_id),cid=j?.collection_id||previous.coll;
     const mapped={...previous,...a,w:a.width,h:a.height,fav:!!a.favorite,created:a.created*1000,coll:cid,
@@ -154,7 +156,20 @@ const StudioService=(()=>{
     return Promise.allSettled(tasks);
   }
   function reconcileModel(){if(!catalogReady)return;if(!models.some(model=>model.id===S.composer.model))S.composer.model=config.model;const model=models.find(model=>model.id===S.composer.model);if(model&&!model.efforts.includes(S.composer.effort))S.composer.effort=model.default_effort;}
-  async function fetchBatches(offset=0,version=null){const data=await read(`/api/batches?limit=30&offset=${offset}`);if(version!==null&&version!==syncVersion)return data;batchTotal=data.total;batchOffset=Math.max(batchOffset,offset+data.items.length);ingestBatches(data.items);return data;}
+  async function fetchBatches(offset=0,version=null){
+    const data=await read(`/api/batches?limit=30&offset=${offset}`);
+    if(version!==null&&version!==syncVersion)return data;
+    if(data.history_revision!==undefined&&historyRevision!==data.history_revision){
+      if(offset)return fetchBatches(0,version);
+      batchMap.clear();
+      batchOffset=0;
+      historyRevision=data.history_revision;
+    }
+    batchTotal=data.total;
+    batchOffset=Math.max(batchOffset,offset+data.items.length);
+    ingestBatches(data.items);
+    return data;
+  }
   function ingestBatches(list){for(const b of list){batchMap.set(b.id,b);b.jobs.forEach(rememberJob);}}
   async function allCollections(){const data=await read('/api/collections?limit=100');while(data.items.length<data.total){const more=await read('/api/collections?limit=100&offset='+data.items.length);if(!more.items.length)break;data.items.push(...more.items);}return data;}
   async function sync({initial=false,stateData=null}={}){if(!authenticated)return;if(syncFlight)return syncFlight;const version=++syncVersion,epoch=sessionEpoch;
@@ -162,7 +177,8 @@ const StudioService=(()=>{
     const task=(async()=>{try{const [st,cs,ts]=await Promise.all([stateData||read('/api/state'),allCollections(),read('/api/templates')]);if(!valid())return;config=st;S.paused=st.paused;
       S.collections=cs.items.map(c=>({...c,template:c.template_id||null}));for(const c of cs.items)for(const a of c.covers||c.cover_assets||[]){const v=rememberAsset(a);if(v)v.coll=c.id;}
       S.templates=ts.map(t=>({id:t.id,name:t.title,text:t.text,ratio:labelRatio(t.options.ratio||'auto'),refs:t.refs.length,referenceIds:t.refs,options:t.options,raw:t}));ts.forEach(t=>t.references.forEach(a=>rememberAsset(a)));
-      const [normal,...act]=await Promise.all([fetchBatches(0,version),...['queued','running','retrying'].map(status=>read(`/api/batches?status=${status}&limit=100`))]);if(!valid())return;act.forEach(d=>ingestBatches(d.items));
+      const [normal,...act]=await Promise.all([fetchBatches(0,version),...['queued','running','retrying'].map(status=>read(`/api/batches?status=${status}&limit=100`))]);if(!valid())return;
+      act.filter(d=>d.history_revision===normal.history_revision).forEach(d=>ingestBatches(d.items));
       // A previously running old batch can finish outside the recent page.
       const current=new Set([...batchMap.values()].flatMap(b=>b.jobs).filter(active).map(j=>j.id));
       await Promise.all([...lastActive].filter(id=>!normal.items.some(b=>b.jobs.some(j=>j.id===id))&&!act.some(d=>d.items.some(b=>b.jobs.some(j=>j.id===id)))).map(async id=>{const job=await read('/api/jobs/'+id);if(valid())rememberJob(job);}));if(!valid())return;lastActive=current;
@@ -176,6 +192,27 @@ const StudioService=(()=>{
   function notifyChanges(){for(const j of jobs.values()){const old=knownStates.get(j.id);knownStates.set(j.id,j.status);if(old&&active({status:old})&&!active(j)&&S.settings.notify&&(!j.options.quick_edit||S.settings.quick.notify)){
       const output=j.outputs?.[0],text=j.status==='succeeded'?'任务已完成':j.status==='failed'?'任务失败':'任务已取消';toast(text,{action:output?'查看':'查看任务',run:()=>output?closeOverlays().then(()=>openViewer(output.id,'recent')):goBatch(j.batch_id)});}}}
   async function refreshData(){const epoch=sessionEpoch,previous=syncFlight;if(previous)await previous.catch(()=>{});if(epoch!==sessionEpoch||!authenticated)return;await sync();saveDraft();}
+  function confirmTaskDeletion(id,batch=false){
+    const title=batch?'删除此批任务记录':'删除任务记录';
+    return confirmSheet(title,'记录将从任务列表移除，仍可从图库查看作品及来源。','删除记录',async()=>{
+      const result=await api(`/api/${batch?'batches':'jobs'}/${encodeURIComponent(id)}`,{method:'DELETE'});
+      const removed=new Set(result.removed_ids);
+      cancelReads();
+      if(historyRevision===result.previous_history_revision)historyRevision=result.history_revision;
+      for(const [key,entry] of batchMap){
+        entry.jobs=entry.jobs.filter(job=>!removed.has(job.id));
+        if(entry.jobs.length)continue;
+        batchMap.delete(key);
+        S.expanded.delete(key);
+        batchOffset=Math.max(0,batchOffset-1);
+        batchTotal=Math.max(0,batchTotal-1);
+      }
+      projectBatches();
+      refresh();
+      toast('已删除任务记录');
+      refreshData().catch(error=>{if(error.name!=='AbortError')report(error);});
+    });
+  }
   function schedule(){clearTimeout(polling);if(!authenticated||stopped||document.hidden)return;polling=setTimeout(async()=>{if(!document.hidden&&!StudioZoom.isInteracting()){try{await sync();}catch(error){if(authenticated&&error.name!=='AbortError'){S.offline=true;updateChrome();}}}schedule();},2500);}
   function wake(){if(document.hidden||stopped||wakeQueued)return;
     if(slept){slept=false;for(const animation of document.getAnimations?.()||[]){const timing=animation.effect?.getComputedTiming?.();if(timing&&Number.isFinite(timing.endTime)){try{animation.finish();}catch{}}}}
@@ -199,7 +236,7 @@ const StudioService=(()=>{
     }catch(error){if(version!==bootVersion||stopped||error.name==='AbortError')return;if(!authenticated&&authState?.authenticated===false)return login();$('#page').innerHTML=`<div class="boot-state"><p>${esc(error.message)}</p><button class="secondary" data-act="boot-retry">重新连接</button></div>`;}
     finally{if(bootFlight===task)bootFlight=null;}})();bootFlight=task;return task;
   }
-  function login(){StudioSelection.reset();releaseReferenceOwners();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;layers.splice(0);history.replaceState({depth:0},'');
+  function login(){StudioSelection.reset();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;historyRevision=null;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;V.gen++;layers.splice(0);syncSurfaces();history.replaceState({depth:0},'');
     $('#page').innerHTML=`<div class="auth-wrap"><div class="auth-brand">${icon('sparkle',28)}<h1>Image Studio</h1><p>${authState?.initialized?'登录私人图片工作台':'设置私人图片工作台'}</p></div><form id="login-form" class="card"><div class="field-label">用户名</div><input class="input" name="username" autocomplete="username" minlength="2" maxlength="64" required><div class="field-label">密码</div><input class="input" name="password" type="password" autocomplete="${authState?.initialized?'current-password':'new-password'}" minlength="10" maxlength="256" required>${authState?.initialized?'':'<div class="field-label">初始化密钥</div><input class="input" name="setup_token" type="password" required>'}<p class="form-err" role="alert"></p><button class="primary" type="submit">${authState?.initialized?'登录':'创建工作台'}</button></form></div>`;
     bindPendingForm($('#login-form'),'form:login',async values=>{await post('/api/auth/'+(authState.initialized?'login':'setup'),values);authState=null;$('#page').innerHTML='<div class="boot-state"><span class="spin"></span>正在打开工作台</div>';firstSync=true;await boot();});
   }
@@ -246,18 +283,18 @@ const StudioService=(()=>{
     state.tail=request;return request;
   }
   async function loadTemplate(id){const t=tpl(id);if(!t)throw new Error('模板不存在');const c=S.composer,keepPrompt=!!c.prompt.trim(),text=keepPrompt?c.prompt:t.text,refs=[...new Set([...c.refs,...t.referenceIds])],omitted=Math.max(0,refs.length-8);
-    const upscaleDraft={upscaleRequirements:c.upscaleRequirements??'',upscalePolicy:{...(c.upscalePolicy||StudioUpscalePrompts.entryValue('composer').upscale_policy)}};
-    Object.assign(c,{...defaultComposer(),...t.options,...upscaleDraft,prompt:text,template:id,refs:refs.slice(0,8),ratio:labelRatio(t.options.ratio||'auto'),size:labelSize(t.options.size||'auto'),stitch:t.options.stitch?t.options.stitch+'×':'关',ack:false});
-    await closeOverlays();S.tab==='create'?renderPage():await go('create');S.mode='gen';renderPage();flashChip();saveDraft();toast(`已载入模板：${t.name}${keepPrompt?' · 已保留现有提示词':''}${omitted?` · 已有参考图保留，另有 ${omitted} 张超出 8 张上限`:''}`);}
+    Object.assign(c,{prompt:text,template:id,refs:refs.slice(0,8),ack:false});
+    await closeOverlays();S.mode='gen';if(S.tab==='create')renderPage();else await go('create');
+    flashChip();saveDraft();toast(`已载入模板：${t.name}${keepPrompt?' · 已保留现有提示词':''}${omitted?` · 已有参考图保留，另有 ${omitted} 张超出 8 张上限`:''}`);}
   function tplSaveForm(L,editing=null){const t=editing&&tpl(editing),c=S.composer,text=t?.text??c.prompt;
     const refs=[...(t?.referenceIds||c.refs)];
-    const html=`<div class="field-label">名称</div><input class="input" id="tpl-name" maxlength="100" value="${esc(t?.name||text.slice(0,10)||'新模板')}"><div class="field-label">可复用正文</div><textarea class="input" id="tpl-text" maxlength="24000" placeholder="可留空，仅复用参考图与参数">${esc(text)}</textarea><div class="field-label">参考图 <span class="muted" id="tpl-ref-count"></span></div><p class="note">点图放大，长按图片后左右拖动排序。</p><div class="ref-strip template-refs" id="tpl-refs"></div>${t?'':`<button class="row" data-act="sw-bind" data-layout="width:100%"><span class="rl">本次创作归入该模板<small>之后用它生成的图片会进入同名列表</small></span><span class="switch on" id="bind-sw"></span></button>`}<button class="primary" data-act="tpl-save" ${t?`data-id="${t.id}"`:''}>保存模板</button>${t?`<button class="secondary danger" data-act="tpl-delete" data-id="${t.id}">删除模板</button>`:''}`;
+    const html=`<div class="field-label">名称</div><input class="input" id="tpl-name" maxlength="100" value="${esc(t?.name||text.slice(0,10)||'新模板')}"><div class="field-label">可复用正文</div><textarea class="input" id="tpl-text" maxlength="24000" placeholder="可留空，仅复用参考图">${esc(text)}</textarea><div class="field-label">参考图 <span class="muted" id="tpl-ref-count"></span></div><p class="note">点图放大，长按图片后左右拖动排序。</p><div class="ref-strip template-refs" id="tpl-refs"></div>${t?'':`<button class="row" data-act="sw-bind" data-layout="width:100%"><span class="rl">本次创作归入该模板<small>之后用它生成的图片会进入同名列表</small></span><span class="switch on" id="bind-sw"></span></button>`}<button class="primary" data-act="tpl-save" ${t?`data-id="${t.id}"`:''}>保存模板</button>${t?`<button class="secondary danger" data-act="tpl-delete" data-id="${t.id}">删除模板</button>`:''}`;
     if(L)swapSheet(L,t?'编辑模板':'保存为模板',html);else L=openSheet({title:t?'编辑模板':'新建模板',html});L.dataset.templateRefs=JSON.stringify(refs);
     const read=()=>JSON.parse(L.dataset.templateRefs||'[]'),write=ids=>{L.dataset.templateRefs=JSON.stringify(ids);paint();};
     const paint=()=>{if(!L.isConnected)return;$('#tpl-ref-count',L).textContent=read().length+' / 8';StudioReferences.render($('#tpl-refs',L),{read,write,add:()=>pickerSheet({title:'选择模板参考图',refs:read(),onCommit:write})});};paint();}
   let templateInspector=null;
   function tplSheet(id){const t=tpl(id),c=S.collections.find(x=>x.template===id);if(!t)return;
-    const html=`${t.text?.trim()?`<div class="prompt-box">${esc(t.text)}</div>`:''}<div class="chips" data-layout="margin-top:12px"><span class="chip">${t.ratio}</span><span class="chip">${t.refs} 张参考图</span><span class="chip">${labelSize(t.options.size||'auto')}尺寸</span></div><div class="template-preview-refs">${(t.referenceIds||[]).map(ref=>`<button data-act="tpl-preview-ref" data-id="${ref}" data-template-id="${id}" aria-label="放大参考图"><img src="${src(assets.get(ref))}" alt=""></button>`).join('')}</div><p class="note">用该模板生成的图片归入「${esc(c?.name||t.name)}」列表（${c?.image_count||0} 张）。已有提示词会保留，参考图按现有顺序去重补充（最多 8 张）；模板参数会应用到本次创作。可在创作页解除归属。</p><button class="primary" data-act="tpl-load" data-id="${id}">载入到创作${icon('arrow',18)}</button><div class="btn-row"><button class="secondary" data-act="tpl-edit" data-id="${id}" data-layout="flex:1;justify-content:center">${icon('edit',16)}编辑</button>${c?`<button class="secondary" data-act="open-coll" data-id="${c.id}" data-layout="flex:1;justify-content:center">${icon('layers',16)}查看作品</button>`:''}</div>`;
+    const html=`${t.text?.trim()?`<div class="prompt-box">${esc(t.text)}</div>`:''}<div class="chips" data-layout="margin-top:12px"><span class="chip">${t.refs} 张参考图</span></div><div class="template-preview-refs">${(t.referenceIds||[]).map(ref=>`<button data-act="tpl-preview-ref" data-id="${ref}" data-template-id="${id}" aria-label="放大参考图"><img src="${src(assets.get(ref))}" alt=""></button>`).join('')}</div><p class="note">用该模板生成的图片归入「${esc(c?.name||t.name)}」列表（${c?.image_count||0} 张）。载入时保留已有提示词和生成参数，按顺序补充参考图（最多 8 张）。可在创作页解除归属。</p><button class="primary" data-act="tpl-load" data-id="${id}">载入到创作${icon('arrow',18)}</button><div class="btn-row"><button class="secondary" data-act="tpl-edit" data-id="${id}" data-layout="flex:1;justify-content:center">${icon('edit',16)}编辑</button>${c?`<button class="secondary" data-act="open-coll" data-id="${c.id}" data-layout="flex:1;justify-content:center">${icon('layers',16)}查看作品</button>`:''}</div>`;
     if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide()){
       const content=`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon('back')}</button><h1>${esc(t.name)}</h1></header><div class="scroll">${html}</div>`;
       if(templateInspector?.isConnected&&templateInspector.style.pointerEvents!=='none'){templateInspector.innerHTML=content;hydrateIcons(templateInspector);}
@@ -318,7 +355,7 @@ ${group("set-queue","任务队列",sStep("concurrency","并发会话","生成、
 ${group("set-prompts","生成与润色提示词",['call','polish'].map(k=>sLink(PROMPT_META[k][0],`<span id="pb-${k}">${promptBadge(k)}</span>`,"prompt-edit",`data-k="${k}"`)).join(""),`<p class="g-foot">只影响之后的新任务；已提交的任务保留配置快照。</p>`)}
 ${group("set-upscale-prompts","超分系统提示词",StudioUpscalePrompts.settingsHTML(),`<p class="g-foot">图块、拼接格式、重试反馈、验收与产物协议分别配置，提交时冻结完整版本。</p>`)}
 ${group("set-appearance","外观",sSeg("appearance.mode",[["system","跟随系统"],["light","浅色"],["dark","暗色"]],"颜色模式")+appearanceHTML())}
-${group("set-display","显示与存储",sSeg("motion",[["system","跟随系统"],["reduce","减少动效"],["full","完整动效"]],"动效")+`<div class="s-row col"><div data-layout="display:flex;align-items:center;gap:12px">${lbl("图片缓存",`<span id="cache-txt">${st.cache.mb.toFixed(1)} MB / 192 MB · ${st.cache.files} 个文件</span>`)}<button class="pill-btn" id="cache-btn" data-act="cache-clear">清理</button></div><div class="cache-bar"><i id="cache-bar" data-layout="width:${st.cache.mb/192*100}%"></i></div></div>`)}
+${group("set-display","显示",sSeg("motion",[["system","跟随系统"],["reduce","减少动效"],["full","完整动效"]],"动效"))}
 ${group("set-storage","服务器存储",`<div id="server-storage"><p class="note">正在读取空间使用情况…</p></div>`)}
 ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用","Android / 主屏幕","install"))}
 <div class="g-card" data-layout="margin-bottom:12px"><button class="s-row danger" data-act="logout">退出登录</button></div>
@@ -337,17 +374,71 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
     if(p==='motion')applyMotion();if(p.startsWith('appearance'))StudioTheme.apply(S.settings.appearance);if(p.startsWith('quick')){updQuickMeta();const qp=el&&$('#qe-preview',el);if(qp)qp.textContent=quickPreview();}
     const promise=saveQueue.catch(()=>{}).then(()=>api('/api/settings',{method:'PATCH',body:payload}));saveQueue=promise;
     promise.then(()=>{prefs={...prefs,...payload};config.effort=payload.effort;config.concurrency=payload.concurrency;config.max_attempts=payload.max_attempts;if(version===settingsVersion&&sv?.isConnected){sv.innerHTML=icon('check',14)+'已保存';sv.classList.remove('save-error');setTimeout(()=>sv.classList.remove('on'),1400);}refresh();}).catch(error=>{if(sv?.isConnected){sv.textContent='保存失败';sv.classList.add('save-error');}report(error);});return promise;}
-  async function refreshSettings(el){try{const [cache,storage]=await Promise.all([StudioImages.status(),api('/api/storage')]);if(!el.isConnected)return;S.settings.cache={mb:(cache.bytes||0)/1048576,files:cache.count||0};const text=$('#cache-txt',el);if(text)text.textContent=`${S.settings.cache.mb.toFixed(1)} MB / 192 MB · ${cache.count||0} 个文件`;const bar=$('#cache-bar',el);if(bar)bar.style.width=Math.min(100,S.settings.cache.mb/192*100)+'%';renderStorage(storage,el);}catch(e){report(e);}}
-  function renderStorage(st,el=topScreen()){const slot=el&&$('#server-storage',el);if(!slot)return;
-    const used=st.bytes||0,free=st.available_bytes??Math.min(st.free_bytes||0,st.limit_bytes?Math.max(0,st.limit_bytes-used):Infinity),capacity=used+free;
-    const total=st.disk_total_bytes||used+(st.free_bytes||0),other=Math.max(0,total-used-(st.free_bytes||0));
+  async function refreshSettings(el){
+    if(!el?.isConnected)return;
+    const local=$('#cache-txt',el)?refreshLocalCache(el).catch(report):null;
+    try{
+      const storage=await api('/api/storage');
+      if(!el.isConnected)return;
+      renderStorage(storage,el);
+      renderCacheList(storage,el);
+    }catch(error){report(error);}
+    await local;
+  }
+  async function refreshLocalCache(el){
+    const cache=await StudioImages.status();
+    if(!el?.isConnected)return;
+    S.settings.cache={mb:(cache.bytes||0)/1048576,files:cache.count||0};
+    const text=$('#cache-txt',el),bar=$('#cache-bar',el);
+    if(text)text.textContent=S.settings.cache.mb.toFixed(1)+' MB / 192 MB · '+S.settings.cache.files+' 个文件';
+    if(bar)bar.style.width=Math.min(100,S.settings.cache.mb/192*100)+'%';
+  }
+  function renderStorage(st,el){
+    const slot=$('#server-storage',el);
+    if(!slot)return;
+    const used=st.bytes||0;
+    const free=st.available_bytes??Math.min(st.free_bytes||0,st.limit_bytes?Math.max(0,st.limit_bytes-used):Infinity);
+    const capacity=used+free,total=st.disk_total_bytes||used+(st.free_bytes||0),other=Math.max(0,total-used-(st.free_bytes||0));
     const width=(n,d)=>Math.min(100,Math.max(0,n/Math.max(1,d)*100));
-    slot.innerHTML=`<div class="s-row col"><span class="s-l">数据库与图片总空间<small>数据库文件 ${bytes(st.groups.database)} · 图片、缓存和任务文件一并计入限额</small></span></div>
-      <div class="storage-meter"><div><div class="storage-scale">服务器总空间<b>${bytes(total)}</b></div><div class="storage-track" role="img" aria-label="服务器总空间 ${bytes(total)}，其他占用 ${bytes(other)}，本工作台 ${bytes(used)}，磁盘可用 ${bytes(st.free_bytes)}"><i class="other" data-layout="width:${width(other,total)}%"></i><i class="used" data-layout="width:${width(used,total)}%"></i></div></div>
-      <div><div class="storage-scale">本工作台额度<b>${bytes(used)} 已用 · ${bytes(free)} 可用</b></div><div class="storage-track" role="img" aria-label="工作台已用 ${bytes(used)}，可用 ${bytes(free)}"><i class="used" data-layout="width:${width(used,capacity)}%"></i><i class="available" data-layout="width:${width(free,capacity)}%"></i></div></div>
-      <div class="storage-key"><span><i class="other"></i>服务器其他占用</span><span><i></i>工作台已用</span><span><i class="available"></i>工作台可用</span></div><p class="note">${st.limit_bytes?'上限 '+bytes(st.limit_bytes):'未设置工作台上限'}；可用量取剩余额度与磁盘空闲中的较小值。</p>
-      <label class="storage-limit">上限（GB，0 为不限）<input class="input" id="storage-limit" type="number" min="0" step="0.1" value="${st.limit_bytes/1073741824}"><button class="pill-btn" data-act="storage-limit">保存</button></label></div>
-      <button class="s-row" data-act="empty-trash">${lbl('清空回收站',`${st.trash.assets} 张图片 · ${st.trash.collections} 个列表`)}<span class="s-r">${icon('trash',16)}</span></button>${st.tasks.map(t=>`<button class="s-row" data-act="clear-task-cache" data-id="${t.id}" ${t.clearable?'':'disabled'}>${lbl('超分任务缓存 · '+esc(t.prompt.slice(0,25)),t.clearable?'保留原图、最终作品与任务记录':'任务进行中')}<span class="s-r">${bytes(t.bytes)}${icon('chevr',16)}</span></button>`).join('')}`;}
+    const breakdown=st.breakdown??(used?[{key:'system',label:'工作台已用',bytes:used}]:[]);
+    let collections=0;
+    const parts=breakdown.map(item=>({...item,tone:item.key.startsWith('collection:')?'collection-'+ ++collections:item.key}));
+    const legend=[...parts,{label:'工作台可用',tone:'available',bytes:free}];
+    const tasks=st.tasks||[],clearable=tasks.filter(task=>task.clearable);
+    slot.innerHTML=`<div class="storage-meter">
+      <div><div class="storage-scale">服务器总空间<b>${bytes(total)}</b></div><div class="storage-track" role="img" aria-label="服务器总空间 ${bytes(total)}，其他占用 ${bytes(other)}，工作台 ${bytes(used)}，磁盘可用 ${bytes(st.free_bytes)}"><i class="other" data-layout="width:${width(other,total)}%"></i><i class="used" data-layout="width:${width(used,total)}%"></i></div></div>
+      <div><div class="storage-scale">本工作台额度<b>${bytes(used)} 已用 · ${bytes(free)} 可用</b></div><div class="storage-track storage-stacked" aria-hidden="true">${legend.map(item=>`<i class="storage-part" data-tone="${esc(item.tone)}" data-layout="width:${width(item.bytes,capacity)}%"></i>`).join('')}</div></div>
+      <ul class="storage-breakdown" aria-label="工作台空间占用">${legend.map(item=>`<li><i class="storage-part" data-tone="${esc(item.tone)}" aria-hidden="true"></i><span>${esc(item.label)}</span><b>${bytes(item.bytes)}</b></li>`).join('')}</ul>
+      <p class="note">${st.limit_bytes?'上限 '+bytes(st.limit_bytes):'未设置工作台上限'}。可用量取剩余额度与磁盘空闲中的较小值。</p>
+      <div class="storage-limit"><label for="storage-limit">上限（GB，0 为不限）</label><input class="input" id="storage-limit" type="number" min="0" step="0.1" value="${(st.limit_bytes||0)/1073741824}"><button class="pill-btn" data-act="storage-limit">保存</button></div></div>
+      ${sLink('缓存管理',tasks.length?bytes(tasks.reduce((sum,task)=>sum+task.bytes,0)):'','storage-caches','','查看超分任务与本机图片缓存')}
+      <button class="s-row" data-act="clear-caches" ${clearable.length?'':'disabled'}>${lbl('清空缓存',`${clearable.length} 个已结束的超分任务`)}<span class="s-r">${icon('trash',16)}</span></button>
+      <button class="s-row" data-act="empty-trash">${lbl('清空回收站',`${st.trash.assets} 张图片 · ${st.trash.collections} 个列表`)}<span class="s-r">${icon('trash',16)}</span></button>`;
+  }
+  function renderCacheList(st,el){
+    const slot=$('#task-cache-list',el);
+    if(!slot)return;
+    const tasks=st.tasks||[];
+    slot.innerHTML=tasks.length?tasks.map(task=>`<button class="s-row" data-act="clear-task-cache" data-id="${esc(task.id)}" ${task.clearable?'':'disabled'}>${lbl(esc(task.prompt||'超分任务'),task.clearable?'点按清理中间文件':'任务进行中')}<span class="s-r">${bytes(task.bytes)}${icon('chevr',16)}</span></button>`).join(''):'<p class="empty">暂无超分任务缓存</p>';
+  }
+  async function openCacheScreen(){
+    const el=openScreen(`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon('back')}</button><h1>缓存管理</h1></header><div class="scroll set-scroll">
+      ${group('cache-upscale','超分任务缓存','<div id="task-cache-list"><p class="note cache-loading">正在读取缓存…</p></div>','<p class="g-foot">清理中间文件后，重试需要重新生成图块。图库作品和任务记录仍可查看。</p>')}
+      ${group('cache-local','本机图片缓存',`<div class="s-row col"><div class="local-cache-row">${lbl('图片缓存','<span id="cache-txt">正在读取…</span>')}<button class="pill-btn" id="cache-btn" data-act="cache-clear">清理</button></div><div class="cache-bar"><i id="cache-bar"></i></div></div>`)}
+      </div>`,{cls:'cache-screen'});
+    await refreshSettings(el);
+  }
+  async function updateCacheViews(storage){
+    try{
+      const value=storage||await api('/api/storage');
+      for(const screen of $$('#screens .screen')){
+        if(screen.style.pointerEvents==='none')continue;
+        renderStorage(value,screen);
+        renderCacheList(value,screen);
+      }
+    }catch(error){report(error);}
+    refreshData().catch(error=>{if(error.name!=='AbortError')report(error);});
+  }
   function confirmSheet(title,text,label,run){const L=openSheet({title,html:`<p class="note">${esc(text)}</p><button class="primary danger-soft" id="confirm-operation">${esc(label)}</button>`}),revision=L.dataset.revision,key='confirm:'+uid('op');$('#confirm-operation',L).onclick=async()=>{const btn=$('#confirm-operation',L);if(StudioFeedback.busy(key))return;try{await StudioFeedback.run(key,btn,async()=>{await run();await closeOwnedSheet(L,revision);});}catch(e){report(e);}};return L;}
   async function trash(){const el=openScreen(`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon('back')}</button><h1>最近删除</h1><span class="grow"></span><button class="ghost-btn danger" data-act="empty-trash">清空</button></header><div class="scroll set-scroll" id="trash-content"><p class="note">正在读取…</p></div>`,{cls:'trash-screen'});let offset=0,loadRevision=0;const operationKey='trash:'+uid('op');
     async function load(){const revision=++loadRevision,requestedOffset=offset,[as,cs]=await Promise.all([api(`/api/assets?kind=all&deleted=true&limit=100&offset=${requestedOffset}`),api('/api/collections?deleted=true')]);if(!el.isConnected||revision!==loadRevision)return;const slot=$('#trash-content',el);if(!requestedOffset)slot.innerHTML=cs.items.map(c=>`<div class="s-row">${lbl(esc(c.name),'已删除的列表')}<button class="pill-btn" data-restore-coll="${c.id}">恢复</button></div>`).join('');slot.insertAdjacentHTML('beforeend',as.items.map(a=>`<div class="s-row"><img class="trash-thumb" src="${esc(a.thumbnail)}" alt="">${lbl(esc(a.name),`${a.width} × ${a.height}`)}<button class="pill-btn" data-restore-img="${a.id}">恢复</button></div>`).join(''));offset=requestedOffset+as.items.length;let more=$('[data-trash-more]',el);more?.remove();if(offset<as.total)slot.insertAdjacentHTML('beforeend','<button class="secondary load-more" data-trash-more>加载更多</button>');if(!as.total&&!cs.items.length)slot.innerHTML='<p class="empty">最近删除为空</p>';}
@@ -394,8 +485,15 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   function loginStatusHTML(value){const v=value||{},url=typeof v.url==='string'&&v.url.startsWith('https://auth.openai.com/')?v.url:null;return `${v.output?`<pre class="prompt-box task-log">${esc(v.output)}</pre>`:''}${url?`<a class="primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">在浏览器中继续授权${icon('arrow',18)}</a>`:''}`;}
   async function loadCollection(cid,more=false){const offset=more?(collectionPages.get(cid)||0):0,data=await api(`/api/jobs?collection=${cid}&limit=100&offset=${offset}`);data.items.forEach(rememberJob);collectionPages.set(cid,offset+data.items.length);projectImages();if(S.coll===cid){refresh();const hint=$('#grid')?.nextElementSibling;if(hint){let button=$('[data-act="collection-more"]',hint.parentElement);if(!button){button=document.createElement('button');button.className='secondary load-more';button.dataset.act='collection-more';hint.before(button);}button.dataset.id=cid;button.textContent='加载更多作品';button.hidden=offset+data.items.length>=data.total;}}}
   async function batchOperation(bid,verb,only){const b=S.batches.find(b=>b.id===bid);if(!b)return;const tasks=b.tasks.filter(t=>!only||t.id===only).filter(t=>verb==='cancel'?['queued','running'].includes(t.status):['failed','cancelled'].includes(t.status));let failed=0;for(const t of tasks){try{await post(`/api/jobs/${t.id}/${verb}`);}catch(e){failed++;report(e);}}await refreshData();toast(failed?`${tasks.length-failed} 项已处理，${failed} 项未完成`:(verb==='cancel'?'已取消':'已重新排队'));}
-  async function redraw(){const im=img(V.list[V.i]),r=rectOf(curImg()),regions=V.regions.map(g=>({x:Math.round((g.x-r.x)/r.w*im.w),y:Math.round((g.y-r.y)/r.h*im.h),width:Math.round(g.w/r.w*im.w),height:Math.round(g.h/r.h*im.h),prompt:(V.shared?V.sharedText:g.text).trim()}));for(const q of regions){q.x=clamp(q.x,0,im.w);q.y=clamp(q.y,0,im.h);q.width=Math.min(q.width,im.w-q.x);q.height=Math.min(q.height,im.h-q.y);if(q.width<16||q.height<16)throw new Error('每个选区的原图宽高至少需要 16 像素');if(!q.prompt)throw new Error('请填写每个选区的重绘要求');}
-    const result=await submit(`/api/assets/${im.id}/inpaint`,{regions,model:S.composer.model,effort:S.composer.effort});await back();toast(`${regions.length} 个区域已加入重绘任务`,{action:'查看',run:()=>goBatch(result.batch_id)});}
+  async function redraw(){
+    const editor=layers.at(-1);
+    const im=img(V.list[V.i]),r=V.fitRect||fitRect(im);
+    const regions=V.regions.map(g=>({x:Math.round((g.x-r.x)/r.w*im.w),y:Math.round((g.y-r.y)/r.h*im.h),width:Math.round(g.w/r.w*im.w),height:Math.round(g.h/r.h*im.h),prompt:(V.shared?V.sharedText:g.text).trim()}));
+    for(const q of regions){q.x=clamp(q.x,0,im.w);q.y=clamp(q.y,0,im.h);q.width=Math.min(q.width,im.w-q.x);q.height=Math.min(q.height,im.h-q.y);if(q.width<16||q.height<16)throw new Error('每个选区的原图宽高至少需要 16 像素');if(!q.prompt)throw new Error('请填写每个选区的重绘要求');}
+    const result=await submit(`/api/assets/${im.id}/inpaint`,{regions,model:S.composer.model,effort:S.composer.effort});
+    await traverseHistory(()=>editor?.type==='redraw'&&layers.at(-1)===editor?1:0);
+    toast(`${regions.length} 个区域已加入重绘任务`,{action:'查看',run:()=>goBatch(result.batch_id)});
+  }
 
   function renderFailure(bid){return StudioRecovery.render(FX.job,FX.diag,{bid,api,post,assets,planHTML,budget,bytes,report,refreshData,invalidate:id=>details.delete(id)});}
   let failureVersion=0;
@@ -438,10 +536,27 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'reconnect':case 'reconnect-set':await connection();break;
       case 'probe':confirmSheet('运行生图检查','会提交一次真实生图检查并使用额度。','开始检查',async()=>{const d=await post('/api/setup/probe');await refreshData();toast('检查已加入任务');});break;
       case 'pause':case 'unpause':await api('/api/settings',{method:'PATCH',body:{paused:k==='unpause'?false:!S.paused}});await refreshData();break;
-      case 'cache-clear':if(!a.classList.contains('danger-soft')){a.classList.add('danger-soft');a.textContent='确认清理？';setTimeout(()=>{if(a.isConnected){a.classList.remove('danger-soft');a.textContent='清理';}},3000);break;}await StudioImages.clear();S.settings.cache={mb:0,files:0};await refreshSettings(topScreen());a.classList.remove('danger-soft');a.textContent='已清理';toast('本机图片缓存已清理');break;
+      case 'cache-clear':if(!a.classList.contains('danger-soft')){a.classList.add('danger-soft');a.textContent='确认清理？';setTimeout(()=>{if(a.isConnected&&a.classList.contains('danger-soft')){a.classList.remove('danger-soft');a.textContent='清理';}},3000);break;}await StudioImages.clear();S.settings.cache={mb:0,files:0};await refreshLocalCache(topScreen());a.classList.remove('danger-soft');a.textContent='清理';toast('本机图片缓存已清理');break;
       case 'storage-limit':{const value=Number($('#storage-limit',topScreen()).value);if(!Number.isFinite(value)||value<0)throw new Error('请输入有效的存储上限');await api('/api/settings',{method:'PATCH',body:{storage_limit_bytes:Math.round(value*1073741824)}});await refreshSettings(topScreen());toast('存储上限已保存');break;}
       case 'empty-trash':{const parent=topScreen();confirmSheet('清空回收站','永久删除最近删除中的图片与列表，释放服务器空间。','永久清空',async()=>{await post('/api/storage/empty-trash',{confirm:'empty-trash'});await refreshData();if(parent?.isConnected){await trashRefresh.get(parent)?.();await refreshSettings(parent);}toast('回收站已清空');});break;}
-      case 'clear-task-cache':confirmSheet('清理超分任务缓存','删除中间图、补绘检查点与工作文件，保留原图、最终作品、任务记录与日志。清理后重试需要重新执行补绘。','清理缓存',async()=>{await post(`/api/upscale/jobs/${id}/clear-cache`);details.delete(id);await refreshData();await refreshSettings(topScreen());toast('任务缓存已清理');});break;
+      case 'storage-caches':await openCacheScreen();break;
+      case 'clear-task-cache':
+        confirmSheet('清理超分任务缓存','删除本任务的中间图和检查点。此后重试需要重新生成图块。','清理缓存',async()=>{
+          await api(`/api/upscale/jobs/${id}/clear-cache`,{method:'POST',body:{},timeout:180000});
+          details.delete(id);
+          await updateCacheViews();
+          toast('任务缓存已清理');
+        });
+        break;
+      case 'clear-caches':
+        confirmSheet('清空缓存','清理所有已结束超分任务的中间图和检查点。清理后重试需要重新生成图块。','清空任务缓存',async()=>{
+          const result=await api('/api/storage/clear-cache',{method:'POST',body:{confirm:'clear-cache'},timeout:180000});
+          [...result.cleared_ids,...result.failed_ids].forEach(jid=>details.delete(jid));
+          await updateCacheViews(result.storage);
+          const summary=[`已清理 ${result.cleared_ids.length} 个任务`,result.skipped_ids.length&&`跳过 ${result.skipped_ids.length} 个进行中任务`,result.failed_ids.length&&`${result.failed_ids.length} 个清理失败`];
+          toast(summary.filter(Boolean).join(' · '));
+        });
+        break;
       case 'trash':await trash();break;
       case 'install':if(installPrompt){await installPrompt.prompt();installPrompt=null;}else openSheet({title:'安装应用',html:'<p class="note">在浏览器菜单中选择“安装应用”或“添加到主屏幕”。iPhone 请在 Safari 的分享菜单中选择“添加到主屏幕”。</p><a class="primary" href="/downloads/image-studio.apk" download>下载 Android 安装包</a>'});break;
       case 'logout':await post('/api/auth/logout');authenticated=false;clearTimeout(polling);await StudioImages.clear();assets.clear();jobs.clear();batchMap.clear();details.clear();knownStates.clear();login();break;
@@ -471,11 +586,11 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'im-dl':download(id);break;
       case 'works-tab':{const tab=a.dataset.v;if(!['generated','references','favorites'].includes(tab))break;if(StudioSelection.active())await StudioSelection.leave();S.worksTab=tab;renderPage();if(tab!=='generated')await loadWorks(tab);break;}
       case 'works-more':await loadWorks(S.worksTab,workState(S.worksTab).ready&&!workState(S.worksTab).error);break;
-      case 'im-fav':rememberAsset(await api('/api/assets/'+id,{method:'PATCH',body:{favorite:!assets.get(id).fav}}));projectImages();await back();if(S.worksTab==='favorites')await loadWorks('favorites');if(!V.open)refresh();toast(assets.get(id).fav?'已收藏':'已取消收藏');break;
+      case 'im-fav':{const layer=a.closest('.sheet-layer'),revision=layer?.dataset.revision;rememberAsset(await api('/api/assets/'+id,{method:'PATCH',body:{favorite:!assets.get(id).fav}}));projectImages();await closeOwnedSheet(layer,revision);if(S.worksTab==='favorites')await loadWorks('favorites');if(!V.open)refresh();toast(assets.get(id).fav?'已收藏':'已取消收藏');break;}
       case 'copy-prompt':await navigator.clipboard.writeText(assets.get(id)?.prompt||'');toast('提示词已复制');break;
-      case 'rd-submit':a.disabled=true;try{await redraw();}finally{if(a.isConnected)a.disabled=false;}break;
+      case 'rd-submit':await redraw();break;
       case 'up-f':{const L=a.closest('.sheet-layer');L.dataset.f=a.dataset.v;$$('#upo .opt',L).forEach(b=>b.classList.toggle('on',b===a));paintSheetPlan(L);break;}
-      case 'up-go':a.disabled=true;try{const L=a.closest('.sheet-layer');await startUpscale(id,L.dataset.f,$('#up-inj',L).value.trim(),null,L.dataset.promptScope);await back();}finally{a.disabled=false;}break;
+      case 'up-go':{const L=a.closest('.sheet-layer'),revision=L.dataset.revision;await startUpscale(id,L.dataset.f,$('#up-inj',L).value.trim(),null,L.dataset.promptScope);await closeOwnedSheet(L,revision);break;}
       case 'up-start':{if(!S.upc.src)throw new Error('先选择要超分的原图');if(!getPlan(assets.get(S.upc.src),S.upc.factor)?.stages)throw new Error('请等待切图预算计算完成');a.disabled=true;try{const f=S.upc.factor;await startUpscale(S.upc.src,f,$('#cu-inj').value.trim(),()=>{if(!a.isConnected)return;$('#gen-done').textContent='已加入 '+f;a.classList.add('done');flyDot(a,$('.tab[data-tab="queue"] .ti'));setTimeout(()=>a.classList.remove('done'),1700);});}finally{a.disabled=false;}break;}
       case 'up-detail':await upDetail(id,a.dataset.inspectOnly==='true');break;
       case 'failure':await openFailure(a.dataset.t||id);break;
@@ -506,7 +621,7 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   addEventListener('pagehide',suspendPage);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)suspendPage();else wake();});
   const safe=fn=>(...args)=>Promise.resolve().then(()=>fn(...args)).catch(report);
-  return {boot,api,report,action,makeUp,planHTML,settingsHTML,avatar,setComposerRefs,saveDraft,sessionScope:()=>authState?.cache_scope||'',saveQuickSettings:items=>api('/api/settings',{method:'PATCH',body:{quick_settings:items}}),taskInfo,cloneUpscale,username:()=>account.username||"",requestedRatio:id=>labelRatio(jobs.get(assets.get(id)?.job_id)?.options.ratio||"auto"),settingChanged,refreshSettings,modelName,backendLabel:()=>{const b={...S.settings.imageBackend,...S.composer.imageBackend};return b?`${b.image_model} · ${b.quality}`:"图片生成";},models:()=>models,config:()=>config,loadCollection,batchMore:()=>batchOffset<batchTotal,
+  return {boot,api,report,action,confirmTaskDeletion,makeUp,planHTML,settingsHTML,avatar,setComposerRefs,saveDraft,sessionScope:()=>authState?.cache_scope||'',saveQuickSettings:items=>api('/api/settings',{method:'PATCH',body:{quick_settings:items}}),taskInfo,cloneUpscale,username:()=>account.username||"",requestedRatio:id=>labelRatio(jobs.get(assets.get(id)?.job_id)?.options.ratio||"auto"),settingChanged,refreshSettings,modelName,backendLabel:()=>{const b={...S.settings.imageBackend,...S.composer.imageBackend};return b?`${b.image_model} · ${b.quality}`:"图片生成";},models:()=>models,config:()=>config,loadCollection,batchMore:()=>batchOffset<batchTotal,
     generate:safe(generate),reroll:safe(reroll),deleteImage:safe(deleteImage),loadTemplate:safe(loadTemplate),infoSheet:safe(infoSheet),upscaleSheet,pickerSheet:safe(pickerSheet),meSheet,tplSheet,tplSaveForm,openFailure:safe(openFailure),fxView,fxSubmit:safe(fxSubmit),sendQuick,editImage,
     workItems,workState,loadWorks,bulkAssets,stop(){stopped=true;sessionEpoch++;bootVersion++;clearTimeout(polling);cancelReads();for(const request of [...requests])request.cancel();}};
 })();

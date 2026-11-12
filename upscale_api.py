@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +27,64 @@ from storage_manager import StorageFull, tree_bytes
 
 class ConfirmTrash(BaseModel):
     confirm: Literal['empty-trash']
+
+
+class ConfirmCacheClear(BaseModel):
+    confirm: Literal['clear-cache']
+
+
+def storage_report(studio, task_clearable):
+    asset_rows = studio.query("""SELECT a.path,a.kind,a.deleted,j.collection_id,c.name,c.deleted AS collection_deleted
+        FROM assets a LEFT JOIN jobs j ON j.id=a.job_id LEFT JOIN collections c ON c.id=j.collection_id""")
+    assets = {Path(row['path']): row for row in asset_rows}
+    labels = {
+        'references': '参考图', 'other_outputs': '其他产物', 'trash': '回收站',
+        'thumbnails': '缩略图缓存', 'previews': '高清预览缓存',
+        **{f'upscale_{level}': f'超分第 {level} 级缓存' for level in range(1, 4)},
+        'upscale_cache': '超分共用缓存', 'runtime_cache': '模型返回缓存',
+        'system': '系统本体与任务记录',
+    }
+    sizes, task_sizes = Counter(), Counter()
+
+    def count_file(path, size):
+        parts = path.relative_to(studio.DATA).parts
+        group = parts[0]
+        category = 'system'
+        if group == 'assets' and (asset := assets.get(path)):
+            if asset['deleted'] or asset['collection_deleted']:
+                category = 'trash'
+            elif asset['kind'] == 'reference':
+                category = 'references'
+            elif asset['name']:
+                category = 'collection:' + asset['collection_id']
+                labels[category] = asset['name']
+            else:
+                category = 'other_outputs'
+        elif group == 'thumbs':
+            category = 'previews' if path.name.endswith('-preview.webp') else 'thumbnails'
+        elif group == 'previews':
+            category = 'previews'
+        elif group == 'codex':
+            category = 'runtime_cache'
+        elif len(parts) >= 4 and group == 'jobs' and parts[2] == 'stitch' and parts[3] != 'progressive.json':
+            task_sizes[parts[1]] += size
+            level = re.fullmatch(r'0([123])-[a-f0-9]{16}', parts[4]) if len(parts) >= 6 and parts[3] == 'stages' else None
+            category = f'upscale_{level[1]}' if level else 'upscale_cache'
+        sizes[category] += size
+
+    value = {**studio.STORAGE.usage(on_file=count_file)}
+    collections = sorted((key for key in sizes if key.startswith('collection:')), key=lambda key: (-sizes[key], key))
+    for key in collections[2:]:
+        sizes['other_outputs'] += sizes.pop(key)
+    order = ['references', *collections[:2], *[key for key in labels if key != 'references' and not key.startswith('collection:')]]
+    value['breakdown'] = [{'key': key, 'label': labels[key], 'bytes': sizes[key]} for key in order if sizes[key]]
+    value['tasks'] = [
+        {'id': job['id'], 'prompt': job['prompt'][:80], 'status': job['status'], 'bytes': task_sizes[job['id']], 'clearable': task_clearable(job)}
+        for job in studio.query("SELECT id,prompt,status FROM jobs WHERE COALESCE(json_extract(options,'$.stitch'),0)>0 ORDER BY created DESC")
+        if task_sizes[job['id']]
+    ]
+    value['trash'] = {table: studio.query(f'SELECT COUNT(*) AS n FROM {table} WHERE deleted=1', one=True)['n'] for table in ('assets','collections')}
+    return value
 
 
 class RepairTiles(BaseModel):
@@ -261,7 +320,7 @@ def register(app,studio):
                 save_json(journal,{'id':recovery_id,'previous':previous,'next':manifest})
             try:
                 with studio.db() as connection:
-                    changed=connection.execute("UPDATE jobs SET status='queued',options=?,attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail=? WHERE id=? AND status IN ('failed','cancelled')",(json.dumps(options),json.dumps(detail),jid)).rowcount
+                    changed=connection.execute("UPDATE jobs SET status='queued',history_deleted=0,options=?,attempt=0,error='',started=NULL,finished=NULL,stage='',stage_source='',stage_updated=0,progress_detail=? WHERE id=? AND status IN ('failed','cancelled')",(json.dumps(options),json.dumps(detail),jid)).rowcount
                     if not changed:raise HTTPException(409,'任务状态已变化，请刷新')
                     if manifest:save_json(root/'progressive.json',manifest)
             except BaseException:
@@ -324,7 +383,7 @@ def register(app,studio):
                 state=progress_detail.get('level_states',{}).get(str(stage['index']))
                 if state:stage['progress']=state
             save_json(root_for(studio,jid)/'progressive.json',manifest)
-            studio.write("UPDATE jobs SET status='queued',options=?,attempt=0,error='',finished=NULL,started=NULL,stage='',progress_detail=? WHERE id=?",(json.dumps(options),json.dumps(progress_detail),jid))
+            studio.write("UPDATE jobs SET status='queued',history_deleted=0,options=?,attempt=0,error='',finished=NULL,started=NULL,stage='',progress_detail=? WHERE id=?",(json.dumps(options),json.dumps(progress_detail),jid))
             studio.STORAGE.invalidate();studio.WAKE.set()
         return {'ok':True,'tiles':indices,'expected_images':len(indices),'expected_reviews':1}
 
@@ -405,13 +464,13 @@ def register(app,studio):
 
     @app.get('/api/upscale/jobs')
     def jobs(limit:int=30,offset:int=0,session=auth):
-        rows=studio.query("SELECT * FROM jobs WHERE COALESCE(json_extract(options,'$.stitch'),0)>0 ORDER BY created DESC LIMIT ? OFFSET ?",(min(100,max(1,limit)),max(0,offset)))
+        rows=studio.query("SELECT * FROM jobs WHERE history_deleted=0 AND COALESCE(json_extract(options,'$.stitch'),0)>0 ORDER BY created DESC LIMIT ? OFFSET ?",(min(100,max(1,limit)),max(0,offset)))
         result=[]
         for row in rows:
             value=studio.serialize_job(row);manifest=load_manifest(studio,row['id'])
             value['upscale_summary']={key:manifest.get(key) for key in ('budget','calls','actual_size','cache_cleared')} if manifest else None
             result.append(value)
-        return {'items':result,'total':studio.query("SELECT COUNT(*) AS n FROM jobs WHERE COALESCE(json_extract(options,'$.stitch'),0)>0",one=True)['n']}
+        return {'items':result,'total':studio.query("SELECT COUNT(*) AS n FROM jobs WHERE history_deleted=0 AND COALESCE(json_extract(options,'$.stitch'),0)>0",one=True)['n']}
 
     @app.get('/api/upscale/jobs/{jid}')
     def detail(jid:str,session=auth):
@@ -469,54 +528,103 @@ def register(app,studio):
         if not path.is_file():raise HTTPException(404)
         return FileResponse(path,media_type='image/webp',headers={'Cache-Control':'private, no-store'})
 
+    def task_clearable(job):
+        task = studio.JOB_TASKS.get(job['id'])
+        return job['status'] in ('succeeded','failed','cancelled') and not (task and not task.done())
+
     @app.get('/api/storage')
     def storage_status(session=auth):
-        value=studio.STORAGE.usage(True)
-        tasks=[]
-        for job in studio.query("SELECT id,prompt,status,options,created FROM jobs WHERE COALESCE(json_extract(options,'$.stitch'),0)>0 ORDER BY created DESC"):
-            size=tree_bytes(root_for(studio,job['id']))
-            if size:tasks.append({'id':job['id'],'prompt':job['prompt'][:80],'status':job['status'],'bytes':size,'clearable':job['status'] not in ('queued','running','retrying')})
-        value['tasks']=tasks
-        value['trash']={'assets':studio.query('SELECT COUNT(*) AS n FROM assets WHERE deleted=1',one=True)['n'],
-                        'collections':studio.query('SELECT COUNT(*) AS n FROM collections WHERE deleted=1',one=True)['n']}
-        return value
+        return storage_report(studio, task_clearable)
+
+    def job_threads(job):
+        log = studio.DATA/'jobs'/job['id']/'events.jsonl'
+        threads = [job.get('thread_id','')]
+        if log.is_file() and log.resolve() == log:
+            with log.open(encoding='utf-8', errors='replace') as stream:
+                for line in stream:
+                    with contextlib.suppress(ValueError, AttributeError):
+                        event = json.loads(line)
+                        if event.get('type') == 'thread.started':
+                            threads.append(event.get('thread_id',''))
+        return {thread for thread in threads if isinstance(thread,str) and re.fullmatch(r'[A-Za-z0-9_-]{10,100}',thread)}
+
+    def protected_threads():
+        running = studio.query("SELECT id,thread_id,status FROM jobs WHERE status IN ('queued','running','retrying')")
+        tracked = set(studio.JOB_TASKS).difference(job['id'] for job in running)
+        for jid in tracked:
+            job = studio.query('SELECT id,thread_id,status FROM jobs WHERE id=?', (jid,), True)
+            if job and not task_clearable(job):
+                running.append(job)
+        return set().union(*(job_threads(job) for job in running))
+
+    def clear_cache_files(job, protected):
+        if not task_clearable(job):
+            raise HTTPException(409,'等待或运行中的任务不能清理缓存')
+        jid = job['id']
+        root = root_for(studio,jid)
+        options = json.loads(job['options'])
+        if not options.get('stitch'):
+            raise HTTPException(400,'该任务不是超分任务')
+        if root.resolve() != root:
+            raise HTTPException(409,'任务缓存路径无效')
+        base = root/'base.png'
+        if base.is_file() and not options.get('source_asset_id'):
+            if base.resolve() != base:
+                raise HTTPException(409,'任务原图路径无效')
+            asset,_ = studio.store_image_path(base,f'超分原图-{jid[:8]}.png','generated',jid)
+            options['source_asset_id'] = asset['id']
+            studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
+        manifest = load_manifest(studio,jid)
+        if manifest:
+            manifest.update(cache_cleared=True,cache_cleared_at=time.time())
+            save_json(root/'progressive.json',manifest)
+        if root.exists():
+            for item in root.iterdir():
+                if item.name != 'progressive.json':
+                    studio.STORAGE.remove(item)
+        # Match only threads recorded for this task, and keep returns shared with a live job.
+        for thread in job_threads(job) - protected:
+            studio.STORAGE.remove(studio.CODEX_HOME/'generated_images'/thread)
 
     def clear_cache(jid):
         with studio.STORAGE.lock:
-            job=studio.query('SELECT * FROM jobs WHERE id=?',(jid,),True)
-            if not job:raise HTTPException(404,'任务不存在')
-            if job['status'] in ('queued','running','retrying'):raise HTTPException(409,'等待或运行中的任务不能清理缓存')
-            root=root_for(studio,jid);options=json.loads(job['options'])
-            if not options.get('stitch'):raise HTTPException(400,'该任务不是超分任务')
-            if (root/'base.png').exists() and not options.get('source_asset_id'):
-                asset,_=studio.store_image_path(root/'base.png',f'超分原图-{jid[:8]}.png','generated',jid)
-                options['source_asset_id']=asset['id'];studio.write('UPDATE jobs SET options=? WHERE id=?',(json.dumps(options),jid))
-            manifest=load_manifest(studio,jid)
-            released=0
-            if root.exists():
-                for item in list(root.iterdir()):
-                    if item.name=='progressive.json':continue
-                    released+=studio.STORAGE.remove(item)
-            # Remove only generated-image folders explicitly named by this job's logs.
-            log=studio.DATA/'jobs'/jid/'events.jsonl'
-            threads={job.get('thread_id','')}
-            if log.exists():
-                with log.open(encoding='utf-8',errors='replace') as stream:
-                    for line in stream:
-                        with contextlib.suppress(ValueError):
-                            event=json.loads(line)
-                            if event.get('type')=='thread.started':threads.add(event.get('thread_id',''))
-            for thread in threads:
-                if re.fullmatch('[A-Za-z0-9_-]{10,100}',thread):released+=studio.STORAGE.remove(studio.CODEX_HOME/'generated_images'/thread)
-            if manifest:
-                manifest.update(cache_cleared=True,cache_cleared_at=time.time())
-                save_json(root/'progressive.json',manifest)
-            return {'ok':True,'released_bytes':released,'storage':studio.STORAGE.usage(True)}
+            job = studio.query('SELECT * FROM jobs WHERE id=?',(jid,),True)
+            if not job:
+                raise HTTPException(404,'任务不存在')
+            before = studio.STORAGE.usage(True)['bytes']
+            clear_cache_files(job, protected_threads())
+            storage = studio.STORAGE.usage(True)
+            return {'ok':True,'released_bytes':max(0,before-storage['bytes']),'storage':storage}
 
     @app.post('/api/upscale/jobs/{jid}/clear-cache')
     async def clear_task_cache(jid:str,session=auth):
         root_for(studio,jid)
         return await asyncio.to_thread(clear_cache,jid)
+
+    def clear_all_caches():
+        with studio.STORAGE.lock:
+            before = storage_report(studio, task_clearable)
+            protected = protected_threads()
+            cleared, skipped, failed = [], [], []
+            for entry in before['tasks']:
+                jid = entry['id']
+                job = studio.query('SELECT * FROM jobs WHERE id=?',(jid,),True)
+                if not job or not task_clearable(job):
+                    skipped.append(jid)
+                    continue
+                try:
+                    clear_cache_files(job, protected)
+                except (HTTPException,StorageFull,OSError,ValueError):
+                    failed.append(jid)
+                else:
+                    cleared.append(jid)
+            storage = storage_report(studio, task_clearable)
+            return {'ok':not failed,'cleared_ids':cleared,'skipped_ids':skipped,'failed_ids':failed,
+                    'released_bytes':max(0,before['bytes']-storage['bytes']),'storage':storage}
+
+    @app.post('/api/storage/clear-cache')
+    async def clear_task_caches(body:ConfirmCacheClear,session=auth):
+        return await asyncio.to_thread(clear_all_caches)
 
     def purge_trash():
         with studio.STORAGE.lock:

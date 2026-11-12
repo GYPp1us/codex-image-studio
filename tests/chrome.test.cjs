@@ -46,6 +46,19 @@ test('native system-bar colors follow menu dimming, dragging and a fading nonint
 test('native bridge rejects synthetic/foreign handshakes, replaces ports and stops idle sampling',()=>{
  const f=androidFixture();f.handshake({isTrusted:false});f.handshake({source:{}});assert.equal(f.messages.length,0);f.handshake();assert.equal(f.messages.length,1);f.frame(500);assert.equal(f.frameCount,0);assert.equal(f.messages.length,1);f.handshake();assert.equal(f.port.closed,true);assert.equal(f.messages.length,2);
 });
-test('nested screens and menus compose in their visual stacking order',()=>{
- const f=androidFixture();f.handshake();f.overlay('screen','rgb(240, 230, 220)',0,'#screens');f.overlay('scrim','rgba(20, 20, 16, 0.38)');f.mutate();f.frame();assert.equal(f.messages.at(-1).topColor,'#9c968e');
+test('native colors respect which surface opened last across different hosts',()=>{
+ const f=androidFixture();f.handshake();
+ const screen=f.overlay('screen','rgb(240, 230, 220)',0,'#screens');
+ screen._z='2';
+ const scrim=f.overlay('scrim','rgba(20, 20, 16, 0.38)');
+ const layer=f.document.createElement('div');
+ layer.className='sheet-layer';
+ layer._z='1';
+ scrim.parentElement.append(layer);
+ layer.append(scrim);
+ f.mutate();f.frame();
+ assert.equal(f.messages.at(-1).topColor,'#f0e6dc');
+ layer._z='3';
+ f.mutate();f.frame();
+ assert.equal(f.messages.at(-1).topColor,'#9c968e');
 });

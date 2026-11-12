@@ -25,6 +25,7 @@ const StudioZoom=(()=>{
     if(!asset||!preview)return false;if(!metrics)measure();return true;
   }
   function point(e){return {x:(e.clientX-metrics.rect.left)/metrics.screenScale,y:(e.clientY-metrics.rect.top)/metrics.screenScale};}
+  function fitCenter(){const r=metrics.fit;return {x:r.x+r.w/2,y:r.y+r.h/2};}
   function geometry(){const r=metrics.fit;return {x:r.x+(r.w-r.w*scale)/2+x,y:r.y+(r.h-r.h*scale)/2+y,w:r.w*scale,h:r.h*scale};}
   function clampPose(){const r=metrics.fit;x=clamp(x,-Math.max(0,(r.w*scale-metrics.canvasWidth)/2),Math.max(0,(r.w*scale-metrics.canvasWidth)/2));y=clamp(y,-Math.max(0,(r.h*scale-metrics.area)/2),Math.max(0,(r.h*scale-metrics.area)/2));}
   function restorePreview(){
@@ -84,12 +85,19 @@ const StudioZoom=(()=>{
   }
   function toggleAt(client){
     if(!ensure()||V.redraw)return;measure();closing=false;
-    if(scale>1.0001){animateZoom(1,{x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2});return;}
-    const p=client?point(client):{x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2};
+    if(scale>1.0001){animateZoom(1,fitCenter());return;}
+    const p=client?point(client):fitCenter();
     animateZoom(Math.min(Math.max(2,asset.w/metrics.fit.w),3),p);schedulePaint(true);vw.classList.remove('chrome-off');
   }
   function settle(){clearTimeout(settleTimer);settleTimer=setTimeout(()=>{settleTimer=null;schedulePaint(true);},110);}
-  function toggleNative(animate){if(!ensure()||V.redraw)return;cancelTween();closing=false;const p={x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2},target=scale>1.0001?1:Math.max(1,asset.w/metrics.fit.w);if(animate)animateZoom(target,p);else zoomTo(target,p);schedulePaint(true);vw.classList.remove('chrome-off');}
+  const isNative=()=>!!metrics&&scale>1.0001&&Math.abs(scale-asset.w/metrics.fit.w)<.0001;
+  function toggleNative(animate){
+    if(!ensure()||V.redraw)return;
+    cancelTween();closing=false;
+    const p=fitCenter(),target=isNative()?1:Math.max(1,asset.w/metrics.fit.w);
+    if(animate)animateZoom(target,p);else zoomTo(target,p);
+    schedulePaint(true);vw.classList.remove('chrome-off');
+  }
   function cancelEntry(entry){
     clearTimeout(entry.timer);
     if(entry.status==='loading'||entry.status==='decoding'){active--;entry.image.onload=entry.image.onerror=null;entry.image.removeAttribute('src');}
@@ -173,8 +181,8 @@ const StudioZoom=(()=>{
     else if(list.length)gesture={kind:'pan',point:list[0],x,y,moved:false,pinched:!!pinched,time:now()};
   }
   stage.addEventListener('pointerdown',e=>{
-    if(e.button>0||V.redraw||!ensure())return;if(tween!==null){cancelTween();}measure();points.set(e.pointerId,point(e));
-    if(points.size>=2||scale>1.0001){if(typeof cancelViewerDrag==='function')cancelViewerDrag();else drag=null;track.getAnimations?.().forEach(a=>a.cancel());track.style.transform='';closing=false;startGesture();stage.setPointerCapture(e.pointerId);e.stopImmediatePropagation();}
+    if(e.button>0||e.target?.closest?.('button')||V.redraw||!ensure())return;if(tween!==null){cancelTween();}measure();points.set(e.pointerId,point(e));
+    if(points.size>=2||scale>1.0001){if(typeof cancelViewerDrag==='function')cancelViewerDrag(true);else drag=null;track.getAnimations?.().forEach(a=>a.cancel());track.style.transform='';closing=false;startGesture();stage.setPointerCapture(e.pointerId);e.stopImmediatePropagation();}
   },true);
   stage.addEventListener('pointermove',e=>{
     if(!points.has(e.pointerId)||!gesture||!metrics)return;const p=point(e);points.set(e.pointerId,p);e.stopImmediatePropagation();
@@ -187,7 +195,7 @@ const StudioZoom=(()=>{
     points.delete(e.pointerId);if(!gesture)return;e.stopImmediatePropagation();const tap=e.type!=='pointercancel'&&gesture.kind==='pan'&&!gesture.pinched&&!gesture.moved&&now()-gesture.time<350;
     const ended=gesture;if(e.type==='pointercancel')points.clear();if(points.size)startGesture();else{gesture=null;schedulePaint(true);
       if(tap){if(typeof viewerTap==='function')viewerTap(e);else vw.classList.toggle('chrome-off');}
-      else if(scale<1)animateZoom(1,{x:metrics.width/2,y:metrics.fit.y+metrics.fit.h/2});
+      else if(scale<1)animateZoom(1,fitCenter());
       else if(e.type!=='pointercancel'&&ended.kind==='pan'&&ended.moved&&now()-(ended.lastT??0)<80&&Math.hypot(ended.vx||0,ended.vy||0)>.3)fling(ended.vx,ended.vy);}
   }
   stage.addEventListener('pointerup',up,true);stage.addEventListener('pointercancel',up,true);
@@ -204,5 +212,5 @@ const StudioZoom=(()=>{
   }
   const requestResize=()=>{if(resizeFrame===null)resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;resized();});};
   addEventListener('resize',requestResize);globalThis.visualViewport?.addEventListener('resize',requestResize);
-  return {reset,stop,fit,suspend,resume,toggleNative,toggleAt,paint(){if(ensure())schedulePaint(true);},isZoomed:()=>scale>1.0001,isInteracting:()=>points.size>0||now()-lastWheel<150,cacheUsage:()=>({bytes:cacheBytes,entries:cache.size,active})};
+  return {reset,stop,fit,suspend,resume,toggleNative,toggleAt,isNative,paint(){if(ensure())schedulePaint(true);},isZoomed:()=>scale>1.0001,isInteracting:()=>points.size>0||now()-lastWheel<150,cacheUsage:()=>({bytes:cacheBytes,entries:cache.size,active})};
 })();

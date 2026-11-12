@@ -138,13 +138,38 @@ def register(app, studio):
     def batches(status: str = '', limit: int = 30, offset: int = 0, session=Depends(studio.require_user)):
         # Page batch identities first, then fetch all of their jobs. A page boundary
         # must never turn a 20-image batch into two incomplete cards.
-        predicate, args = (' WHERE status=?', [status]) if status else ('', [])
+        predicate, args = (' WHERE history_deleted=0 AND status=?', [status]) if status else (' WHERE history_deleted=0', [])
         key = "COALESCE(NULLIF(batch_id,''),id)"
-        identities = studio.query(f'SELECT {key} AS id,MAX(created) AS created FROM jobs{predicate} '
-            f'GROUP BY {key} ORDER BY created DESC,id DESC LIMIT ? OFFSET ?', (*args, max(1, min(limit, 100)), max(0, offset)))
-        items = []
-        for identity in identities:
-            jobs = studio.query(f'SELECT * FROM jobs WHERE {key}=? ORDER BY created,id', (identity['id'],))
-            items.append(identity | {'prompt': jobs[0]['prompt'], 'jobs': [studio.serialize_job(job) for job in jobs]})
-        total = studio.query(f'SELECT COUNT(DISTINCT {key}) AS n FROM jobs{predicate}', args, True)['n']
-        return {'items': items, 'total': total}
+        with studio.db() as connection:
+            connection.execute('BEGIN')
+            identities = connection.execute(f'SELECT {key} AS id,MAX(created) AS created FROM jobs{predicate} '
+                f'GROUP BY {key} ORDER BY created DESC,id DESC LIMIT ? OFFSET ?', (*args, max(1, min(limit, 100)), max(0, offset))).fetchall()
+            rows = [(dict(identity), connection.execute(f'SELECT * FROM jobs WHERE {key}=? AND history_deleted=0 ORDER BY created,id', (identity['id'],)).fetchall()) for identity in identities]
+            total = connection.execute(f'SELECT COUNT(DISTINCT {key}) FROM jobs{predicate}', args).fetchone()[0]
+            revision = connection.execute('SELECT COUNT(*),COALESCE(MAX(history_deleted),0) FROM jobs WHERE history_deleted>0').fetchone()
+        items = [identity | {'prompt': jobs[0]['prompt'], 'jobs': [studio.serialize_job(job) for job in jobs]} for identity,jobs in rows]
+        return {'items': items, 'total': total, 'history_revision': f'{revision[0]}:{revision[1]}'}
+
+    def delete_history(predicate, identity):
+        with studio.db() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            jobs = connection.execute(f'SELECT id,status,history_deleted FROM jobs WHERE {predicate}', (identity,)).fetchall()
+            if not jobs:
+                raise HTTPException(404, '任务记录不存在')
+            visible = [job for job in jobs if not job['history_deleted']]
+            if any(job['status'] not in ('succeeded', 'failed', 'cancelled') for job in visible):
+                raise HTTPException(409, '只能删除已结束的任务记录')
+            removed = [job['id'] for job in visible]
+            revision = connection.execute('SELECT COUNT(*),COALESCE(MAX(history_deleted),0) FROM jobs WHERE history_deleted>0').fetchone()
+            marker = max(int(studio.now()*1_000_000), revision[1]+1)
+            connection.executemany('UPDATE jobs SET history_deleted=? WHERE id=?', ((marker, jid) for jid in removed))
+            return {'ok': True, 'removed_ids': removed, 'previous_history_revision': f'{revision[0]}:{revision[1]}',
+                    'history_revision': f'{revision[0]+len(removed)}:{marker if removed else revision[1]}'}
+
+    @app.delete('/api/jobs/{jid}')
+    def delete_job_record(jid: str, session=Depends(studio.require_user)):
+        return delete_history('id=?', jid)
+
+    @app.delete('/api/batches/{bid}')
+    def delete_batch_records(bid: str, session=Depends(studio.require_user)):
+        return delete_history("COALESCE(NULLIF(batch_id,''),id)=?", bid)

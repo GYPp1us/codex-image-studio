@@ -345,17 +345,10 @@ class UpscaleFeatures(unittest.TestCase):
         real_db=self.studio.db
         @contextlib.contextmanager
         def fail_commit():
-            class Connection:
-                updated=False
-                def __init__(self,inner):self.inner=inner
-                def execute(self,sql,args=()):
-                    if sql.startswith("UPDATE jobs SET status='queued',options="):self.updated=True
-                    return self.inner.execute(sql,args)
-                def __getattr__(self,key):return getattr(self.inner,key)
             with real_db() as conn:
-                proxy=Connection(conn)
-                yield proxy
-                if proxy.updated:raise sqlite3.OperationalError('fixture commit failure')
+                yield conn
+                if conn.in_transaction and conn.execute("SELECT 1 FROM jobs WHERE id=? AND status='queued'",(jid,)).fetchone():
+                    raise sqlite3.OperationalError('fixture commit failure')
         with patch.object(self.studio,'db',fail_commit):
             with self.assertRaises(sqlite3.OperationalError):self.post(f'/api/upscale/jobs/{jid}/recover',{'action':'accept_review'})
         self.assertEqual(self.studio.query('SELECT status FROM jobs WHERE id=?',(jid,),True)['status'],'failed')

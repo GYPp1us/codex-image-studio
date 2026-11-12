@@ -6,11 +6,11 @@
 <title>Image Studio</title><meta name="apple-mobile-web-app-capable" content="yes">
 <script src="/static/studio-theme.js?v=20261030-personal1"></script>
 <link rel="manifest" href="/static/manifest.webmanifest"><link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/studio.css?v=20261030-personal1"><link rel="stylesheet" href="/static/studio-service.css?v=direct1">
-<link rel="stylesheet" href="/static/studio-feedback.css?v=performance-review1"><link rel="stylesheet" href="/static/studio-references.css?v=overhaul1"><link rel="stylesheet" href="/static/studio-selection.css?v=overhaul1"><link rel="stylesheet" href="/static/studio-progress.css?v=direct1"><link rel="stylesheet" href="/static/studio-tasks.css?v=taskpolish1"><link rel="stylesheet" href="/static/studio-upscale-prompts.css?v=direct1"><link rel="stylesheet" href="/static/studio-landscape.css?v=recovery1">
+<link rel="stylesheet" href="/static/studio.css?v=layers1"><link rel="stylesheet" href="/static/studio-service.css?v=layers1">
+<link rel="stylesheet" href="/static/studio-feedback.css?v=composer-storage1"><link rel="stylesheet" href="/static/studio-references.css?v=overhaul1"><link rel="stylesheet" href="/static/studio-selection.css?v=overhaul1"><link rel="stylesheet" href="/static/studio-progress.css?v=direct1"><link rel="stylesheet" href="/static/studio-tasks.css?v=composer-storage1"><link rel="stylesheet" href="/static/studio-upscale-prompts.css?v=direct1"><link rel="stylesheet" href="/static/studio-landscape.css?v=viewer1">
 <script src="/static/image-cache.js?v=performance1" defer></script>
-<script src="/static/studio-layout.js?v=20261030-personal1" defer></script><script src="/static/studio-feedback.js?v=performance-review1" defer></script><script src="/static/studio-progress.js?v=quick1" defer></script><script src="/static/studio-ui.js?v=performance-review1" defer></script><script src="/static/studio-chrome.js?v=20261030-personal1" defer></script><script src="/static/studio-zoom.js?v=performance1" defer></script><script src="/static/studio-native-download.js?v=overhaul1" defer></script><script src="/static/studio-download.js?v=performance1" defer></script><script src="/static/studio-references.js?v=performance1" defer></script><script src="/static/studio-picker.js?v=performance1" defer></script><script src="/static/studio-avatar.js?v=performance1" defer></script><script src="/static/studio-selection.js?v=overhaul1" defer></script><script src="/static/studio-generation.js?v=performance1" defer></script><script src="/static/studio-tasks.js?v=performance-review1" defer></script><script src="/static/studio-upscale-prompts.js?v=direct1" defer></script><script src="/static/studio-landscape.js?v=recovery1" defer></script><script src="/static/studio-failure-map.js?v=overhaul1" defer></script><script src="/static/studio-recovery.js?v=recovery1" defer></script><script src="/static/studio-quick-settings.js?v=quickreview1" defer></script><script src="/static/studio-service.js?v=performance-review1" defer></script>
-<link rel="stylesheet" href="/static/studio-generation.css?v=taskpolish1"><link rel="stylesheet" href="/static/studio-quick-settings.css?v=quick1"></head><body><div class="app" id="app" aria-label="Image Studio">
+<script src="/static/studio-layout.js?v=20261030-personal1" defer></script><script src="/static/studio-feedback.js?v=performance-review1" defer></script><script src="/static/studio-progress.js?v=quick1" defer></script><script src="/static/studio-ui.js?v=viewer1" defer></script><script src="/static/studio-chrome.js?v=layers1" defer></script><script src="/static/studio-zoom.js?v=viewer1" defer></script><script src="/static/studio-native-download.js?v=overhaul1" defer></script><script src="/static/studio-download.js?v=performance1" defer></script><script src="/static/studio-references.js?v=performance1" defer></script><script src="/static/studio-picker.js?v=performance1" defer></script><script src="/static/studio-avatar.js?v=performance1" defer></script><script src="/static/studio-selection.js?v=overhaul1" defer></script><script src="/static/studio-generation.js?v=performance1" defer></script><script src="/static/studio-tasks.js?v=performance-review1" defer></script><script src="/static/studio-upscale-prompts.js?v=direct1" defer></script><script src="/static/studio-landscape.js?v=viewer1" defer></script><script src="/static/studio-failure-map.js?v=overhaul1" defer></script><script src="/static/studio-recovery.js?v=recovery1" defer></script><script src="/static/studio-quick-settings.js?v=composer-storage1" defer></script><script src="/static/studio-service.js?v=viewer1" defer></script>
+<link rel="stylesheet" href="/static/studio-generation.css?v=taskpolish1"><link rel="stylesheet" href="/static/studio-quick-settings.css?v=composer-storage1"></head><body><div class="app" id="app" aria-label="Image Studio">
 <div id="page"></div>
   <nav class="tabbar" id="tabbar">
     <span class="tab-ind" id="tab-ind"></span>
@@ -19,6 +19,7 @@
     <button class="tab" data-act="tab" data-tab="queue"><span class="ti" data-ic="list"></span><span class="badge zero" id="badge">0</span>任务</button>
     <button class="tab" data-act="tab" data-tab="templates"><span class="ti" data-ic="book"></span>模板</button>
   </nav>
+  <div id="overlays">
   <div class="viewer" id="viewer">
     <div class="v-bg"></div>
     <div class="v-stage" id="v-stage"><div class="v-track" id="v-track"></div></div>
@@ -40,7 +41,7 @@
       <button class="v-act" data-act="v-redraw"><span class="ic" data-ic="select"></span>局部重绘</button>
       <button class="v-act" data-act="v-up"><span class="ic" data-ic="grid"></span>超分</button>
     </footer>
-    <div class="v-redraw">
+    <div class="v-redraw" inert>
       <div class="v-hint"><span id="rd-hint">在图上拖动框选区域，可以框选多个</span><button data-act="rd-cancel">取消</button></div>
       <div class="rd-chips" id="rd-chips" style="display:none"></div>
       <textarea id="rd-text" rows="2" placeholder="描述选区里需要修改的内容…"></textarea>
@@ -51,5 +52,6 @@
   </div>
   <div id="screens"></div>
   <div id="layers"></div>
+  </div>
   <div id="toast" role="status" aria-live="polite"></div>
 </div></body></html>

@@ -18,7 +18,7 @@ def linked(path):
     return path.is_symlink() or getattr(path,'is_junction',lambda:False)()
 
 
-def tree_bytes(path,seen=None):
+def tree_bytes(path,seen=None,on_file=None):
     seen=seen if seen is not None else set()
     path=Path(path)
     try:metadata=path.lstat()
@@ -27,16 +27,23 @@ def tree_bytes(path,seen=None):
     if S_ISREG(metadata.st_mode):
         identity=(metadata.st_dev,metadata.st_ino)
         if identity in seen:return 0
-        seen.add(identity);return metadata.st_size
+        seen.add(identity)
+        if on_file:on_file(path,metadata.st_size)
+        return metadata.st_size
     total=0
     for root,dirs,files in os.walk(path,followlinks=False):
         dirs[:]=[d for d in dirs if not linked(Path(root)/d)]
+        if on_file:
+            dirs.sort()
+            files.sort()
         for name in files:
             item=Path(root)/name
             with contextlib.suppress(FileNotFoundError,PermissionError):
                 if not linked(item):
                     stat=item.stat();identity=(stat.st_dev,stat.st_ino)
-                    if identity not in seen:total+=stat.st_size;seen.add(identity)
+                    if S_ISREG(stat.st_mode) and identity not in seen:
+                        total+=stat.st_size;seen.add(identity)
+                        if on_file:on_file(item,stat.st_size)
     return total
 
 
@@ -47,14 +54,15 @@ class Storage:
 
     def invalidate(self):self._cached=None
 
-    def usage(self,fresh=False):
+    def usage(self,fresh=False,on_file=None):
         with self.lock:
-            if not fresh and self._cached and time.monotonic()-self._time<5:
+            if not fresh and not on_file and self._cached and time.monotonic()-self._time<5:
                 limit=self.get_limit();cached=self._cached
                 return {**cached,'limit_bytes':limit,'available_bytes':min(cached['free_bytes'],max(0,limit-cached['bytes'])) if limit else cached['free_bytes']}
-            seen=set();groups={name:tree_bytes(self.root/name,seen) for name in ('assets','thumbs','previews','jobs','tmp')}
-            groups['database']=sum(tree_bytes(self.root/name) for name in ('studio.sqlite3','studio.sqlite3-wal','studio.sqlite3-shm'))
-            groups['runtime_images']=tree_bytes(self.root/'codex'/'generated_images',seen)
+            seen=set()
+            groups={name:tree_bytes(self.root/name,seen,on_file) for name in ('assets','thumbs','previews','jobs','tmp')}
+            groups['database']=sum(tree_bytes(self.root/name,seen,on_file) for name in ('studio.sqlite3','studio.sqlite3-wal','studio.sqlite3-shm'))
+            groups['runtime_images']=tree_bytes(self.root/'codex'/'generated_images',seen,on_file)
             total=sum(groups.values());disk=shutil.disk_usage(self.root);limit=self.get_limit()
             value={'bytes':total,'limit_bytes':limit,'free_bytes':disk.free,'disk_total_bytes':disk.total,'disk_used_bytes':disk.used,
                    'available_bytes':min(disk.free,max(0,limit-total)) if limit else disk.free,'groups':groups}

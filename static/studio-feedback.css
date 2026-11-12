@@ -33,10 +33,29 @@ html.rm .action-spinner,html[data-motion="reduce"] .action-spinner{animation:non
 .storage-track .used{background:var(--sage-ink)}
 .storage-track .available{background:var(--sage-2)}
 .storage-track .other{background:var(--ink-3);opacity:.4}
-.storage-key{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--ink-2)}
-.storage-key span{display:flex;gap:5px;align-items:center}
-.storage-key i{width:7px;height:7px;border-radius:2px;background:var(--sage-ink)}
-.storage-key .available{background:var(--sage-2)}
-.storage-key .other{background:var(--ink-3);opacity:.4}
+.storage-stacked{height:14px}
+.storage-track .storage-part{flex:none}
+.storage-part{background:var(--sage-ink)}
+.storage-part[data-tone="references"]{background:#4f8875}
+.storage-part[data-tone="collection-1"]{background:#667eae}
+.storage-part[data-tone="collection-2"]{background:#977bb2}
+.storage-part[data-tone="other_outputs"]{background:#9c97b5}
+.storage-part[data-tone="trash"]{background:#b56561}
+.storage-part[data-tone="thumbnails"]{background:#719895}
+.storage-part[data-tone="previews"]{background:#6f99b5}
+.storage-part[data-tone="upscale_1"]{background:#ba9a60}
+.storage-part[data-tone="upscale_2"]{background:#bd8159}
+.storage-part[data-tone="upscale_3"]{background:#b06b84}
+.storage-part[data-tone="upscale_cache"]{background:#a89481}
+.storage-part[data-tone="runtime_cache"]{background:#899065}
+.storage-part[data-tone="system"]{background:#757b84}
+.storage-part[data-tone="available"]{background:var(--sage-2)}
+.storage-breakdown{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:7px 14px;list-style:none;padding:0;margin:0}
+.storage-breakdown li{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:7px;font-size:11px;color:var(--ink-2)}
+.storage-breakdown li span{overflow-wrap:anywhere}
+.storage-breakdown i{width:8px;height:8px;border-radius:2px}
+.storage-breakdown b{font-weight:550;white-space:nowrap}
+.local-cache-row{display:flex;align-items:center;gap:12px}
+.cache-loading{padding:0 16px}
 .field-save-state{display:flex;align-items:center;gap:6px;min-height:22px;margin:4px 0 8px;color:var(--ink-3);font-size:11px}.field-save-state.error{color:var(--red)}.field-save-state .spin{width:11px;height:11px}
 .ref-loading{display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--ink-3);background:var(--surface-2)}.ref-loading .spin{width:16px;height:16px}
