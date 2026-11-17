@@ -109,9 +109,9 @@ async function image(request,event){
   if(request.signal?.aborted){const error=new Error('图片读取已取消');error.name='AbortError';throw error;}
   return version===epoch?response.clone():new Response('',{status:401});
 }
-function shellNetwork(input){
+function shellNetwork(input,timeout=10000){
   const network=controller();
-  return deadline(()=>fetch(input,{cache:'reload',credentials:'omit',...(network?{signal:network.signal}:{})}),10000,()=>network?.abort());
+  return deadline(()=>fetch(input,{cache:'reload',credentials:'omit',...(network?{signal:network.signal}:{})}),timeout,()=>network?.abort());
 }
 function shellVersion(response){return response?.headers.get('X-Studio-Shell-Version');}
 const bundlePaths=version=>['css','js'].map(kind=>'/studio-shell/'+version+'.'+kind);
@@ -162,7 +162,7 @@ function workspaceNavigation(event,url){
     const page=await cache.match('/');
     return await completeShell(cache,page)?page:null;
   }).catch(()=>null);
-  const response=existing.then(hit=>hit&&!fresh?hit:shellNetwork(event.request).catch(async()=>hit||await caches.match('/static/offline.html')||new Response('暂时无法连接，请重试',{status:503})));
+  const response=existing.then(hit=>hit&&!fresh?hit:shellNetwork(event.request,45000).catch(async()=>hit||await caches.match('/static/offline.html')||new Response('暂时无法连接，请重试',{status:503})));
   event.waitUntil(response.then(page=>cacheShell(page.clone())).catch(()=>{}));
   return response;
 }
