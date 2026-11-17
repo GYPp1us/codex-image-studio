@@ -40,6 +40,7 @@ from quick_settings import QuickSetting
 import account_profile
 import upscale_prompts
 import generation_runtime
+import workspace_shell
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -337,6 +338,7 @@ def spawn(coro):
 async def lifespan(app):
     global CALL_POOL
     initialize()
+    workspace_shell.build(ROOT / "static")
     CALL_POOL=CallPool(lambda:setting('concurrency',2),lambda:setting('paused',False))
     JOB_TASKS.clear()
     task = spawn(scheduler())
@@ -361,6 +363,10 @@ async def security(request, call_next):
             return JSONResponse({"detail": "跨站请求已拒绝"}, status_code=403)
     response = await call_next(request)
     response.headers.update({"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "same-origin", "Content-Security-Policy": "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
+    if request.url.path == "/" and response.status_code == 200:
+        shell = workspace_shell.build(ROOT / "static")
+        policy = response.headers["Content-Security-Policy"]
+        response.headers["Content-Security-Policy"] = policy.replace("script-src 'self'", f"script-src 'self' 'sha256-{shell.inline_csp}'")
     if request.url.path.startswith(("/api/", "/media/")):
         response.headers["Cache-Control"] = "no-store"
     elif request.url.path.startswith('/static/') and request.url.path.endswith(('.js','.css')):
@@ -448,8 +454,32 @@ def change_password(body: dict, request: Request, session=Depends(require_user))
 
 
 @app.get("/api/state")
-def state(session=Depends(require_user)):
-    return {"model": setting("model", MODEL), "effort": setting("effort", EFFORT), "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3), "paused": setting("paused", False), "onboarded": setting("onboarded", False), "calls":CALL_POOL.snapshot() if CALL_POOL else {"active":0,"waiting":0}, "counts": query("SELECT status,COUNT(*) AS count FROM jobs WHERE history_deleted=0 GROUP BY status"), "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"], 'storage':STORAGE.usage(), 'preferences':preferences(sys.modules[__name__])}
+def state(compact: bool = False, session=Depends(require_user)):
+    scheduler = {
+        "model": setting("model", MODEL), "effort": setting("effort", EFFORT),
+        "concurrency": setting("concurrency", 2), "max_attempts": setting("max_attempts", 3),
+        "paused": setting("paused", False),
+    }
+    if compact:
+        return scheduler
+    return scheduler | {
+        "onboarded": setting("onboarded", False),
+        "calls": CALL_POOL.snapshot() if CALL_POOL else {"active": 0, "waiting": 0},
+        "counts": query("SELECT status,COUNT(*) AS count FROM jobs WHERE history_deleted=0 GROUP BY status"),
+        "reference_count": query("SELECT COUNT(*) AS n FROM assets WHERE kind='reference'", one=True)["n"],
+        "storage": STORAGE.usage(),
+        "preferences": preferences(sys.modules[__name__]),
+    }
+
+
+@app.get("/api/workspace/bootstrap")
+def bootstrap_workspace(request: Request):
+    auth = auth_state(request)
+    payload = {"version": workspace_shell.build(ROOT / "static").version, "auth": auth}
+    if auth["authenticated"]:
+        payload["state"] = state(compact=True)
+        payload["settings"] = preferences(sys.modules[__name__]) | call_settings()
+    return payload
 
 
 @app.get("/api/account")
@@ -1547,8 +1577,19 @@ def android_download():
 
 
 @app.api_route("/", methods=["GET", "HEAD"])
-def index():
-    return FileResponse(ROOT / "static" / "index.html", headers={"Cache-Control": "no-cache"})
+def index(request: Request):
+    shell = workspace_shell.build(ROOT / "static")
+    return shell.html.response(request, **{"Cache-Control": "no-cache", "X-Studio-Shell-Version": shell.version})
+
+
+@app.api_route("/studio-shell/{version}.{kind}", methods=["GET", "HEAD"])
+def shell_asset(version: str, kind: str, request: Request):
+    shell = workspace_shell.build(ROOT / "static")
+    if version != shell.version or kind not in shell.assets:
+        raise HTTPException(404, "界面版本已更新")
+    return shell.assets[kind].response(request, **{
+        "Cache-Control": "public, max-age=31536000, immutable", "X-Studio-Shell-Version": version,
+    })
 
 
 from upscale_api import register as register_upscale_routes

@@ -27,7 +27,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  const storage={bytes:1024,limit_bytes:0,free_bytes:1e9,groups:{database:512},tasks:[],trash:{assets:0,collections:0}};
  const fetch=async(path,opt={})=>{requests.push({path,method:opt.method||'GET',body:typeof opt.body==='string'?JSON.parse(opt.body):opt.body,headers:opt.headers,signal:opt.signal});let d;
   if(path==='/api/auth/state')d={initialized:true,authenticated:!unauth,csrf:'csrf-fixture',cache_scope:'fixture'};
-  else if(path==='/api/state'){if(failSync&&stateReads++>0)return {ok:false,status:503,json:async()=>({detail:'poll unavailable'})};d=state;}
+  else if(path==='/api/state?compact=1'){if(failSync&&stateReads++>0)return {ok:false,status:503,json:async()=>({detail:'poll unavailable'})};d=state;}
   else if(path==='/api/settings'){if(opt.method&&settingsGate)await settingsGate;if(opt.method&&settingsFail)return {ok:false,status:400,json:async()=>({detail:'保存失败：变量不合法'})};d=opt.method?{ok:true}:prefs;}
   else if(path==='/api/account/avatar'){if(opt.method&&avatarGate)await avatarGate;d={avatar_url:opt.method==='DELETE'?'':'/api/account/avatar?v=new'};}
   else if(path==='/api/account'){if(opt.method==='PATCH'&&accountGate)await accountGate;if(opt.method==='PATCH'&&accountFail)return {ok:false,status:400,json:async()=>({detail:'ACCOUNT FAILED'})};d={username:'tester',session_count:1,avatar_url:avatarURL};}

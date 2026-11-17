@@ -5,6 +5,10 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
 html.rm::view-transition-group(*),html.rm::view-transition-old(*),html.rm::view-transition-new(*){animation:none!important}
 /* A separate transition snapshot keeps navigation above the moving page. */
 #tabbar{view-transition-name:studio-tabbar}
+#tabbar[hidden]{display:none}
+.v-sidebar{display:none}
+.v-fly{object-fit:cover;object-position:center}
+.viewer.viewer-closing :is(.v-actions,.v-quick,.v-redraw,.v-reference-actions){visibility:hidden;pointer-events:none}
 ::view-transition-group(studio-tabbar){z-index:100;animation:none!important}
 ::view-transition-old(studio-tabbar){display:none}
 ::view-transition-new(studio-tabbar){animation:none!important;mix-blend-mode:normal}

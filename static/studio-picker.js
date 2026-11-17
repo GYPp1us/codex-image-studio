@@ -39,7 +39,7 @@ const StudioPicker=(()=>{
         case 'more':await load();break;
         case 'upload':file.click();break;
         case 'select':toggle(button.dataset.id);break;
-        case 'preview':StudioChrome.enterViewer();openViewer(button.dataset.id,null,{reference:true,ids:[...pages[tab].ids],selected:id=>selected.has(id),onSelect:choose});break;
+        case 'preview':openViewer(button.dataset.id,null,{trigger:button,reference:true,ids:[...pages[tab].ids],selected:id=>selected.has(id),onSelect:choose});break;
         case 'ok':if(opt.onCommit)opt.onCommit([...selected]);else store.commit([...selected]);await back();break;
       }}catch(error){store.report(error);}
     }

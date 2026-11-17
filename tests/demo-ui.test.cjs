@@ -19,7 +19,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,r
   if(failOncePaths.includes(path)&&!failedOnce.has(path)){failedOnce.add(path);return {ok:false,status:503,json:async()=>({detail:'fixture temporary failure'})};}
   if(blockedPaths.includes(path))await new Promise(()=>{});
   if(path==='/api/auth/state')d={initialized:true,authenticated:!unauth,csrf:'csrf-fixture',cache_scope:'fixture'};
-  else if(path==='/api/state'){if(failSync&&stateReads++>0)return {ok:false,status:503,json:async()=>({detail:'poll unavailable'})};d=state;}
+  else if(path==='/api/state?compact=1'){if(failSync&&stateReads++>0)return {ok:false,status:503,json:async()=>({detail:'poll unavailable'})};d=state;}
   else if(path==='/api/settings')d=opt.method?{ok:true}:prefs;
   else if(path==='/api/account/avatar')d={avatar_url:opt.method==='DELETE'?'':'/api/account/avatar?v=new'};
   else if(path==='/api/account')d={username:'tester',session_count:1,avatar_url:avatarURL};
@@ -334,6 +334,28 @@ test('viewer theme and dark chrome are held until the closing animation finishes
  finish();await previewTick();assert.equal(f.document.documentElement.classList.contains('viewer-present'),false);assert.equal(f.document.querySelector('#app').classList.contains('dark-sb'),false);assert.equal(f.document.querySelector('meta[name="theme-color"]').content,'#f5f4ef');
 });
 
+test('closing an opening viewer reverses the in-flight image and restores the source',async()=>{
+ const f=await fixture({motion:'full',systemReduce:false});
+ const trigger=f.document.createElement('button');
+ trigger.innerHTML=`<img src="${baseAsset.thumbnail}" alt="">`;
+ f.document.querySelector('#page').append(trigger);
+ const source=trigger.querySelector('img');
+ Object.defineProperties(source,{complete:{value:true},naturalWidth:{value:480}});
+ f.context.viewerTrigger=trigger;
+ f.run('openViewer("asset","recent",{trigger:viewerTrigger})');
+ const opening=f.document.querySelector('.v-fly');
+ assert.ok(opening);
+ assert.equal(source.style.visibility,'hidden');
+ await f.run('back()');
+ const flights=f.document.querySelectorAll('.v-fly');
+ assert.equal(flights.length,1);
+ assert.notEqual(flights[0],opening);
+ assert.equal(source.style.visibility,'hidden');
+ f.run('stopViewerMotion()');
+ assert.equal(source.style.visibility,'');
+ assert.equal(f.document.querySelector('.v-fly'),null);
+});
+
 test('late preview from an earlier attempt cannot complete a retry of the same URL',async()=>{
  const f=await fixture(),loads=previewLoads(f);f.run('openViewer("asset","recent")');
  const image=f.document.querySelector('.slide[data-o="0"] img');
@@ -369,7 +391,7 @@ test('a hung preview exposes retry after its deadline and retains the thumbnail'
 test('visibility resume interrupts a hung poll and starts a fresh sync',async()=>{
  const f=await fixture(),realFetch=f.context.fetch;let stateRequests=0,stalledSignal;
  f.context.fetch=(path,opt={})=>{
-  if(path==='/api/state'&&++stateRequests===1){stalledSignal=opt.signal;return new Promise((resolve,reject)=>opt.signal?.addEventListener('abort',()=>reject(Object.assign(new Error('cancelled'),{name:'AbortError'})),{once:true}));}
+  if(path==='/api/state?compact=1'&&++stateRequests===1){stalledSignal=opt.signal;return new Promise((resolve,reject)=>opt.signal?.addEventListener('abort',()=>reject(Object.assign(new Error('cancelled'),{name:'AbortError'})),{once:true}));}
   return realFetch(path,opt);
  };
  assert.ok(f.flushTimers(2500));await previewTick();assert.equal(stateRequests,1);
@@ -488,7 +510,7 @@ test('reopening a viewer before close completes restarts a paused preview',async
 });
 test('accepted generation waits for older sync then requests a fresh post-write state',async()=>{
  const f=await fixture(),realFetch=f.context.fetch;let release,reads=0;const gate=new Promise(resolve=>release=resolve);
- f.context.fetch=async(path,opt={})=>{if(path==='/api/state'&&++reads===1)await gate;return realFetch(path,opt);};
+ f.context.fetch=async(path,opt={})=>{if(path==='/api/state?compact=1'&&++reads===1)await gate;return realFetch(path,opt);};
  f.flushTimers(2500);await previewTick();assert.equal(reads,1);
  f.run("S.composer.prompt='fresh sync';document.querySelector('#gen').disabled=false");const generate=f.service.generate();for(let i=0;i<3;i++)await previewTick();
  assert.equal(f.requests.filter(r=>r.path==='/api/jobs'&&r.method==='POST').length,1);assert.equal(reads,1);
