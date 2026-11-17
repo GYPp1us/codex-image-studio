@@ -1,5 +1,8 @@
 "use strict";
 const CACHE='studio-offline-v1';
+const SHELL='studio-shell-v1';
+const SHELL_VERSION=/^[a-f0-9]{24}$/;
+const SHELL_ASSET=/^\/studio-shell\/([a-f0-9]{24})\.(css|js)$/;
 const IMAGE_PREFIX='studio-images-v1-';
 const OFFLINE=['/static/offline.html','/static/offline.css','/static/icons/icon-192.png'];
 const MAX_BYTES=192*1024*1024,MAX_ITEMS=300,MAX_IMAGE=MAX_BYTES;
@@ -106,12 +109,72 @@ async function image(request,event){
   if(request.signal?.aborted){const error=new Error('图片读取已取消');error.name='AbortError';throw error;}
   return version===epoch?response.clone():new Response('',{status:401});
 }
+function shellNetwork(input,timeout=10000){
+  const network=controller();
+  return deadline(()=>fetch(input,{cache:'reload',credentials:'omit',...(network?{signal:network.signal}:{})}),timeout,()=>network?.abort());
+}
+function shellVersion(response){return response?.headers.get('X-Studio-Shell-Version');}
+const bundlePaths=version=>['css','js'].map(kind=>'/studio-shell/'+version+'.'+kind);
+async function completeShell(cache,page){
+  const version=shellVersion(page);
+  if(!SHELL_VERSION.test(version||''))return false;
+  const assets=await Promise.all(bundlePaths(version).map(path=>cache.match(path,{ignoreVary:true})));
+  return assets.every(asset=>shellVersion(asset)===version);
+}
+async function shellAsset(request,version){
+  let cache,hit;
+  try{cache=await caches.open(SHELL);hit=await cache.match(request,{ignoreVary:true});}catch{}
+  if(hit)return hit;
+  const response=await shellNetwork(request);
+  if(cache&&response.ok&&shellVersion(response)===version)await cache.put(request,response.clone()).catch(()=>{});
+  return response;
+}
+let warming=Promise.resolve();
+function cacheShell(response){
+  const version=shellVersion(response);
+  if(!response.ok||!SHELL_VERSION.test(version||''))return Promise.resolve();
+  warming=warming.catch(()=>{}).then(async()=>{
+    const cache=await caches.open(SHELL);
+    const existing=await cache.match('/');
+    if(shellVersion(existing)===version&&await completeShell(cache,existing))return;
+    await Promise.all(bundlePaths(version).map(path=>shellAsset(path,version)));
+    if(!await completeShell(cache,response))return;
+    await cache.put('/',response);
+    const keep=new Set([version,shellVersion(existing)]);
+    for(const key of await cache.keys()){
+      const found=new URL(key.url,self.location.origin).pathname.match(SHELL_ASSET);
+      if(found&&!keep.has(found[1]))await cache.delete(key);
+    }
+  });
+  return warming;
+}
+async function warmShell(version){
+  if(!SHELL_VERSION.test(version||''))return;
+  const cache=await caches.open(SHELL);
+  const existing=await cache.match('/');
+  if(shellVersion(existing)===version&&await completeShell(cache,existing))return;
+  const response=await shellNetwork('/');
+  if(shellVersion(response)===version)await cacheShell(response);
+}
+function workspaceNavigation(event,url){
+  const fresh=SHELL_VERSION.test(url.searchParams.get('studio-refresh')||'');
+  const existing=caches.open(SHELL).then(async cache=>{
+    const page=await cache.match('/');
+    return await completeShell(cache,page)?page:null;
+  }).catch(()=>null);
+  const response=existing.then(hit=>hit&&!fresh?hit:shellNetwork(event.request,45000).catch(async()=>hit||await caches.match('/static/offline.html')||new Response('暂时无法连接，请重试',{status:503})));
+  event.waitUntil(response.then(page=>cacheShell(page.clone())).catch(()=>{}));
+  return response;
+}
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(OFFLINE)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil((async()=>{
   await Promise.all((await caches.keys()).filter(k=>(k.startsWith('studio-offline-')&&k!==CACHE)||(k.startsWith('studio-images-')&&!k.startsWith(IMAGE_PREFIX))).map(k=>caches.delete(k)));
   await self.clients.claim();
 })()));
 self.addEventListener('message',event=>{
+  if(event.data?.type==='STUDIO_SHELL_WARM'){
+    event.waitUntil(warmShell(event.data.version).catch(()=>{}));return;
+  }
   if(!['IMAGE_CACHE_CLEAR','IMAGE_CACHE_STATUS'].includes(event.data?.type))return;
   event.waitUntil((async()=>{
     if(event.data.type==='IMAGE_CACHE_CLEAR'){await clearImages();event.ports[0]?.postMessage({bytes:0,count:0});return;}
@@ -126,6 +189,9 @@ self.addEventListener('fetch',event=>{
     event.respondWith((async()=>{await clearImages();return fetch(request);})());return;
   }
   if(request.method!=='GET')return;
+  if(request.mode==='navigate'&&url.pathname==='/'){event.respondWith(workspaceNavigation(event,url));return;}
+  const bundle=url.pathname.match(SHELL_ASSET);
+  if(bundle&&!url.search){event.respondWith(shellAsset(request,bundle[1]));return;}
   if((/^\/media\/[a-f0-9]{32}$/.test(url.pathname)||/^\/api\/jobs\/[a-f0-9]{32}\/stitch\/base$/.test(url.pathname))&&!url.searchParams.has('download')){event.respondWith(image(request,event));return;}
   if(request.mode==='navigate'||OFFLINE.includes(url.pathname)){
     const network=controller();event.respondWith(deadline(()=>fetch(request,network?{signal:network.signal}:undefined),45000,()=>network?.abort()).catch(async()=>await caches.match(request.mode==='navigate'?'/static/offline.html':url.pathname)||new Response('暂时无法连接，请重试',{status:503})));

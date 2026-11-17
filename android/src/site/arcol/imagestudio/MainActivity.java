@@ -62,12 +62,12 @@ public final class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
         root.setOnApplyWindowInsetsListener((v,insets) -> {
             if (Build.VERSION.SDK_INT >= 30) {
-                Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                Insets bars = insets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
                 int keyboard = insets.getInsets(WindowInsets.Type.ime()).bottom;
                 root.setPadding(bars.left,bars.top,bars.right,Math.max(bars.bottom,keyboard));
             } else {
-                root.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),
-                    insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());
+                root.setPadding(insets.getStableInsetLeft(),insets.getStableInsetTop(),
+                    insets.getStableInsetRight(),Math.max(insets.getStableInsetBottom(),insets.getSystemWindowInsetBottom()));
             }
             return Build.VERSION.SDK_INT>=30?WindowInsets.CONSUMED:insets.consumeSystemWindowInsets().consumeDisplayCutout();
         });

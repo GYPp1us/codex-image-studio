@@ -6,22 +6,45 @@ class CacheStorage {
   constructor(){this.data=new Map();}
   async keys(){return [...this.data.keys()];}
   async delete(key){return this.data.delete(key);}
-  async open(name){if(!this.data.has(name))this.data.set(name,new Map());const items=this.data.get(name),key=r=>typeof r==='string'?r:r.url;return {keys:async()=>[...items.keys()].map(url=>new Request(url)),match:async r=>items.get(key(r))?.clone(),put:async(r,response)=>items.set(key(r),new Response(await response.arrayBuffer(),{status:response.status,headers:response.headers})),delete:async r=>items.delete(key(r))};}
+  async open(name){if(!this.data.has(name))this.data.set(name,new Map());const items=this.data.get(name),key=r=>typeof r==='string'?new URL(r,'https://image.test').href:r.url;return {keys:async()=>[...items.keys()].map(url=>new Request(url)),match:async r=>items.get(key(r))?.clone(),put:async(r,response)=>items.set(key(r),new Response(await response.arrayBuffer(),{status:response.status,headers:response.headers})),delete:async r=>items.delete(key(r))};}
 }
 function worker(state,cache=new CacheStorage()){
   const listeners={},pending=new Set();
   const waitUntil=work=>{const task=Promise.resolve(work);pending.add(task);task.finally(()=>pending.delete(task)).catch(()=>{});};
   const context=vm.createContext({Response,Request,Headers,URL,Map,Promise,TransformStream,AbortController,DOMException,setTimeout:state.setTimeout||((fn,ms)=>{const timer=setTimeout(fn,ms);timer.unref();return timer;}),clearTimeout:state.clearTimeout||clearTimeout,Date:class extends Date{static now(){return state.time||1000;}},caches:cache,self:{location:{origin:'https://image.test'},addEventListener:(type,fn)=>listeners[type]=fn,clients:{claim:async()=>{},matchAll:async()=>[{postMessage:message=>(state.progress||=[]).push(message)}]},skipWaiting:async()=>{}},fetch:async (request,options={})=>{
     const url=typeof request==='string'?request:request.url;
+    const pathname=new URL(url,'https://image.test').pathname;
+    if(state.shellVersion&&(pathname==='/'||pathname.startsWith('/studio-shell/'))){
+      (state.shellRequests||=[]).push(pathname);
+      if(state.offline)throw new Error('offline');
+      return new Response(pathname==='/'?'shell '+state.shellVersion:pathname,{headers:{'X-Studio-Shell-Version':state.shellVersion}});
+    }
     if(url==='/api/auth/state'){state.authCalls=(state.authCalls||0)+1;const authenticated=state.auth!==false;if(state.authGate)await state.authGate;if(state.authFailure)throw new Error('auth connection lost');return Response.json({authenticated,cache_scope:state.scope||'account-a'});}
     if(url.includes('/api/auth/logout')){state.auth=false;return Response.json({ok:true});}
     state.loads=(state.loads||0)+1;if(state.block){if(state.abortable)await Promise.race([state.block,new Promise((resolve,reject)=>options.signal?.addEventListener('abort',()=>{state.upstreamAborts=(state.upstreamAborts||0)+1;reject(Object.assign(new Error('aborted'),{name:'AbortError'}));},{once:true}))]);else await state.block;}
     return state.auth===false?new Response('',{status:401}):new Response('png',{headers:{'content-type':'image/png','content-length':String(state.bytes||3)}});
   }});
   vm.runInContext(source,context);
-  return {cache,fetch:async(path,method='GET',signal)=>{let result;listeners.fetch({request:new Request('https://image.test'+path,{method,...(signal?{signal}:{})}),respondWith:p=>result=p,waitUntil});return result?await result:undefined;},settle:async()=>{while(pending.size)await Promise.allSettled([...pending]);},message:async type=>{let pending,response;listeners.message({data:{type},ports:[{postMessage:r=>response=r}],waitUntil:p=>pending=p});await pending;return response;}};
+  return {cache,fetch:async(path,method='GET',signal,mode)=>{let result;const request=new Request('https://image.test'+path,{method,...(signal?{signal}:{})});if(mode)Object.defineProperty(request,'mode',{value:mode});listeners.fetch({request,respondWith:p=>result=p,waitUntil});return result?await result:undefined;},settle:async()=>{while(pending.size)await Promise.allSettled([...pending]);},message:async type=>{let pending,response;listeners.message({data:typeof type==='string'?{type}:type,ports:[{postMessage:r=>response=r}],waitUntil:p=>pending=p});await pending;return response;}};
 }
 const path='/media/'+'a'.repeat(32);
+test('cached shell and its exact bundles survive restart, while bootstrap always uses the network',async()=>{
+  const first='a'.repeat(24),second='b'.repeat(24),state={shellVersion:first},w=worker(state);
+  const navigate=(target,route='/')=>target.fetch(route,'GET',null,'navigate');
+  await w.message({type:'STUDIO_SHELL_WARM',version:first});
+  assert.equal(state.shellRequests.length,3);
+  const reopened=worker(state,w.cache);
+  state.offline=true;
+  assert.equal(await (await navigate(reopened)).text(),'shell '+first);
+  assert.equal(await (await reopened.fetch('/studio-shell/'+first+'.js')).text(),'/studio-shell/'+first+'.js');
+  assert.equal(await reopened.fetch('/api/workspace/bootstrap'),undefined);
+  assert.equal(state.shellRequests.length,3);
+  state.offline=false;
+  state.shellVersion=second;
+  assert.equal(await (await navigate(reopened,'/?studio-refresh='+second)).text(),'shell '+second);
+  await reopened.settle();
+  assert.equal(await (await navigate(reopened)).text(),'shell '+second);
+});
 test('originals and thumbnails persist across worker restarts without another image download',async()=>{
   const state={},one=worker(state);await one.fetch(path);await one.settle();await one.fetch(path);assert.equal(state.loads,1);
   await one.fetch(path+'?thumbnail=1');await one.settle();assert.equal(state.loads,2);

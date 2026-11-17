@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -100,7 +101,42 @@ class HistoryStorageTests(unittest.TestCase):
         ordinary_storage = self.client.get('/api/state').json()['storage']
         self.assertTrue({'breakdown', 'tasks', 'trash'}.isdisjoint(ordinary_storage))
 
+    def test_compact_workspace_state_skips_storage_and_keeps_required_settings(self):
+        full = self.client.get('/api/state').json()
+        with patch.object(self.studio.STORAGE, 'usage', side_effect=AssertionError('unexpected storage scan')):
+            response = self.client.get('/api/state?compact=1')
+        self.assertEqual(response.status_code, 200)
+        fields = ('model', 'effort', 'concurrency', 'max_attempts', 'paused')
+        self.assertEqual(response.json(), {key: full[key] for key in fields})
 
+    def test_startup_shell_is_public_and_auth_payload_requires_a_valid_session(self):
+        anonymous = TestClient(self.studio.app, base_url='https://history.test')
+        try:
+            page = anonymous.get('/')
+            version = page.headers['x-studio-shell-version']
+            self.assertRegex(version, '^[a-f0-9]{24}$')
+            self.assertIn('sha256-', page.headers['content-security-policy'])
+            self.assertIn(f'/studio-shell/{version}.js', page.text)
+            self.assertNotIn('/static/studio-ui.js?', page.text)
+            for kind in ('css', 'js'):
+                bundle = anonymous.get(f'/studio-shell/{version}.{kind}', headers={'Accept-Encoding': 'gzip'})
+                self.assertEqual(bundle.headers['content-encoding'], 'gzip')
+                self.assertIn('immutable', bundle.headers['cache-control'])
+                self.assertEqual(bundle.headers['x-studio-shell-version'], version)
+            anon = anonymous.get('/api/workspace/bootstrap').json()
+            self.assertEqual(anon['version'], version)
+            self.assertFalse(anon['auth']['authenticated'])
+            self.assertEqual(set(anon), {'version', 'auth'})
+        finally:
+            anonymous.close()
+        with patch.object(self.studio.STORAGE, 'usage', side_effect=AssertionError('unexpected storage scan')):
+            response = self.client.get('/api/workspace/bootstrap')
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+        authenticated = response.json()
+        self.assertTrue(authenticated['auth']['authenticated'])
+        self.assertEqual(authenticated['auth']['csrf'], self.headers['X-CSRF-Token'])
+        self.assertEqual(authenticated['state'], self.client.get('/api/state?compact=1').json())
+        self.assertEqual(authenticated['settings'], self.client.get('/api/settings').json())
 
 
     def test_breakdown_selects_two_largest_collections(self):

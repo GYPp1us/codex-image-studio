@@ -84,7 +84,7 @@ const StudioZoom=(()=>{
     tween=requestAnimationFrame(step);
   }
   function toggleAt(client){
-    if(!ensure()||V.redraw)return;measure();closing=false;
+    if(!ensure()||V.redraw)return;V.motion&&!V.motion.closing&&stopViewerMotion();measure();closing=false;
     if(scale>1.0001){animateZoom(1,fitCenter());return;}
     const p=client?point(client):fitCenter();
     animateZoom(Math.min(Math.max(2,asset.w/metrics.fit.w),3),p);schedulePaint(true);vw.classList.remove('chrome-off');
@@ -93,6 +93,7 @@ const StudioZoom=(()=>{
   const isNative=()=>!!metrics&&scale>1.0001&&Math.abs(scale-asset.w/metrics.fit.w)<.0001;
   function toggleNative(animate){
     if(!ensure()||V.redraw)return;
+    if(V.motion&&!V.motion.closing)stopViewerMotion();
     cancelTween();closing=false;
     const p=fitCenter(),target=isNative()?1:Math.max(1,asset.w/metrics.fit.w);
     if(animate)animateZoom(target,p);else zoomTo(target,p);
@@ -199,7 +200,7 @@ const StudioZoom=(()=>{
       else if(e.type!=='pointercancel'&&ended.kind==='pan'&&ended.moved&&now()-(ended.lastT??0)<80&&Math.hypot(ended.vx||0,ended.vy||0)>.3)fling(ended.vx,ended.vy);}
   }
   stage.addEventListener('pointerup',up,true);stage.addEventListener('pointercancel',up,true);
-  stage.addEventListener('wheel',e=>{if(V.redraw||!ensure())return;cancelTween();e.preventDefault();lastWheel=now();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?metrics.height:1);zoomTo(scale*Math.exp(-delta*.002),point(e));settle();},{passive:false});
+  stage.addEventListener('wheel',e=>{if(V.redraw||!ensure())return;if(V.motion&&!V.motion.closing)stopViewerMotion();cancelTween();e.preventDefault();lastWheel=now();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?metrics.height:1);zoomTo(scale*Math.exp(-delta*.002),point(e));settle();},{passive:false});
   function resized(){
     if(!V.open)return;
     if(V.redraw){selCancel();const im=img(currentId()),previous=V.fitRect||fitRect(im),next=fitRect(im);for(const r of V.regions){r.x=next.x+(r.x-previous.x)/previous.w*next.w;r.y=next.y+(r.y-previous.y)/previous.h*next.h;r.w=r.w/previous.w*next.w;r.h=r.h/previous.h*next.h;}const image=curImg();if(image)Object.assign(image.style,{left:next.x+'px',top:next.y+'px',width:next.w+'px',height:next.h+'px'});V.fitRect=next;renderRegions();}

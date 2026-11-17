@@ -62,6 +62,7 @@ const StudioService=(()=>{
     if(data.csrf)csrf=data.csrf;return data;
   }
   const read=(path,options={})=>api(path,{...options,background:true});
+  const readState=()=>read('/api/state?compact=1');
   function cancelReads(){syncVersion++;syncFlight=null;for(const request of [...requests])if(request.method==='GET'&&request.background)request.cancel();detailReads.clear();auxReads.clear();}
   const post=(path,body={})=>api(path,{method:'POST',body});
   function bindPendingForm(form,key,send){
@@ -174,7 +175,7 @@ const StudioService=(()=>{
   async function allCollections(){const data=await read('/api/collections?limit=100');while(data.items.length<data.total){const more=await read('/api/collections?limit=100&offset='+data.items.length);if(!more.items.length)break;data.items.push(...more.items);}return data;}
   async function sync({initial=false,stateData=null}={}){if(!authenticated)return;if(syncFlight)return syncFlight;const version=++syncVersion,epoch=sessionEpoch;
     const valid=()=>version===syncVersion&&epoch===sessionEpoch&&authenticated;
-    const task=(async()=>{try{const [st,cs,ts]=await Promise.all([stateData||read('/api/state'),allCollections(),read('/api/templates')]);if(!valid())return;config=st;S.paused=st.paused;
+    const task=(async()=>{try{const [st,cs,ts]=await Promise.all([stateData||readState(),allCollections(),read('/api/templates')]);if(!valid())return;config=st;S.paused=st.paused;
       S.collections=cs.items.map(c=>({...c,template:c.template_id||null}));for(const c of cs.items)for(const a of c.covers||c.cover_assets||[]){const v=rememberAsset(a);if(v)v.coll=c.id;}
       S.templates=ts.map(t=>({id:t.id,name:t.title,text:t.text,ratio:labelRatio(t.options.ratio||'auto'),refs:t.refs.length,referenceIds:t.refs,options:t.options,raw:t}));ts.forEach(t=>t.references.forEach(a=>rememberAsset(a)));
       const [normal,...act]=await Promise.all([fetchBatches(0,version),...['queued','running','retrying'].map(status=>read(`/api/batches?status=${status}&limit=100`))]);if(!valid())return;
@@ -222,21 +223,64 @@ const StudioService=(()=>{
     if(!V.open&&!topScreen()){if(!$('#page .top'))renderPage();else refresh();}
     sync().catch(error=>{if(version===wakeVersion&&authenticated&&!document.hidden&&error.name!=='AbortError'){S.offline=true;updateChrome();}}).finally(()=>{if(version===wakeVersion){wakeQueued=false;schedule();}});
   }
-  function suspendPage(){slept=true;flushDraft();wakeVersion++;wakeQueued=false;clearTimeout(polling);cancelReads();if(typeof suspendViewerImages==='function')suspendViewerImages();StudioZoom.suspend?.();}
+  function suspendPage(){slept=true;flushDraft();wakeVersion++;wakeQueued=false;clearTimeout(polling);cancelReads();if(!hasPainted){bootVersion++;bootFlight=null;globalThis.StudioStartup?.cancel();}if(typeof suspendViewerImages==='function')suspendViewerImages();StudioZoom.suspend?.();}
+  function verifyShell(startup,version,{legacy=false}={}){
+    if(!/^[a-f0-9]{24}$/.test(version||''))throw new Error('界面版本暂时无法验证，请重试');
+    const url=new URL(location.href);
+    if(!legacy&&version===startup.version){
+      if(url.searchParams.has('studio-refresh')){
+        url.searchParams.delete('studio-refresh');
+        history.replaceState(history.state,'',url);
+      }
+      return true;
+    }
+    if(url.searchParams.get('studio-refresh')===version)throw new Error('界面正在更新，请重新连接');
+    url.searchParams.set('studio-refresh',version);
+    location.replace(url);
+    return false;
+  }
+  function warmShell(startup){
+    if(!navigator.serviceWorker)return;
+    navigator.serviceWorker.register('/sw.js',{scope:'/',updateViaCache:'none'}).then(()=>{
+      if(startup)return navigator.serviceWorker.ready.then(registration=>{
+        registration.active?.postMessage({type:'STUDIO_SHELL_WARM',version:startup.version});
+      });
+    }).catch(()=>{});
+  }
   async function boot(){if(bootFlight)return bootFlight;const version=++bootVersion;stopped=false;
     const valid=()=>version===bootVersion&&authenticated&&!stopped;
     const repaint=()=>{if(!valid())return;if(!V.open&&!topScreen()&&$('#page .top'))refresh();updateChrome();};
-    const task=(async()=>{try{$('#tabbar').hidden=true;$('#page').innerHTML='<div class="boot-state"><span class="spin"></span>正在打开工作台</div>';
-      authState=await read('/api/auth/state');csrf=authState.csrf||'';authenticated=authState.authenticated;if(!authenticated)return login();
-      const [st,settingsData]=await Promise.all([read('/api/state'),read('/api/settings')]);if(!valid())return;config=st;S.paused=st.paused;
+    const startup=globalThis.StudioStartup;
+    const task=(async()=>{try{
+      $('#tabbar').hidden=true;
+      $('#page').innerHTML=`<div class="boot-state"><span class="spin"></span>${startup?.returning?'正在验证登录':'正在打开工作台'}</div>`;
+      let bootstrap=null;
+      if(startup){
+        const initial=startup.take();
+        const received=initial?await initial:await read('/api/workspace/bootstrap',{timeout:10000})
+          .then(value=>({value}),error=>{if(error.status===404)return {legacy:true};throw error;});
+        if(version!==bootVersion||stopped)return;
+        if(received.legacy){verifyShell(startup,startup.version,{legacy:true});return;}
+        if(received.error)throw new Error(received.error);
+        bootstrap=received.value;
+        if(!verifyShell(startup,bootstrap.version))return;
+        warmShell(startup);
+      }
+      const auth=bootstrap?.auth||await read('/api/auth/state');
+      if(version!==bootVersion||stopped)return;
+      authState=auth;csrf=authState.csrf||'';authenticated=authState.authenticated;
+      startup?.remember(authenticated);
+      if(!authenticated)return login();
+      const [st,settingsData]=bootstrap?[bootstrap.state,bootstrap.settings]:await Promise.all([readState(),read('/api/settings')]);
+      if(!valid())return;config=st;S.paused=st.paused;
       if(!models.length)models=[{id:st.model,name:st.model,efforts:[st.effort],default_effort:st.effort}];
       mapSettings(settingsData);restoreDraft();renderPage();hasPainted=true;$('#tabbar').hidden=false;schedule();
-      navigator.serviceWorker?.register('/sw.js',{scope:'/',updateViaCache:'none'}).catch(()=>{});
+      if(!startup)warmShell();
       await Promise.allSettled([loadAuxiliary(),sync({initial:true,stateData:st}).catch(error=>{if(valid()&&error.name!=='AbortError'){S.offline=true;updateChrome();}})]);await hydrateDraft();if(!valid())return;notifyChanges();repaint();
     }catch(error){if(version!==bootVersion||stopped||error.name==='AbortError')return;if(!authenticated&&authState?.authenticated===false)return login();$('#page').innerHTML=`<div class="boot-state"><p>${esc(error.message)}</p><button class="secondary" data-act="boot-retry">重新连接</button></div>`;}
     finally{if(bootFlight===task)bootFlight=null;}})();bootFlight=task;return task;
   }
-  function login(){StudioSelection.reset();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;historyRevision=null;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;V.gen++;layers.splice(0);syncSurfaces();history.replaceState({depth:0},'');
+  function login(){globalThis.StudioStartup?.remember(false);stopViewerMotion();StudioSelection.reset();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;historyRevision=null;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;V.gen++;layers.splice(0);syncSurfaces();history.replaceState({depth:0},'');
     $('#page').innerHTML=`<div class="auth-wrap"><div class="auth-brand">${icon('sparkle',28)}<h1>Image Studio</h1><p>${authState?.initialized?'登录私人图片工作台':'设置私人图片工作台'}</p></div><form id="login-form" class="card"><div class="field-label">用户名</div><input class="input" name="username" autocomplete="username" minlength="2" maxlength="64" required><div class="field-label">密码</div><input class="input" name="password" type="password" autocomplete="${authState?.initialized?'current-password':'new-password'}" minlength="10" maxlength="256" required>${authState?.initialized?'':'<div class="field-label">初始化密钥</div><input class="input" name="setup_token" type="password" required>'}<p class="form-err" role="alert"></p><button class="primary" type="submit">${authState?.initialized?'登录':'创建工作台'}</button></form></div>`;
     bindPendingForm($('#login-form'),'form:login',async values=>{await post('/api/auth/'+(authState.initialized?'login':'setup'),values);authState=null;$('#page').innerHTML='<div class="boot-state"><span class="spin"></span>正在打开工作台</div>';firstSync=true;await boot();});
   }
