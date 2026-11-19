@@ -542,8 +542,20 @@ document.addEventListener("focusout",()=>{if(KB.hold)KB.until=performance.now()+
 document.addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.isComposing||e.keyCode===229)&&e.target?.form)e.preventDefault();},true);
 function fitRect(im){if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide())return StudioLandscape.fit(im,{reference:!!V.reference,select:!!V.reference?.onSelect});const W=app.offsetWidth,H=viewerHeight(),top=parseFloat(getComputedStyle(app).getPropertyValue("--safe-top"))+58,bot=V.reference?96:200,aw=W-0,ah=H-top-bot,R=im.w/im.h;
   let w=aw,h=w/R;if(h>ah){h=ah;w=h*R;}return{x:(W-w)/2,y:top+(ah-h)/2,w,h};}
-// The grid thumbnail is already decoded, so it paints on the first frame; the preview replaces it
-// only once fully decoded, so open, swipe and the fly handoff never show a blank or half-drawn slide.
+// Retain the grid's decoded pixels if the viewer's thumbnail request is still pending.
+function snapshotThumbnail(source){
+  if(!source?.complete||!source.naturalWidth||!source.naturalHeight)return null;
+  const scale=Math.min(1,480/Math.max(source.naturalWidth,source.naturalHeight));
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.max(1,Math.round(source.naturalWidth*scale));
+  canvas.height=Math.max(1,Math.round(source.naturalHeight*scale));
+  const context=canvas.getContext?.('2d');
+  if(!context)return null;
+  try{
+    context.drawImage(source,0,0,canvas.width,canvas.height);
+    return canvas.toDataURL();
+  }catch{return null;}
+}
 const previewRequests=new WeakMap(),livePreviews=new Set();
 function setPreviewState(image,value){
   image.dataset.loading=value;
@@ -553,12 +565,20 @@ function setPreviewState(image,value){
 function cancelPreview(image,paused=false){const job=previewRequests.get(image);if(!job)return;job.active=false;clearTimeout(job.timer);job.loader.onload=job.loader.onerror=null;job.loader.removeAttribute?.('src');livePreviews.delete(image);if(paused&&image.dataset.loading==='1')setPreviewState(image,'paused');}
 function suspendViewerImages(){for(const image of [...livePreviews])cancelPreview(image,true);}
 function resumeViewerImages(){if(!V.open)return;for(const slide of $$('.slide',track)){const image=$('img',slide),asset=img(slide.dataset.id);if(image&&asset&&['paused','error','1'].includes(image.dataset.loading))showProgressive(image,asset,slide.dataset.o==='0');}}
-function showProgressive(image,im,urgent){
+function showProgressive(image,im,urgent,thumbnailSource){
   cancelPreview(image);
   const low=src(im),high=picture(im);
   const status=value=>setPreviewState(image,value);
   if(!high||typeof Image!=="function"){image.src=high||low;status('0');return;}
-  image.src=low;image.dataset.want=high;status('1');
+  if(image.dataset.thumbnail!==low||(image.complete&&!image.naturalWidth)){
+    image.dataset.thumbnail=low;
+    image.src=low;
+    if(!image.complete||!image.naturalWidth){
+      const snapshot=snapshotThumbnail(thumbnailSource);
+      if(snapshot)image.src=snapshot;
+    }
+  }
+  image.dataset.want=high;status('1');
   const loader=new Image();loader.decoding="async";if("fetchPriority" in loader)loader.fetchPriority=urgent?"high":"low";
   const job={loader,active:true,timer:null};previewRequests.set(image,job);livePreviews.add(image);
   const valid=()=>job.active&&previewRequests.get(image)===job&&image.dataset.want===high;
@@ -569,13 +589,25 @@ function showProgressive(image,im,urgent){
   const canDecode=typeof loader.decode==="function";loader.onerror=failed;if(!canDecode)loader.onload=swap;loader.src=high;
   if(canDecode){try{Promise.resolve(loader.decode()).then(swap,failed);}catch{failed();}}
 }
-function layoutSlides(){
+function layoutSlides(thumbnailSource){
   clearViewerTap();
   if(typeof StudioZoom!=="undefined")StudioZoom.reset();
   track.style.transform="";
   const old=new Map($$(".slide",track).map(el=>[el.dataset.id,el]));
-  for(const o of [-1,0,1]){const id=V.list[V.i+o];if(!id||!img(id))continue;const im=img(id),r=fitRect(im);let slide=old.get(id);old.delete(id);
-    if(!slide){slide=document.createElement("div");slide.className="slide";slide.dataset.id=id;const image=document.createElement("img");image.alt="";image.draggable=false;image.decoding="async";slide.append(image);const loading=document.createElement('button');loading.className='preview-loading';loading.innerHTML='<span class="spin"></span><span class="loading-label">高清预览加载中</span><span class="retry-label">预览未加载 · 轻点重试</span>';loading.setAttribute('aria-label','重试加载高清预览');loading.onclick=e=>{e.stopPropagation();if(slide.dataset.loading==='error')showProgressive(image,im,true);};slide.append(loading);showProgressive(image,im,o===0);}
+  for(const o of [0,-1,1]){const id=V.list[V.i+o];if(!id||!img(id))continue;const im=img(id),r=fitRect(im);let slide=old.get(id);old.delete(id);
+    if(!slide){
+      slide=document.createElement("div");slide.className="slide";slide.dataset.id=id;
+      const image=document.createElement("img");image.alt="";image.draggable=false;image.decoding="async";
+      const loading=document.createElement('button');loading.className='preview-loading';
+      loading.innerHTML='<span class="spin"></span><span class="loading-label">高清预览加载中</span><span class="retry-label">预览未加载 · 轻点重试</span>';
+      loading.setAttribute('aria-label','重试加载高清预览');
+      loading.onclick=event=>{
+        event.stopPropagation();
+        if(slide.dataset.loading==='error')showProgressive(image,im,true);
+      };
+      slide.append(image,loading);
+      showProgressive(image,im,o===0,o===0?thumbnailSource:null);
+    }
     if($('img',slide).dataset.loading==='paused')showProgressive($('img',slide),im,o===0);
     slide.dataset.o=o;slide.style.transform=`translateX(calc(${o} * (100% + 20px)))`;Object.assign($("img",slide).style,{left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px',transform:''});track.append(slide);
   }
@@ -634,7 +666,7 @@ function runViewerMotion({closing=false,visual,source,flight,target,duration,art
     const from=closing?opacity[index]:element===vbg?backdropFrom:0;
     effects.push(element.animate([{opacity:from},{opacity:to}],{duration,easing:E.std,fill:"both"}));
   });
-  vbg.style.opacity=closing?"0":"1";
+  vbg.style.opacity="";
   const motion={closing,moving,cleanup(){
     moving?.remove();
     effects.forEach(effect=>effect.cancel());
@@ -664,6 +696,7 @@ document.addEventListener("fullscreenchange",retargetViewerMotion);
 document.addEventListener("webkitfullscreenchange",retargetViewerMotion);
 function openViewer(id,listKind,opts={}){
   if(V.open||!img(id))return;
+  pageTransition?.skipTransition?.();
   const generation=++V.gen,list=opts.ids||listFor(listKind,id);
   V.reference=opts.reference?opts:null;V.list=list.includes(id)?list:[id];V.i=V.list.indexOf(id);V.open=true;
   V.source={id,image:opts.trigger?.querySelector("img")||viewerSource(id)};
@@ -674,8 +707,10 @@ function openViewer(id,listKind,opts={}){
   vw.classList.toggle('reference-preview',!!V.reference);
   vw.classList.toggle('reference-readonly',!!V.reference&&!V.reference.onSelect);
   StudioChrome.enterViewer();
-  vw.classList.add("open");vw.classList.remove("chrome-off","redraw","qe-on","viewer-closing");app.classList.add("dark-sb");layoutSlides();
+  vw.classList.add("open");vw.classList.remove("chrome-off","redraw","qe-on","viewer-closing");app.classList.add("dark-sb");layoutSlides(source);
   const cur=curImg();
+  const displayed=cur.getAttribute('src');
+  if(from&&displayed?.startsWith('data:image/'))from.url=displayed;
   runViewerMotion({visual:cur,source,flight:from,target:{bounds:rectOf(cur),radius:3},duration:D(from?380:260),backdropFrom});
   pushLayer("viewer",closeViewer,vw);placeToast();
   if(opts.redraw)setTimeout(()=>{if(V.open&&V.gen===generation&&currentSurface()?.surface===vw)enterRedraw();},D(420));
@@ -722,7 +757,7 @@ function cancelViewerDrag(restore=false){
   if(previous.axis==="x")track.style.transform="";
   if(previous.axis==="y"){
     const image=curImg();if(image)image.style.transform="";
-    vbg.style.opacity="1";vw.classList.toggle("chrome-off",previous.chromeHidden);
+    vbg.style.opacity="";vw.classList.toggle("chrome-off",previous.chromeHidden);
   }
 }
 function paintViewerDrag(){viewerFrame=null;if(!drag||!V.open||V.redraw)return;const d=drag;
@@ -744,7 +779,7 @@ const dragEnd=e=>{
   if(d.axis==="x"){const velocity=performance.now()-d.lastT<90?d.velocity:0,advance=Math.abs(d.dx)>64||Math.abs(d.dx)>24&&Math.abs(velocity)>.35&&Math.sign(velocity)===Math.sign(d.dx);
     if(e.type!=="pointercancel"&&advance&&d.dx<0&&V.i<V.list.length-1)slideTo(1,d.dx,velocity);else if(e.type!=="pointercancel"&&advance&&d.dx>0&&V.i>0)slideTo(-1,d.dx,velocity);
     else{track.animate([{transform:`translate3d(${d.dx}px,0,0)`},{transform:"none"}],{duration:D(180),easing:E.emph});track.style.transform="";}}
-  else if(d.axis==="y"){if(e.type!=="pointercancel"&&d.dy>110)back();else{const c=curImg();c.animate([{transform:c.style.transform},{transform:"none"}],{duration:D(280),easing:E.emph});c.style.transform="";vbg.style.opacity="1";vw.classList.toggle("chrome-off",d.chromeHidden);}}
+  else if(d.axis==="y"){if(e.type!=="pointercancel"&&d.dy>110)back();else{const c=curImg();c.animate([{transform:c.style.transform},{transform:"none"}],{duration:D(280),easing:E.emph});c.style.transform="";vbg.style.opacity="";vw.classList.toggle("chrome-off",d.chromeHidden);}}
 };
 stage.addEventListener("pointerup",dragEnd);stage.addEventListener("pointercancel",dragEnd);
 
