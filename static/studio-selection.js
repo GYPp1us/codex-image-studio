@@ -7,16 +7,21 @@ const StudioSelection=(()=>{
   function close(){selecting=false;ids.clear();$('#selection-toolbar')?.remove();$('#page').classList.remove('selecting');paint();}
   function begin(id){
     if(!selecting){selecting=true;scope=currentScope();ids=new Set();pushLayer('selection',close);}
-    ids.add(id);paint();
+    if(id)ids.add(id);paint();
   }
+  function applyRange(next,tiles){
+    for(const id of new Set([...ids,...next])){if(ids.has(id)===next.has(id))continue;for(const tile of tiles.get(id)||[]){tile.classList.toggle('batch-selected',next.has(id));tile.setAttribute('aria-pressed',String(next.has(id)));}}
+    ids=new Set(next);updateCount();
+  }
+  function updateCount(){const bar=$('#selection-toolbar');if(!bar)return;$('.selection-count',bar).textContent=`已选 ${ids.size} 张`;for(const b of $$('[data-selection="menu"],[data-dir="move"],[data-dir="create"]',bar))b.disabled=!ids.size;}
   function toggle(id){ids.has(id)?ids.delete(id):ids.add(id);paint();}
   function paint(){
     const page=$('#page');page.classList.toggle('selecting',selecting&&S.tab==='works');
     for(const tile of $$('#page .tile')){const selected=selecting&&ids.has(tile.dataset.id);tile.classList.toggle('batch-selected',selected);if(selecting)tile.setAttribute('aria-pressed',String(selected));else tile.removeAttribute('aria-pressed');}
     if(!selecting||S.tab!=='works'){$('#selection-toolbar')?.remove();return;}
     let bar=$('#selection-toolbar');
-    if(!bar){bar=document.createElement('footer');bar.id='selection-toolbar';bar.className='selection-toolbar';bar.innerHTML=`<button class="ghost-btn" data-selection="exit">取消</button><span class="selection-count" role="status" aria-live="polite"></span><button class="ghost-btn" data-selection="all">选已加载</button><button class="pill-btn strong" data-selection="menu">操作${icon('chevd',14)}</button>`;page.append(bar);}
-    $('.selection-count',bar).textContent=`已选 ${ids.size} 张`;$('[data-selection="menu"]',bar).disabled=!ids.size;
+    if(!bar){bar=document.createElement('footer');bar.id='selection-toolbar';bar.className='selection-toolbar';bar.innerHTML=globalThis.StudioFolders?`<button class="icon-btn dir-icon" data-selection="exit" aria-label="退出多选" title="退出多选">${icon('x')}</button><span class="selection-count" role="status" aria-live="polite"></span>${StudioFolders.button('move','移动所选作品','folder')}${StudioFolders.button('create','用所选作品新建分组','folderplus')}<button class="icon-btn dir-icon" title="选已加载" aria-label="选已加载" data-selection="all">${icon('select')}</button><button class="icon-btn dir-icon" aria-label="更多操作" title="更多操作" data-selection="menu">${icon('more')}</button>`:`<button class="ghost-btn" data-selection="exit">取消</button><span class="selection-count" role="status" aria-live="polite"></span><button class="ghost-btn" data-selection="all">选已加载</button><button class="pill-btn strong" data-selection="menu">操作${icon('chevd',14)}</button>`;page.append(bar);}
+    updateCount();
   }
   async function execute(op,button){
     const chosen=[...ids];if(!chosen.length)return;
@@ -45,5 +50,5 @@ const StudioSelection=(()=>{
       return execute(action,button);
     }).catch(StudioService.report);
   });
-  return {begin,toggle,paint,leave,reset:close,active:()=>selecting,scope:()=>scope};
+  return {begin,toggle,paint,leave,applyRange,chosen:()=>[...ids],sweeping:()=>!!globalThis.StudioSweep?.holding(),canAppend:()=>globalThis.StudioSweep?.canAppend(),reset:close,active:()=>selecting,scope:()=>scope};
 })();

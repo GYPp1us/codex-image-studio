@@ -1,0 +1,34 @@
+
+.dir-workspace{display:flex;flex:1;min-height:0;overflow:hidden}
+.dir-scroll{min-width:0;flex:1;overflow-y:auto;overscroll-behavior:contain}
+.dir-workspace .dir-side{display:none}
+.dir-icon,.dir-crumbs button,.dir-tree-row button,.dir-location{min-width:44px;min-height:44px}
+.dir-crumbs,.dir-tools,.dir-tree-row,.dir-receipt,.dir-picker-head{display:flex;align-items:center;gap:4px}
+.dir-crumbs{min-width:0;flex-wrap:wrap;margin:2px 0 10px;color:var(--muted)}
+.dir-crumbs button,.dir-tree-name,.dir-location{background:transparent;color:inherit;border:0;padding:4px 7px;text-align:left}
+.dir-crumbs [aria-current="page"]{color:var(--ink);font-weight:650}
+.dir-card{content-visibility:auto;contain-intrinsic-size:auto 130px}
+.dir-card .cover{display:flex;align-items:center;justify-content:center;overflow:hidden;aspect-ratio:1.55}
+.dir-card .cover img{min-width:0;flex:1;height:100%;object-fit:cover}
+.dir-card .coll-name,.dir-card .coll-meta{display:block}
+.dir-card .coll-meta svg{vertical-align:middle;margin-right:5px}
+.dir-scroll .grid .tile{aspect-ratio:1}
+.dir-scroll .grid .tile img{width:100%;height:100%;object-fit:cover}
+.dir-scroll .section-h,.dir-picker-head{justify-content:space-between}
+.dir-branch .dir-branch{margin-inline-start:14px;border-inline-start:1px solid var(--line)}
+.dir-tree-name{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
+.dir-tree-name[aria-current]{font-weight:bold;color:var(--accent)}
+.dir-tools{justify-content:flex-end}
+.dir-receipt button{border:0;background:transparent;color:inherit}
+.dir-picker-path{overflow-wrap:anywhere}
+.dir-picker-list{max-height:48dvh;overflow:auto}
+.dir-picker-list button{min-height:44px}
+.net-status{display:flex;align-items:center;gap:8px;color:var(--muted)}
+.net-status .icon-btn{margin-left:auto}
+.net-retry[hidden]{display:none!important}
+.dir-feedback{min-height:1.3em;color:var(--red);font-size:13px}
+.dir-scroll [data-more-slot]{text-align:center}
+@media(max-width:600px){.dir-crumbs:has(button:nth-of-type(4)) button:nth-last-of-type(n+4),.dir-crumbs:has(button:nth-of-type(4)) span:nth-last-of-type(n+3){display:none}.dir-workspace .colls{margin-bottom:8px}}
+@media(min-width:860px){.dir-workspace .dir-side{display:block;width:clamp(160px,21vw,265px);overflow:auto;flex-shrink:0;padding:10px 6px;border-inline-end:1px solid var(--line)}}
+@media(prefers-reduced-motion:no-preference){.dir-card .coll-meta svg{animation:dir-badge .12s ease-out}.dir-receipt{animation:dir-badge .18s ease-out}}
+@keyframes dir-badge{from{opacity:.3;transform:translateY(2px)}to{opacity:1;transform:none}}
