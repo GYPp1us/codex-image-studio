@@ -41,6 +41,7 @@ import account_profile
 import upscale_prompts
 import generation_runtime
 import workspace_shell
+import library_tree
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.getenv("STUDIO_DATA", str(ROOT / "data"))).resolve()
@@ -98,6 +99,11 @@ def archive_deleted_untemplated(conn):
     row=conn.execute('SELECT deleted FROM collections WHERE id=?',(UNTEMPLATED_COLLECTION,)).fetchone()
     if row and row['deleted']:
         archived='archived-untemplated-'+uid()
+        conn.execute("""INSERT INTO folders(id,name,created,deleted)
+            SELECT ?,name,created,1 FROM folders WHERE id=?""", (archived,UNTEMPLATED_COLLECTION))
+        conn.execute("UPDATE folders SET parent_id=? WHERE parent_id=?", (archived,UNTEMPLATED_COLLECTION))
+        conn.execute("UPDATE assets SET folder_id=? WHERE folder_id=?", (archived,UNTEMPLATED_COLLECTION))
+        conn.execute("UPDATE folders SET deleted=0,name='待整理' WHERE id=?", (UNTEMPLATED_COLLECTION,))
         conn.execute('UPDATE collections SET id=? WHERE id=?',(archived,UNTEMPLATED_COLLECTION))
         conn.execute('UPDATE jobs SET collection_id=? WHERE collection_id=?',(archived,UNTEMPLATED_COLLECTION))
 
@@ -190,9 +196,10 @@ def initialize():
         if not c.execute("SELECT 1 FROM settings WHERE key='templates_migrated'").fetchone():
             c.execute("INSERT OR IGNORE INTO templates(id,text,title,favorite,created,updated,refs,options) SELECT id,text,title,favorite,created,updated,refs,options FROM prompts")
             c.execute("INSERT INTO settings VALUES ('templates_migrated','true')")
-        # Consolidate live untagged jobs; retain deleted groups in the trash.
+        library_tree.initialize(c)
+        # The legacy task lists remain available for older clients.
         for job in c.execute("SELECT j.id,j.batch_id,j.prompt,j.template_id,j.collection_id,j.created,COALESCE(g.deleted,0) AS collection_deleted FROM jobs j LEFT JOIN collections g ON g.id=j.collection_id").fetchall():
-            if not job['template_id'] and job['collection_deleted']:continue
+            if job['collection_id']=='system-probe' or (not job['template_id'] and job['collection_deleted']):continue
             cid = 'tpl-' + job['template_id'] if job['template_id'] else UNTEMPLATED_COLLECTION
             if job['collection_id'] != cid:
                 if not job['template_id']:archive_deleted_untemplated(c)
@@ -352,7 +359,7 @@ async def lifespan(app):
     JOB_TASKS.clear();CALL_POOL=None
 
 
-app = FastAPI(title="Image Studio", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Image Studio", version="2.0.0-rc1", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.middleware("http")
@@ -382,7 +389,7 @@ class Credentials(BaseModel):
 
 @app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
-    return {"ok": True, "app": "Image Studio"}
+    return {"ok": True, "app": "Image Studio", "version": app.version}
 
 
 @app.get("/api/auth/state")
@@ -713,8 +720,12 @@ def serialize_asset(a):
     if not a:
         return None
     large=a['width']*a['height']>16_000_000 or max(a['width'],a['height'])>8192
-    origin=query('SELECT options FROM jobs WHERE id=?',(a.get('job_id'),),True) if a.get('job_id') else None
-    operation='quick-edit' if origin and json.loads(origin['options']).get('quick_edit') else None
+    if 'job_options' in a:
+        options=a.pop('job_options')
+    else:
+        origin=query('SELECT options FROM jobs WHERE id=?',(a.get('job_id'),),True) if a.get('job_id') else None
+        options=origin['options'] if origin else None
+    operation='quick-edit' if options and json.loads(options).get('quick_edit') else None
     return {k: v for k, v in a.items() if k not in ("path", "sha")} | {"url": f"/media/{a['id']}", "thumbnail": f"/media/{a['id']}?thumbnail=1",'preview':f"/media/{a['id']}?preview=1" if large else f"/media/{a['id']}", 'tile_template':f"/api/assets/{a['id']}/tiles/{{level}}/{{x}}/{{y}}" if large else None,'operation':operation}
 
 
@@ -848,7 +859,12 @@ def serialize_prompt(saved):
 @app.get("/api/templates")
 @app.get("/api/prompts")
 def list_prompts(search: str = "", session=Depends(require_user)):
-    return [serialize_prompt(p) for p in query("SELECT * FROM templates WHERE text LIKE ? OR title LIKE ? ORDER BY favorite DESC,updated DESC LIMIT 100", (f"%{search[:100]}%", f"%{search[:100]}%"))]
+    return [serialize_prompt(p) for p in query("""WITH RECURSIVE live(id) AS (
+        SELECT id FROM folders WHERE parent_id IS NULL AND deleted=0 UNION ALL
+        SELECT f.id FROM folders f JOIN live l ON f.parent_id=l.id WHERE f.deleted=0)
+        SELECT t.*,f.id AS folder_id FROM templates t JOIN folders f ON f.template_id=t.id
+        WHERE f.id IN (SELECT id FROM live) AND (t.text LIKE ? OR t.title LIKE ?)
+        ORDER BY t.favorite DESC,t.updated DESC LIMIT 100""", (f"%{search[:100]}%", f"%{search[:100]}%"))]
 
 
 @app.post("/api/templates")
@@ -866,7 +882,8 @@ def save_prompt(body: PromptInput, session=Depends(require_user)):
 
 @app.get("/api/templates/{pid}")
 def get_template(pid: str, session=Depends(require_user)):
-    saved = query("SELECT * FROM templates WHERE id=?", (pid,), True)
+    saved = query("""SELECT t.*,f.id AS folder_id FROM templates t LEFT JOIN folders f
+        ON f.template_id=t.id WHERE t.id=?""", (pid,), True)
     if not saved:
         raise HTTPException(404, "模板不存在")
     return serialize_prompt(saved)
@@ -952,6 +969,8 @@ class JobInput(BaseModel):
     model: str | None = Field(default=None, max_length=100)
     effort: str | None = Field(default=None, max_length=20)
     template_id: str | None = Field(default=None, max_length=64)
+    folder_id: str | None = Field(default=None, max_length=100)
+    operation_id: str | None = Field(default=None, min_length=8, max_length=100)
 
 
 def serialize_job(j,full=False):
@@ -1013,6 +1032,9 @@ def stage_from_event(event):
 
 
 def _create_jobs(body):
+    previous = generation_receipt(body)
+    if previous:
+        return previous
     if not body.prompt.strip():
         raise HTTPException(400, "提示词不能为空")
     model = body.model or setting("model", MODEL)
@@ -1080,14 +1102,50 @@ def _create_jobs(body):
     batch, ids = uid(), []
     collection_id = 'system-probe' if body.system_probe else 'tpl-' + template['id'] if template else UNTEMPLATED_COLLECTION
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        if body.operation_id:
+            old = c.execute("SELECT * FROM generation_receipts WHERE id=?", (body.operation_id,)).fetchone()
+            if old:
+                return check_generation_receipt(old, body)
         if not template and not body.system_probe:archive_deleted_untemplated(c)
         c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,deleted=0", (collection_id, template['title'] if template else '无模板', body.prompt.strip(), now(), now()))
+        if not body.system_probe and (body.folder_id or body.template_id):
+            options['folder_id'] = library_tree.generation_folder(c, body.folder_id, body.template_id)
         for _ in range(body.count):
             jid = uid()
             ids.append(jid)
             c.execute("INSERT INTO jobs(id,batch_id,prompt,refs,options,status,max_attempts,created,collection_id,template_id) VALUES (?,?,?,?,?,'queued',?,?,?,?)", (jid, batch, body.prompt.strip(), json.dumps(refs), json.dumps(options), body.max_attempts or setting("max_attempts", 3), now(), collection_id, template['id'] if template else ''))
+        result = {"ids": ids, "batch_id": batch, "collection_id": collection_id}
+        if body.operation_id:
+            c.execute("INSERT INTO generation_receipts VALUES (?,?,?)",
+                      (body.operation_id, generation_signature(body), json.dumps(result)))
     WAKE.set()
-    return {"ids": ids, "batch_id": batch, "collection_id": collection_id}
+    return result
+
+
+def generation_signature(body):
+    return hashlib.sha256(json.dumps(body.model_dump(), sort_keys=True).encode()).hexdigest()
+
+
+def check_generation_receipt(row, body):
+    if row['request'] != generation_signature(body):
+        raise HTTPException(409, '操作编号已用于另一项生成请求')
+    return json.loads(row['result'])
+
+
+def generation_receipt(body):
+    if body.operation_id:
+        row = query("SELECT * FROM generation_receipts WHERE id=?", (body.operation_id,), True)
+        if row:
+            return check_generation_receipt(row, body)
+
+
+@app.get("/api/jobs/receipts/{oid}")
+def submitted_jobs(oid: str, session=Depends(require_user)):
+    row = query("SELECT result FROM generation_receipts WHERE id=?", (oid,), True)
+    if not row:
+        raise HTTPException(404, "尚无这次生成的回执")
+    return json.loads(row['result'])
 
 
 def create_jobs(body):
@@ -1096,6 +1154,8 @@ def create_jobs(body):
 
 @app.post("/api/jobs")
 async def add_jobs(body: JobInput, session=Depends(require_user)):
+    if previous := generation_receipt(body):
+        return previous
     code, status = await command(CODEX_BIN, "login", "status", timeout=10)
     if code != 0 or "api key" in status.lower():
         raise HTTPException(409, "请先在连接设置中完成 ChatGPT 订阅登录")
@@ -1240,6 +1300,9 @@ def restore_collection(cid: str, session=Depends(require_user)):
             archive_deleted_untemplated(c)
             c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET deleted=0,updated=excluded.updated",(UNTEMPLATED_COLLECTION,'无模板',group['prompt'],group['created'],now()))
             c.execute('UPDATE jobs SET collection_id=? WHERE collection_id=?',(UNTEMPLATED_COLLECTION,cid))
+            c.execute('UPDATE assets SET folder_id=? WHERE folder_id=?',(UNTEMPLATED_COLLECTION,cid))
+            c.execute('UPDATE folders SET parent_id=? WHERE parent_id=?',(UNTEMPLATED_COLLECTION,cid))
+            c.execute('DELETE FROM folders WHERE id=?',(cid,))
             c.execute('DELETE FROM collections WHERE id=?',(cid,))
         else:c.execute('UPDATE collections SET deleted=0 WHERE id=?',(cid,))
     return {"ok": True}
@@ -1560,6 +1623,7 @@ async def run_job(jid):
 
 
 generation_runtime.register(app, sys.modules[__name__])
+library_tree.register(app, sys.modules[__name__])
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 

@@ -7,6 +7,48 @@ const StudioService=(()=>{
   let csrf='',authenticated=false,authState=null,config={},account={},setup={},prefs={},models=[],polling=null,saveQueue=Promise.resolve(),draftTimer,installPrompt;
   const assets=new Map(),jobs=new Map(),batchMap=new Map(),plans=new Map(),planPending=new Map(),details=new Map(),collectionPages=new Map();
   const workPages=new Map();
+  let templateFlight,templateLoaded=false,pendingGeneration=null;
+  const network=typeof createConnection==='function'?createConnection({
+    async probe(signal){
+      const response=await fetch('/api/health',{signal,cache:'no-store',redirect:'error',credentials:'same-origin'});
+      if(!response.ok)throw new Error('探测失败');
+      return response.json();
+    },
+    async resync(){
+      if(!authenticated||document.hidden||stopped)return;
+      cancelReads();
+      const view=globalThis.StudioFolders?.resume();
+      const queue=sync();
+      schedule();
+      reconcileSubmission().catch(report);
+      await Promise.all([view,queue]);
+    },
+    paint(value){S.network=value;S.offline=value.phase==='retrying';if(hasPainted)updateChrome();}
+  }):null;
+  function syncFailed(){if(network){network.check(false);return;}S.offline=true;updateChrome();}
+  function acceptTemplates(ts){
+    S.templates=ts.map(t=>({id:t.id,name:t.title,text:t.text,ratio:labelRatio(t.options.ratio||'auto'),refs:t.refs.length,referenceIds:t.refs,options:t.options,raw:t}));
+    ts.forEach(t=>t.references.forEach(a=>rememberAsset(a)));
+  }
+  async function fetchTemplate(id){
+    const t=await read('/api/templates/'+encodeURIComponent(id));const mapped={id:t.id,name:t.title,text:t.text,ratio:labelRatio(t.options.ratio||'auto'),refs:t.refs.length,referenceIds:t.refs,options:t.options,raw:t};
+    S.templates=S.templates.filter(v=>v.id!==id).concat(mapped);t.references.forEach(a=>rememberAsset(a));return mapped;
+  }
+  function ensureTemplates(force=false){
+    if(templateFlight)return templateFlight;
+    if(templateLoaded&&!force)return Promise.resolve();
+    const epoch=sessionEpoch;
+    const task=read('/api/templates').then(ts=>{if(epoch===sessionEpoch&&authenticated){acceptTemplates(ts);templateLoaded=true;if(S.tab==='templates')refresh();}})
+      .finally(()=>{if(templateFlight===task)templateFlight=null;});
+    templateFlight=task;return task;
+  }
+  async function reconcileSubmission(){
+    const pending=pendingGeneration;if(!pending)return;
+    try{
+      const result=await read('/api/jobs/receipts/'+pending.id);
+      if(pendingGeneration===pending){pendingGeneration=null;toast('已找回提交的生成任务',{action:'查看',run:()=>goBatch(result.batch_id)});}
+    }catch(error){if(error.status!==404)throw error;}
+  }
   const trashRefresh=new WeakMap();
   const fieldWrites=new Map(),fieldStatus=new WeakMap();
   const workState=tab=>{if(!workPages.has(tab))workPages.set(tab,{ids:[],offset:0,total:0,ready:false,loading:false,error:false});return workPages.get(tab);};
@@ -59,7 +101,9 @@ const StudioService=(()=>{
     if(!response.ok){if(response.status===401&&authenticated){authenticated=false;clearTimeout(polling);login();}
       const message=Array.isArray(data.detail)?data.detail.map(x=>x.msg).join('；'):data.detail;
       const error=new Error(message||`请求失败（${response.status}）`);error.status=response.status;throw error;}
-    if(data.csrf)csrf=data.csrf;return data;
+    if(data.csrf)csrf=data.csrf;
+    if(method==='GET'&&/^\/api\/(state\?|batches\?|library\?)/.test(path))network?.good();
+    return data;
   }
   const read=(path,options={})=>api(path,{...options,background:true});
   const readState=()=>read('/api/state?compact=1');
@@ -77,7 +121,7 @@ const StudioService=(()=>{
     return traverseHistory(()=>layer?.isConnected&&layer.dataset.revision===revision&&layers.at(-1)?.surface===layer?1:0);
   }
   function rememberAsset(a,origin){if(!a)return null;const previous=assets.get(a.id)||{};
-    const j=origin||jobs.get(a.job_id),cid=j?.collection_id||previous.coll;
+    const j=origin||jobs.get(a.job_id),cid=a.folder_id||previous.folder_id||j?.collection_id||previous.coll;
     const mapped={...previous,...a,w:a.width,h:a.height,fav:!!a.favorite,created:a.created*1000,coll:cid,
       batch:j?.batch_id||previous.batch,prompt:j?.prompt||previous.prompt||'',ratio:actualRatio(a.width,a.height),
       src:j?.options?.source_asset_id,badge:a.operation==='quick-edit'?'速改':j?.options?.stitch?j.options.stitch+'×':j?.options?.regions?'重绘×'+j.options.regions.length:j?.options?.region?'重绘':undefined};
@@ -150,15 +194,16 @@ const StudioService=(()=>{
       ['models','/api/models',value=>{models=value.items;catalogReady=true;reconcileModel();}],
       ['assets','/api/assets?kind=all&limit=80',value=>{value.items.forEach(a=>rememberAsset(a));}]
     ];
-    const tasks=definitions.filter(([key])=>!auxReady.has(key)).map(([key,path,accept])=>{
+    if(globalThis.StudioFolders)assetsAttempted=true;
+    const tasks=definitions.filter(([key])=>!auxReady.has(key)&&!(globalThis.StudioFolders&&key==='assets')).map(([key,path,accept])=>{
       const epoch=sessionEpoch;
       return auxiliary(key,path,value=>{accept(value);auxReady.add(key);}).finally(()=>{if(key==='assets'&&epoch===sessionEpoch){assetsAttempted=true;hydrateDraft();}});
     });
     return Promise.allSettled(tasks);
   }
   function reconcileModel(){if(!catalogReady)return;if(!models.some(model=>model.id===S.composer.model))S.composer.model=config.model;const model=models.find(model=>model.id===S.composer.model);if(model&&!model.efforts.includes(S.composer.effort))S.composer.effort=model.default_effort;}
-  async function fetchBatches(offset=0,version=null){
-    const data=await read(`/api/batches?limit=30&offset=${offset}`);
+  async function fetchBatches(offset=0,version=null,overview=false){
+    const data=await read(overview?'/api/batches?overview=true&limit=3':`/api/batches?limit=30&offset=${offset}`);
     if(version!==null&&version!==syncVersion)return data;
     if(data.history_revision!==undefined&&historyRevision!==data.history_revision){
       if(offset)return fetchBatches(0,version);
@@ -167,7 +212,7 @@ const StudioService=(()=>{
       historyRevision=data.history_revision;
     }
     batchTotal=data.total;
-    batchOffset=Math.max(batchOffset,offset+data.items.length);
+    if(!overview)batchOffset=Math.max(batchOffset,offset+data.items.length);
     ingestBatches(data.items);
     return data;
   }
@@ -175,18 +220,20 @@ const StudioService=(()=>{
   async function allCollections(){const data=await read('/api/collections?limit=100');while(data.items.length<data.total){const more=await read('/api/collections?limit=100&offset='+data.items.length);if(!more.items.length)break;data.items.push(...more.items);}return data;}
   async function sync({initial=false,stateData=null}={}){if(!authenticated)return;if(syncFlight)return syncFlight;const version=++syncVersion,epoch=sessionEpoch;
     const valid=()=>version===syncVersion&&epoch===sessionEpoch&&authenticated;
-    const task=(async()=>{try{const [st,cs,ts]=await Promise.all([stateData||readState(),allCollections(),read('/api/templates')]);if(!valid())return;config=st;S.paused=st.paused;
-      S.collections=cs.items.map(c=>({...c,template:c.template_id||null}));for(const c of cs.items)for(const a of c.covers||c.cover_assets||[]){const v=rememberAsset(a);if(v)v.coll=c.id;}
-      S.templates=ts.map(t=>({id:t.id,name:t.title,text:t.text,ratio:labelRatio(t.options.ratio||'auto'),refs:t.refs.length,referenceIds:t.refs,options:t.options,raw:t}));ts.forEach(t=>t.references.forEach(a=>rememberAsset(a)));
-      const [normal,...act]=await Promise.all([fetchBatches(0,version),...['queued','running','retrying'].map(status=>read(`/api/batches?status=${status}&limit=100`))]);if(!valid())return;
+    const task=(async()=>{try{const [st,cs,ts]=await Promise.all([stateData||readState(),globalThis.StudioFolders?null:allCollections(),globalThis.StudioFolders?null:read('/api/templates')]);if(!valid())return;config=st;S.paused=st.paused;
+      if(cs){S.collections=cs.items.map(c=>({...c,template:c.template_id||null}));for(const c of cs.items)for(const a of c.covers||c.cover_assets||[]){const v=rememberAsset(a);if(v)v.coll=c.id;}}
+      if(ts)acceptTemplates(ts);
+      const overview=!!globalThis.StudioFolders&&S.tab!=='queue',statuses=overview?[]:globalThis.StudioFolders?['active']:['queued','running','retrying'];
+      const [normal,...act]=await Promise.all([fetchBatches(0,version,overview),...statuses.map(status=>read(`/api/batches?status=${status}&limit=100`))]);if(!valid())return;
+      globalThis.StudioFolders?.observeRevision(normal.library_revision);
       act.filter(d=>d.history_revision===normal.history_revision).forEach(d=>ingestBatches(d.items));
       // A previously running old batch can finish outside the recent page.
       const current=new Set([...batchMap.values()].flatMap(b=>b.jobs).filter(active).map(j=>j.id));
       await Promise.all([...lastActive].filter(id=>!normal.items.some(b=>b.jobs.some(j=>j.id===id))&&!act.some(d=>d.items.some(b=>b.jobs.some(j=>j.id===id)))).map(async id=>{const job=await read('/api/jobs/'+id);if(valid())rememberJob(job);}));if(!valid())return;lastActive=current;
       const ups=[...batchMap.values()].flatMap(b=>b.jobs).filter(j=>j.options.stitch);
       ups.filter(j=>!detailReads.has(j.id)&&(initial||active(j)||!details.has(j.id)||details.get(j.id).status!==j.status)).slice(0,6).forEach(j=>{const request=read('/api/upscale/jobs/'+j.id).then(d=>{if(detailReads.get(j.id)!==request||epoch!==sessionEpoch||!authenticated||stopped)return;if(jobs.get(j.id)?.status!==j.status&&d.status===j.status)return;details.set(j.id,d);rememberJob(d);projectBatches();if(!V.open&&!topScreen())refresh();StudioTasks.update();}).catch(()=>{}).finally(()=>{if(detailReads.get(j.id)===request)detailReads.delete(j.id);});detailReads.set(j.id,request);});
-      projectImages();projectBatches();if(!firstSync)notifyChanges();if(hasPainted){if(S.coll&&!coll(S.coll)){await closeOverlays();S.coll=null;S.tab='works';renderPage();}else if(!V.open&&!topScreen())refresh();}
-      S.offline=false;updateChrome();StudioTasks.update();firstSync=false;loadAuxiliary();hydrateDraft();
+      projectImages();projectBatches();if(!firstSync)notifyChanges();if(hasPainted){if(!globalThis.StudioFolders&&S.coll&&!coll(S.coll)){await closeOverlays();S.coll=null;S.tab='works';renderPage();}else if(!V.open&&!topScreen())refresh();}
+      if(!network)S.offline=false;updateChrome();StudioTasks.update();firstSync=false;loadAuxiliary();hydrateDraft();
     }finally{if(syncFlight===task){syncFlight=null;}}})();syncFlight=task;return task;
   }
   const knownStates=new Map();
@@ -214,16 +261,17 @@ const StudioService=(()=>{
       refreshData().catch(error=>{if(error.name!=='AbortError')report(error);});
     });
   }
-  function schedule(){clearTimeout(polling);if(!authenticated||stopped||document.hidden)return;polling=setTimeout(async()=>{if(!document.hidden&&!StudioZoom.isInteracting()){try{await sync();}catch(error){if(authenticated&&error.name!=='AbortError'){S.offline=true;updateChrome();}}}schedule();},2500);}
+  function schedule(){clearTimeout(polling);if(!authenticated||stopped||document.hidden)return;polling=setTimeout(async()=>{if(!document.hidden&&!StudioZoom.isInteracting()){try{await sync();}catch(error){if(authenticated&&error.name!=='AbortError')syncFailed();}}schedule();},2500);}
   function wake(){if(document.hidden||stopped||wakeQueued)return;
     if(slept){slept=false;for(const animation of document.getAnimations?.()||[]){const timing=animation.effect?.getComputedTiming?.();if(timing&&Number.isFinite(timing.endTime)){try{animation.finish();}catch{}}}}
     if(!authenticated||!hasPainted){if($('#login-form'))return;bootVersion++;bootFlight=null;cancelReads();boot().catch(report);return;}
+    if(network){if(typeof resumeViewerImages==='function')resumeViewerImages();StudioZoom.resume?.();network.start(true);return;}
     wakeQueued=true;const version=++wakeVersion;cancelReads();auxReady.delete('account');auxReady.delete('setup');loadAuxiliary();
     if(typeof resumeViewerImages==='function')resumeViewerImages();StudioZoom.resume?.();
     if(!V.open&&!topScreen()){if(!$('#page .top'))renderPage();else refresh();}
     sync().catch(error=>{if(version===wakeVersion&&authenticated&&!document.hidden&&error.name!=='AbortError'){S.offline=true;updateChrome();}}).finally(()=>{if(version===wakeVersion){wakeQueued=false;schedule();}});
   }
-  function suspendPage(){slept=true;flushDraft();wakeVersion++;wakeQueued=false;clearTimeout(polling);cancelReads();if(!hasPainted){bootVersion++;bootFlight=null;globalThis.StudioStartup?.cancel();}if(typeof suspendViewerImages==='function')suspendViewerImages();StudioZoom.suspend?.();}
+  function suspendPage(){network?.stop();slept=true;flushDraft();wakeVersion++;wakeQueued=false;clearTimeout(polling);cancelReads();if(!hasPainted){bootVersion++;bootFlight=null;globalThis.StudioStartup?.cancel();}if(typeof suspendViewerImages==='function')suspendViewerImages();StudioZoom.suspend?.();}
   function verifyShell(startup,version,{legacy=false}={}){
     if(!/^[a-f0-9]{24}$/.test(version||''))throw new Error('界面版本暂时无法验证，请重试');
     const url=new URL(location.href);
@@ -274,18 +322,28 @@ const StudioService=(()=>{
       const [st,settingsData]=bootstrap?[bootstrap.state,bootstrap.settings]:await Promise.all([readState(),read('/api/settings')]);
       if(!valid())return;config=st;S.paused=st.paused;
       if(!models.length)models=[{id:st.model,name:st.model,efforts:[st.effort],default_effort:st.effort}];
-      mapSettings(settingsData);restoreDraft();renderPage();hasPainted=true;$('#tabbar').hidden=false;schedule();
+      mapSettings(settingsData);restoreDraft();renderPage();hasPainted=true;$('#tabbar').hidden=false;network?.start();schedule();
       if(!startup)warmShell();
-      await Promise.allSettled([loadAuxiliary(),sync({initial:true,stateData:st}).catch(error=>{if(valid()&&error.name!=='AbortError'){S.offline=true;updateChrome();}})]);await hydrateDraft();if(!valid())return;notifyChanges();repaint();
+      await Promise.allSettled([loadAuxiliary(),sync({initial:true,stateData:st}).catch(error=>{if(valid()&&error.name!=='AbortError')syncFailed();})]);await hydrateDraft();if(!valid())return;notifyChanges();repaint();
     }catch(error){if(version!==bootVersion||stopped||error.name==='AbortError')return;if(!authenticated&&authState?.authenticated===false)return login();$('#page').innerHTML=`<div class="boot-state"><p>${esc(error.message)}</p><button class="secondary" data-act="boot-retry">重新连接</button></div>`;}
     finally{if(bootFlight===task)bootFlight=null;}})();bootFlight=task;return task;
   }
-  function login(){globalThis.StudioStartup?.remember(false);stopViewerMotion();StudioSelection.reset();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;historyRevision=null;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;V.gen++;layers.splice(0);syncSurfaces();history.replaceState({depth:0},'');
+  function login(){network?.stop();S.network=null;templateFlight=null;templateLoaded=false;pendingGeneration=null;globalThis.StudioFolders?.reset();globalThis.StudioFolderActions?.reset();globalThis.StudioStartup?.remember(false);stopViewerMotion();StudioSelection.reset();StudioChrome.leaveViewer();StudioDownloads.cancel();StudioZoom.reset();workPages.clear();batchOffset=0;batchTotal=0;historyRevision=null;auxReady.clear();assetsAttempted=false;account={};setup={};sessionEpoch++;bootVersion++;authenticated=false;hasPainted=false;cancelReads();csrf="";clearTimeout(polling);assets.clear();jobs.clear();batchMap.clear();details.clear();plans.clear();planPending.clear();collectionPages.clear();knownStates.clear();lastActive=new Set();firstSync=true;catalogReady=false;models=[];S.images=[];S.library=[];S.batches=[];S.collections=[];S.templates=[];$('#tabbar').hidden=true;$('#screens').innerHTML='';$('#layers').innerHTML='';vw.classList.remove('open');V.open=false;V.gen++;layers.splice(0);syncSurfaces();history.replaceState({depth:0},'');
     $('#page').innerHTML=`<div class="auth-wrap"><div class="auth-brand">${icon('sparkle',28)}<h1>Image Studio</h1><p>${authState?.initialized?'登录私人图片工作台':'设置私人图片工作台'}</p></div><form id="login-form" class="card"><div class="field-label">用户名</div><input class="input" name="username" autocomplete="username" minlength="2" maxlength="64" required><div class="field-label">密码</div><input class="input" name="password" type="password" autocomplete="${authState?.initialized?'current-password':'new-password'}" minlength="10" maxlength="256" required>${authState?.initialized?'':'<div class="field-label">初始化密钥</div><input class="input" name="setup_token" type="password" required>'}<p class="form-err" role="alert"></p><button class="primary" type="submit">${authState?.initialized?'登录':'创建工作台'}</button></form></div>`;
     bindPendingForm($('#login-form'),'form:login',async values=>{await post('/api/auth/'+(authState.initialized?'login':'setup'),values);authState=null;$('#page').innerHTML='<div class="boot-state"><span class="spin"></span>正在打开工作台</div>';firstSync=true;await boot();});
   }
-  function jobInput(){const c=S.composer;return {prompt:c.prompt,refs:[...c.refs],count:c.count,ratio:ratio(c.ratio),size:size(c.size),polish:c.polish,transparent:c.transparent,after_upscale:factor(c.stitch),upscale_requirements:c.upscaleRequirements??'',...StudioUpscalePrompts.entryValue('composer'),model:c.model||config.model,effort:c.effort,template_id:c.template||null,...(c.imageBackend&&Object.keys(c.imageBackend).length?{image_backend:{...c.imageBackend}}:{})};}
-  async function submit(path,body,onAccepted){const result=await post(path,body);holdBadge();onAccepted?.(result);try{await refreshData();}catch(error){S.offline=true;updateChrome();toast('任务已提交，等待更新状态');}return result;}
+  function jobInput(){const c=S.composer;return {prompt:c.prompt,refs:[...c.refs],count:c.count,ratio:ratio(c.ratio),size:size(c.size),polish:c.polish,transparent:c.transparent,after_upscale:factor(c.stitch),upscale_requirements:c.upscaleRequirements??'',...StudioUpscalePrompts.entryValue('composer'),model:c.model||config.model,effort:c.effort,template_id:c.template||null,...(c.folderId?{folder_id:c.folderId}:{}),...(c.imageBackend&&Object.keys(c.imageBackend).length?{image_backend:{...c.imageBackend}}:{})};}
+  async function submit(path,body,onAccepted){
+    const tracked=network&&path==='/api/jobs';
+    if(tracked){
+      const signature=JSON.stringify(body);
+      if(pendingGeneration?.signature!==signature)pendingGeneration={signature,id:crypto.randomUUID()};
+      body={...body,operation_id:pendingGeneration.id};
+    }
+    let result;
+    try{result=await post(path,body);}
+    catch(error){if(tracked){if(error.status&&error.status<500)pendingGeneration=null;else network.check(true);}throw error;}
+    if(tracked)pendingGeneration=null;holdBadge();onAccepted?.(result);try{await refreshData();}catch(error){syncFailed();toast('任务已提交，等待更新状态');}return result;}
   async function generate(){if(!S.composer.prompt.trim()){toast('先写下画面要求');$('#prompt')?.focus();return;}const btn=$('#gen');if(btn?.disabled||btn?.classList.contains('done')||StudioFeedback.busy('generate'))return;const input=jobInput();
     return StudioFeedback.run('generate',btn,()=>submit('/api/jobs',input,()=>{if(!btn.isConnected)return;$('#gen-done').textContent=`已加入 ${input.count} 张`;btn.classList.add('done');flyDot(btn,$('.tab[data-tab="queue"] .ti'));setTimeout(()=>btn.classList.remove('done'),1700);}));}
   async function sendQuick(id,text){if(!text?.trim()||StudioFeedback.busy('quick:'+id))return false;return StudioFeedback.run('quick:'+id,null,async()=>{const result=await submit(`/api/assets/${id}/quick-edit`,{prompt:text.trim(),spec:{ratio:ratio(S.composer.ratio),size:size(S.composer.size)}});toast('速改已加入任务',{action:'查看任务',run:()=>goBatch(result.batch_id)});return true;});}
@@ -330,6 +388,13 @@ const StudioService=(()=>{
     Object.assign(c,{prompt:text,template:id,refs:refs.slice(0,8),ack:false});
     await closeOverlays();S.mode='gen';if(S.tab==='create')renderPage();else await go('create');
     flashChip();saveDraft();toast(`已载入模板：${t.name}${keepPrompt?' · 已保留现有提示词':''}${omitted?` · 已有参考图保留，另有 ${omitted} 张超出 8 张上限`:''}`);}
+  async function useFolderRecipe(id){
+    const t=tpl(id)||await fetchTemplate(id),o=t.options||{},c=S.composer;
+    Object.assign(c,{template:id,prompt:t.text,refs:[...t.referenceIds],ack:false,
+      ratio:labelRatio(o.ratio||'auto'),size:labelSize(o.size||'auto'),polish:!!o.polish,transparent:!!o.transparent,
+      stitch:o.stitch?o.stitch+'×':'关',model:o.model||config.model,effort:o.effort||config.effort});
+    await closeOverlays();S.mode='gen';if(S.tab==='create')renderPage();else await go('create');saveDraft();
+  }
   function tplSaveForm(L,editing=null){const t=editing&&tpl(editing),c=S.composer,text=t?.text??c.prompt;
     const refs=[...(t?.referenceIds||c.refs)];
     const html=`<div class="field-label">名称</div><input class="input" id="tpl-name" maxlength="100" value="${esc(t?.name||text.slice(0,10)||'新模板')}"><div class="field-label">可复用正文</div><textarea class="input" id="tpl-text" maxlength="24000" placeholder="可留空，仅复用参考图">${esc(text)}</textarea><div class="field-label">参考图 <span class="muted" id="tpl-ref-count"></span></div><p class="note">点图放大，长按图片后左右拖动排序。</p><div class="ref-strip template-refs" id="tpl-refs"></div>${t?'':`<button class="row" data-act="sw-bind" data-layout="width:100%"><span class="rl">本次创作归入该模板<small>之后用它生成的图片会进入同名列表</small></span><span class="switch on" id="bind-sw"></span></button>`}<button class="primary" data-act="tpl-save" ${t?`data-id="${t.id}"`:''}>保存模板</button>${t?`<button class="secondary danger" data-act="tpl-delete" data-id="${t.id}">删除模板</button>`:''}`;
@@ -338,7 +403,7 @@ const StudioService=(()=>{
     const paint=()=>{if(!L.isConnected)return;$('#tpl-ref-count',L).textContent=read().length+' / 8';StudioReferences.render($('#tpl-refs',L),{read,write,add:()=>pickerSheet({title:'选择模板参考图',refs:read(),onCommit:write})});};paint();}
   let templateInspector=null;
   function tplSheet(id){const t=tpl(id),c=S.collections.find(x=>x.template===id);if(!t)return;
-    const html=`${t.text?.trim()?`<div class="prompt-box">${esc(t.text)}</div>`:''}<div class="chips" data-layout="margin-top:12px"><span class="chip">${t.refs} 张参考图</span></div><div class="template-preview-refs">${(t.referenceIds||[]).map(ref=>`<button data-act="tpl-preview-ref" data-id="${ref}" data-template-id="${id}" aria-label="放大参考图"><img src="${src(assets.get(ref))}" alt=""></button>`).join('')}</div><p class="note">用该模板生成的图片归入「${esc(c?.name||t.name)}」列表（${c?.image_count||0} 张）。载入时保留已有提示词和生成参数，按顺序补充参考图（最多 8 张）。可在创作页解除归属。</p><button class="primary" data-act="tpl-load" data-id="${id}">载入到创作${icon('arrow',18)}</button><div class="btn-row"><button class="secondary" data-act="tpl-edit" data-id="${id}" data-layout="flex:1;justify-content:center">${icon('edit',16)}编辑</button>${c?`<button class="secondary" data-act="open-coll" data-id="${c.id}" data-layout="flex:1;justify-content:center">${icon('layers',16)}查看作品</button>`:''}</div>`;
+    const html=`${globalThis.StudioFolders?`<button class="menu-row" data-dir="origin" data-id="${esc(id)}">${icon('layers',20)}查看此模板生成的作品</button><button class="menu-row" data-dir="open" data-id="${esc(t.raw?.folder_id||'tpl-'+id)}">${icon('folder',20)}打开模板文件夹</button>`:''}${t.text?.trim()?`<div class="prompt-box">${esc(t.text)}</div>`:''}<div class="chips" data-layout="margin-top:12px"><span class="chip">${t.refs} 张参考图</span></div><div class="template-preview-refs">${(t.referenceIds||[]).map(ref=>`<button data-act="tpl-preview-ref" data-id="${ref}" data-template-id="${id}" aria-label="放大参考图"><img src="${src(assets.get(ref))}" alt=""></button>`).join('')}</div><p class="note">用该模板生成的图片归入「${esc(c?.name||t.name)}」列表（${c?.image_count||0} 张）。载入时保留已有提示词和生成参数，按顺序补充参考图（最多 8 张）。可在创作页解除归属。</p><button class="primary" data-act="tpl-load" data-id="${id}">载入到创作${icon('arrow',18)}</button><div class="btn-row"><button class="secondary" data-act="tpl-edit" data-id="${id}" data-layout="flex:1;justify-content:center">${icon('edit',16)}编辑</button>${c?`<button class="secondary" data-act="open-coll" data-id="${c.id}" data-layout="flex:1;justify-content:center">${icon('layers',16)}查看作品</button>`:''}</div>`;
     if(typeof StudioLandscape!=='undefined'&&StudioLandscape.wide()){
       const content=`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon('back')}</button><h1>${esc(t.name)}</h1></header><div class="scroll">${html}</div>`;
       if(templateInspector?.isConnected&&templateInspector.style.pointerEvents!=='none'){templateInspector.innerHTML=content;hydrateIcons(templateInspector);}
@@ -406,7 +471,7 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
 <p class="g-foot" data-layout="text-align:center">Image Studio</p>
 </div>`;}
 
-  function meSheet(){openSheet({html:`<div class="sheet-hd"><button class="avatar" data-user-avatar data-act="avatar-edit" aria-label="更换头像" data-layout="width:48px;height:48px;font-size:18px">${avatar()}</button><div><b>${esc(account.username)}</b><span>${setup.authenticated?'订阅已连接':'订阅未连接'} · ${S.settings.concurrency} 路并发</span></div></div><button class="menu-row" data-act="settings">${icon('sliders',20)}<span>设置</span><span class="rt">账户、默认值、调用提示词</span></button><button class="menu-row" data-act="trash">${icon('archive',20)}<span>最近删除</span></button><button class="menu-row" data-act="install">${icon('phone',20)}<span>安装应用</span></button><div class="menu-sep"></div><button class="menu-row danger" data-act="logout">${icon('logout',20)}<span>退出登录</span></button>`});}
+  function meSheet(){openSheet({html:`<div class="sheet-hd"><button class="avatar" data-user-avatar data-act="avatar-edit" aria-label="更换头像" data-layout="width:48px;height:48px;font-size:18px">${avatar()}</button><div><b>${esc(account.username)}</b><span>${setup.authenticated?'订阅已连接':'订阅未连接'} · ${S.settings.concurrency} 路并发</span></div></div><button class="menu-row" data-act="settings">${icon('sliders',20)}<span>设置</span><span class="rt">账户、默认值、调用提示词</span></button><button class="menu-row" data-act="reconnect">${icon('refresh',20)}<span>重新连接工作台</span></button><button class="menu-row" data-act="trash">${icon('archive',20)}<span>最近删除</span></button><button class="menu-row" data-act="install">${icon('phone',20)}<span>安装应用</span></button><div class="menu-sep"></div><button class="menu-row danger" data-act="logout">${icon('logout',20)}<span>退出登录</span></button>`});}
   let settingsVersion=0;
   function settingsPayload(){const d=S.settings.defaults,q=S.settings.quick,u=S.settings.upscale;return {
     concurrency:S.settings.concurrency,max_attempts:S.settings.maxAttempts,model:config.model,effort:d.effort,
@@ -485,13 +550,13 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   }
   function confirmSheet(title,text,label,run){const L=openSheet({title,html:`<p class="note">${esc(text)}</p><button class="primary danger-soft" id="confirm-operation">${esc(label)}</button>`}),revision=L.dataset.revision,key='confirm:'+uid('op');$('#confirm-operation',L).onclick=async()=>{const btn=$('#confirm-operation',L);if(StudioFeedback.busy(key))return;try{await StudioFeedback.run(key,btn,async()=>{await run();await closeOwnedSheet(L,revision);});}catch(e){report(e);}};return L;}
   async function trash(){const el=openScreen(`<header class="top scr-top"><button class="icon-btn" data-act="scr-back" aria-label="返回">${icon('back')}</button><h1>最近删除</h1><span class="grow"></span><button class="ghost-btn danger" data-act="empty-trash">清空</button></header><div class="scroll set-scroll" id="trash-content"><p class="note">正在读取…</p></div>`,{cls:'trash-screen'});let offset=0,loadRevision=0;const operationKey='trash:'+uid('op');
-    async function load(){const revision=++loadRevision,requestedOffset=offset,[as,cs]=await Promise.all([api(`/api/assets?kind=all&deleted=true&limit=100&offset=${requestedOffset}`),api('/api/collections?deleted=true')]);if(!el.isConnected||revision!==loadRevision)return;const slot=$('#trash-content',el);if(!requestedOffset)slot.innerHTML=cs.items.map(c=>`<div class="s-row">${lbl(esc(c.name),'已删除的列表')}<button class="pill-btn" data-restore-coll="${c.id}">恢复</button></div>`).join('');slot.insertAdjacentHTML('beforeend',as.items.map(a=>`<div class="s-row"><img class="trash-thumb" src="${esc(a.thumbnail)}" alt="">${lbl(esc(a.name),`${a.width} × ${a.height}`)}<button class="pill-btn" data-restore-img="${a.id}">恢复</button></div>`).join(''));offset=requestedOffset+as.items.length;let more=$('[data-trash-more]',el);more?.remove();if(offset<as.total)slot.insertAdjacentHTML('beforeend','<button class="secondary load-more" data-trash-more>加载更多</button>');if(!as.total&&!cs.items.length)slot.innerHTML='<p class="empty">最近删除为空</p>';}
+    async function load(){const revision=++loadRevision,requestedOffset=offset,[as,cs]=await Promise.all([api(`/api/assets?kind=all&deleted=true&limit=100&offset=${requestedOffset}`),api(globalThis.StudioFolders?'/api/library/trash':'/api/collections?deleted=true')]);if(!el.isConnected||revision!==loadRevision)return;const slot=$('#trash-content',el);if(!requestedOffset)slot.innerHTML=cs.items.map(c=>`<div class="s-row">${lbl(esc(c.name),'已删除的列表')}<button class="pill-btn" data-restore-coll="${c.id}">恢复</button></div>`).join('');slot.insertAdjacentHTML('beforeend',as.items.map(a=>`<div class="s-row"><img class="trash-thumb" src="${esc(a.thumbnail)}" alt="">${lbl(esc(a.name),`${a.width} × ${a.height}`)}<button class="pill-btn" data-restore-img="${a.id}">恢复</button></div>`).join(''));offset=requestedOffset+as.items.length;let more=$('[data-trash-more]',el);more?.remove();if(offset<as.total)slot.insertAdjacentHTML('beforeend','<button class="secondary load-more" data-trash-more>加载更多</button>');if(!as.total&&!cs.items.length)slot.innerHTML='<p class="empty">最近删除为空</p>';}
     trashRefresh.set(el,async()=>{offset=0;await load();});
     el.addEventListener('click',async e=>{
       const button=e.target.closest('[data-restore-img],[data-restore-coll],[data-trash-more]');if(!button||StudioFeedback.busy(operationKey))return;
       const peers=$$('[data-restore-img],[data-restore-coll],[data-trash-more],[data-act="empty-trash"]',el).filter(b=>b!==button).map(b=>[b,b.disabled]);for(const [b] of peers)b.disabled=true;
       try{await StudioFeedback.run(operationKey,button,async()=>{if(button.hasAttribute('data-trash-more')){await load();return;}
-        await post(button.dataset.restoreImg?`/api/assets/${button.dataset.restoreImg}/restore`:`/api/collections/${button.dataset.restoreColl}/restore`);
+        if(globalThis.StudioFolderActions&&button.dataset.restoreColl)await StudioFolderActions.write({action:'restore',folder:button.dataset.restoreColl});else await post(button.dataset.restoreImg?`/api/assets/${button.dataset.restoreImg}/restore`:`/api/collections/${button.dataset.restoreColl}/restore`);
         try{if(button.dataset.restoreImg){const data=await api('/api/assets/'+button.dataset.restoreImg+'/info');rememberAsset(data.asset,data.job);}await refreshData();offset=0;await load();toast('已恢复');}
         catch(error){toast('已恢复，列表暂未刷新，请重新打开最近删除',{ms:5000});}
       });}catch(error){report(error);}finally{for(const [b,disabled] of peers)if(b.isConnected)b.disabled=disabled;}
@@ -577,7 +642,8 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'sessions':await post('/api/account/revoke-sessions');account=await api('/api/account');a.querySelector('.s-r').innerHTML='0 台'+icon('chevr',16);toast('其他设备已退出');break;
       case 'password':passwordSheet();break;
       case 'account-edit':accountEditor();break;
-      case 'reconnect':case 'reconnect-set':await connection();break;
+      case 'reconnect':if(network){await network.check(true);break;}await connection();break;
+      case 'reconnect-set':await connection();break;
       case 'probe':confirmSheet('运行生图检查','会提交一次真实生图检查并使用额度。','开始检查',async()=>{const d=await post('/api/setup/probe');await refreshData();toast('检查已加入任务');});break;
       case 'pause':case 'unpause':await api('/api/settings',{method:'PATCH',body:{paused:k==='unpause'?false:!S.paused}});await refreshData();break;
       case 'cache-clear':if(!a.classList.contains('danger-soft')){a.classList.add('danger-soft');a.textContent='确认清理？';setTimeout(()=>{if(a.isConnected&&a.classList.contains('danger-soft')){a.classList.remove('danger-soft');a.textContent='清理';}},3000);break;}await StudioImages.clear();S.settings.cache={mb:0,files:0};await refreshLocalCache(topScreen());a.classList.remove('danger-soft');a.textContent='清理';toast('本机图片缓存已清理');break;
@@ -608,9 +674,9 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'tpl-save-form':tplSaveForm(a.closest('.sheet-layer'));break;
       case 'tpl-edit':tplSaveForm(a.closest('.sheet-layer'),id);break;
       case 'tpl-preview-ref':openViewer(id,null,{reference:true,ids:[...(tpl(a.dataset.templateId)?.referenceIds||[id])]});break;
-      case 'tpl-save':{const t=id&&tpl(id),c=S.composer,L=a.closest('.sheet-layer');const data=await api('/api/templates'+(id?'/'+id:''),{method:id?'PUT':'POST',body:{title:$('#tpl-name',L).value.trim(),text:$('#tpl-text',L).value.trim(),refs:L.dataset.templateRefs?JSON.parse(L.dataset.templateRefs):(t?t.referenceIds:c.refs),options:t?t.options:{ratio:ratio(c.ratio),size:size(c.size),polish:c.polish,transparent:c.transparent,stitch:factor(c.stitch),model:c.model,effort:c.effort}}});if(!t&&$('#bind-sw',L)?.classList.contains('on')){c.template=data.id;c.ack=false;}await back();await refreshData();refresh();flashChip();toast('模板已保存');break;}
+      case 'tpl-save':{const t=id&&tpl(id),c=S.composer,L=a.closest('.sheet-layer');const data=await api('/api/templates'+(id?'/'+id:''),{method:id?'PUT':'POST',body:{title:$('#tpl-name',L).value.trim(),text:$('#tpl-text',L).value.trim(),refs:L.dataset.templateRefs?JSON.parse(L.dataset.templateRefs):(t?t.referenceIds:c.refs),options:t?t.options:{ratio:ratio(c.ratio),size:size(c.size),polish:c.polish,transparent:c.transparent,stitch:factor(c.stitch),model:c.model,effort:c.effort}}});if(!t&&$('#bind-sw',L)?.classList.contains('on')){c.template=data.id;c.ack=false;}await back();if(globalThis.StudioFolders){await ensureTemplates(true);await globalThis.StudioFolders.invalidate();}await refreshData();refresh();flashChip();toast('模板已保存');break;}
       case 'tpl-rm-ref':{const L=a.closest('.sheet-layer');L.dataset.templateRefs=JSON.stringify(JSON.parse(L.dataset.templateRefs||'[]').filter(x=>x!==id));a.closest('.ref').remove();break;}
-      case 'tpl-delete':confirmSheet('删除模板','删除模板后，已有作品与任务记录仍会保留。','删除模板',async()=>{await api('/api/templates/'+id,{method:'DELETE'});if(S.composer.template===id)S.composer.template=null;await refreshData();toast('模板已删除');});break;
+      case 'tpl-delete':confirmSheet('删除模板','删除模板后，已有作品与任务记录仍会保留。','删除模板',async()=>{await api('/api/templates/'+id,{method:'DELETE'});if(S.composer.template===id)S.composer.template=null;if(globalThis.StudioFolders){await ensureTemplates(true);await globalThis.StudioFolders.invalidate();}await refreshData();toast('模板已删除');});break;
       case 'coll-more':{const c=coll(S.coll);openSheet({html:`<div class="sheet-hd"><div><b>${esc(c.name)}</b><span>${c.image_count} 张</span></div></div>${c.template?`<button class="menu-row" data-act="tpl-load" data-id="${c.template}">${icon('book',20)}<span>载入该模板去创作</span></button>`:''}<button class="menu-row" data-act="coll-rename" data-id="${c.id}">${icon('edit',20)}<span>重命名</span></button><div class="menu-sep"></div><button class="menu-row danger" data-act="coll-delete" data-id="${c.id}">${icon('trash',20)}<span>删除列表</span><span class="rt">进行中的任务不受影响</span></button>`});break;}
       case 'coll-rename':{const L=a.closest('.sheet-layer');swapSheet(L,'重命名列表',`<input class="input" id="coll-name" maxlength="120" value="${esc(coll(id).name)}"><button class="primary" data-act="coll-rename-save" data-id="${id}">保存</button>`);break;}
       case 'coll-rename-save':await api('/api/collections/'+id,{method:'PATCH',body:{name:$('#coll-name').value}});await back();await refreshData();if(S.coll===id)renderPage();break;
@@ -659,14 +725,15 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
   let keyboardBaseline={width:0,height:0};
   function keyboardViewport(){const v=globalThis.visualViewport,editing=/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName||'');if(!editing||keyboardBaseline.width!==innerWidth)keyboardBaseline={width:innerWidth,height:innerHeight};else keyboardBaseline.height=Math.max(keyboardBaseline.height,innerHeight);const keyboard=!!(v&&editing&&Math.max(innerHeight-v.height,keyboardBaseline.height-v.height,(typeof KB!=='undefined'&&KB.hold&&KB.w===app.offsetWidth?KB.h-app.offsetHeight:0))>120);app.classList.toggle('keyboard-visible',keyboard);if(keyboard){app.style.setProperty('--studio-vh',v.height+'px');app.style.setProperty('--studio-vv-top',Math.max(0,v.offsetTop)+'px');}else{app.style.removeProperty('--studio-vh');app.style.removeProperty('--studio-vv-top');}}
   if(typeof ResizeObserver==='function')new ResizeObserver(()=>requestAnimationFrame(()=>{app.classList.toggle('compact-redraw',app.offsetWidth>=600&&app.offsetHeight<=240);keyboardViewport();})).observe(app);globalThis.addEventListener('resize',()=>requestAnimationFrame(keyboardViewport));globalThis.visualViewport?.addEventListener('resize',keyboardViewport);globalThis.visualViewport?.addEventListener('scroll',keyboardViewport);document.addEventListener('focusin',keyboardViewport);document.addEventListener('focusout',()=>requestAnimationFrame(keyboardViewport));
-  addEventListener('online',wake);addEventListener('pageshow',event=>{if(event.persisted)wake();});addEventListener('offline',()=>{S.offline=true;updateChrome();});
+  addEventListener('online',wake);addEventListener('pageshow',event=>{if(event.persisted)wake();});addEventListener('offline',()=>{if(network)network.check(false);else{S.offline=true;updateChrome();}});
   addEventListener('beforeinstallprompt' ,e=>{e.preventDefault();installPrompt=e;});
   app.addEventListener('input',saveDraft);app.addEventListener('click',()=>setTimeout(saveDraft,0));
   addEventListener('pagehide',suspendPage);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)suspendPage();else wake();});
   const safe=fn=>(...args)=>Promise.resolve().then(()=>fn(...args)).catch(report);
-  return {boot,api,report,action,confirmTaskDeletion,makeUp,planHTML,settingsHTML,avatar,setComposerRefs,saveDraft,sessionScope:()=>authState?.cache_scope||'',saveQuickSettings:items=>api('/api/settings',{method:'PATCH',body:{quick_settings:items}}),taskInfo,cloneUpscale,username:()=>account.username||"",requestedRatio:id=>labelRatio(jobs.get(assets.get(id)?.job_id)?.options.ratio||"auto"),settingChanged,refreshSettings,modelName,backendLabel:()=>{const b={...S.settings.imageBackend,...S.composer.imageBackend};return b?`${b.image_model} · ${b.quality}`:"图片生成";},models:()=>models,config:()=>config,loadCollection,batchMore:()=>batchOffset<batchTotal,
+  return {boot,api,report,action,ensureTemplates,fetchTemplate,useFolderRecipe,refreshTasks:refreshData,asset:id=>assets.get(id),ingestLibrary:list=>{list.forEach(a=>rememberAsset(a));},
+    pageConnection:ok=>network?.visibleData(ok),confirmTaskDeletion,makeUp,planHTML,settingsHTML,avatar,setComposerRefs,saveDraft,sessionScope:()=>authState?.cache_scope||'',saveQuickSettings:items=>api('/api/settings',{method:'PATCH',body:{quick_settings:items}}),taskInfo,cloneUpscale,username:()=>account.username||"",requestedRatio:id=>labelRatio(jobs.get(assets.get(id)?.job_id)?.options.ratio||"auto"),settingChanged,refreshSettings,modelName,backendLabel:()=>{const b={...S.settings.imageBackend,...S.composer.imageBackend};return b?`${b.image_model} · ${b.quality}`:"图片生成";},models:()=>models,config:()=>config,loadCollection,batchMore:()=>batchOffset<batchTotal,
     generate:safe(generate),reroll:safe(reroll),deleteImage:safe(deleteImage),loadTemplate:safe(loadTemplate),infoSheet:safe(infoSheet),upscaleSheet,pickerSheet:safe(pickerSheet),meSheet,tplSheet,tplSaveForm,openFailure:safe(openFailure),fxView,fxSubmit:safe(fxSubmit),sendQuick,editImage,
-    workItems,workState,loadWorks,bulkAssets,stop(){stopped=true;sessionEpoch++;bootVersion++;clearTimeout(polling);cancelReads();for(const request of [...requests])request.cancel();}};
+    workItems,workState,loadWorks,bulkAssets,stop(){network?.stop();stopped=true;sessionEpoch++;bootVersion++;clearTimeout(polling);cancelReads();for(const request of [...requests])request.cancel();}};
 })();
 const studioReady=StudioService.boot();

@@ -6,12 +6,18 @@ html.rm::view-transition-group(*),html.rm::view-transition-old(*),html.rm::view-
 /* A separate transition snapshot keeps navigation above the moving page. */
 #tabbar{view-transition-name:studio-tabbar}
 #tabbar[hidden]{display:none}
+#page{z-index:0}
+.v-bg{z-index:0;pointer-events:none}
+.viewer.open .v-bg{opacity:1}
+.v-stage{z-index:1}
 .v-sidebar{display:none}
 .v-fly{object-fit:cover;object-position:center}
 .viewer.viewer-closing :is(.v-actions,.v-quick,.v-redraw,.v-reference-actions){visibility:hidden;pointer-events:none}
 ::view-transition-group(studio-tabbar){z-index:100;animation:none!important}
 ::view-transition-old(studio-tabbar){display:none}
 ::view-transition-new(studio-tabbar){animation:none!important;mix-blend-mode:normal}
+/* Transition snapshots paint above the workspace's normal stacking order. */
+html.viewer-present::view-transition{display:none}
 html.viewer-present,html.viewer-present body{background:#0c0c0a}
 .app:fullscreen,.app:-webkit-full-screen{width:100%;max-width:none;height:100dvh;top:0;box-shadow:none}
 .app:fullscreen::backdrop{background:#0c0c0a}

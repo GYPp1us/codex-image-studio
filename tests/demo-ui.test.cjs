@@ -273,6 +273,35 @@ test('progressive preview keeps its thumbnail until the high-resolution image ha
  loads[0].resolve();await previewTick();assert.equal(image.getAttribute('src'),baseAsset.preview);
 });
 
+test('a pending viewer thumbnail reuses the clicked image through the flight and a failed preview retry',async()=>{
+ const f=await fixture({motion:'full',systemReduce:false}),loads=previewLoads(f);
+ const trigger=f.document.createElement('button');
+ trigger.innerHTML='<img src="/painted-thumbnail" alt="">';
+ f.document.querySelector('#page').append(trigger);
+ const source=trigger.querySelector('img');
+ Object.defineProperties(source,{complete:{value:true},naturalWidth:{value:960},naturalHeight:{value:640}});
+ const snapshot='data:image/png;base64,AAAA';
+ const create=f.document.createElement.bind(f.document);
+ f.document.createElement=(name,...options)=>{
+  const node=create(name,...options);
+  if(name==='canvas'){
+   node.getContext=()=>({drawImage(image,x,y,w,h){assert.deepEqual([image,x,y,w,h],[source,0,0,480,320]);}});
+   node.toDataURL=()=>snapshot;
+  }
+  return node;
+ };
+ f.context.viewerTrigger=trigger;
+ f.run('openViewer("asset","recent",{trigger:viewerTrigger})');
+ const image=f.run('curImg()');
+ assert.equal(image.getAttribute('src'),snapshot);
+ assert.equal(f.document.querySelector('.v-fly').getAttribute('src'),snapshot);
+ loads[0].reject(new Error('Preview unavailable'));await previewTick();
+ f.run('showProgressive(curImg(),img("asset"),true)');
+ assert.equal(image.getAttribute('src'),snapshot);
+ loads[1].resolve();await previewTick();
+ assert.equal(image.getAttribute('src'),baseAsset.preview);
+});
+
 test('a high-resolution preview clears the slide loading state while zoomed',async()=>{
  const f=await fixture(),loads=previewLoads(f);
  f.run('openViewer("asset","recent");StudioZoom.toggleNative()');
