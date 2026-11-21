@@ -158,6 +158,39 @@ globalThis.StudioFolders=(function folders(){
     if(!id&&layers[0]?.type==='coll'&&layers[0].fromDirectory==='')return traverseHistory(()=>layers.length);
     return open(id);
   }
+  function applyMove(target,ids,previous,created){
+    // A server receipt already confirms these positions even if the following page read stalls.
+    const moved=new Set(ids.filter(id=>previous[id]!==target)),removedByFolder=new Map();
+    for(const id of moved){
+      const from=previous[id],art=img(id);
+      if(from)removedByFolder.set(from,(removedByFolder.get(from)||0)+1);
+      if(art){art.folder_id=target;art.coll=target;}
+    }
+    for(const [from,count] of removedByFolder){
+      const p=pages.get(from);if(!p)continue;
+      p.assets=p.assets.filter(id=>!moved.has(id));
+      if(p.total.assets!=null)p.total.assets=Math.max(0,p.total.assets-count);
+      p.rev++;
+    }
+    const byDate=(a,b)=>(img(b)?.created||0)-(img(a)?.created||0)||a.localeCompare(b);
+    if(created){
+      const parent=page(created.parent||'');
+      if(!parent.folders.includes(target)){
+        parent.folders.unshift(target);
+        if(parent.total.folders!=null)parent.total.folders++;
+      }
+      const ordered=[...ids].sort(byDate);
+      remember({id:target,name:created.name,parent_id:created.parent||null,template_id:null,created:Date.now()/1000,
+        image_count:ordered.length,covers:ordered.slice(0,3)});
+      const child=page(target);child.assets=ordered.slice(0,30);child.total.assets=ordered.length;child.total.folders=0;child.rev++;parent.rev++;
+    }else if(moved.size){
+      const dest=page(target);
+      dest.assets=[...new Set([...dest.assets,...moved])].sort(byDate).slice(0,Math.max(30,dest.assets.length));
+      if(dest.total.assets!=null)dest.total.assets+=moved.size;
+      dest.rev++;
+    }
+    revision++;draw();
+  }
   function invalidate(){
     for(const p of pages.values()){p.tasks={};p.loaded={};p.errors={};p.rev++;}
     revision++;
@@ -167,7 +200,7 @@ globalThis.StudioFolders=(function folders(){
     for(const p of pages.values())p.tasks={};
     return active()?required(key(),true):Promise.resolve();
   }
-  return {active,layout,mount,draw,open,ancestor,page,node,path,button,crumbs,load,treeHTML,expanded,invalidate,resume,
+  return {active,layout,mount,draw,open,ancestor,page,node,path,button,crumbs,load,treeHTML,expanded,applyMove,invalidate,resume,
     rememberOrigins(items){for(const item of items)originNames.set(item.id,item.title);},
     observeRevision(value){if(value==null)return;const old=serverRevision;serverRevision=value;if(old!=null&&old!==value){if(StudioSelection.active())dirty=true;else invalidate().catch(()=>{});}},
     changed(){revision++;if(dirty&&!StudioSelection.active()){dirty=false;invalidate().catch(()=>{});}draw();},items:kind=>kind==='dir-recent'?page('~all').assets.slice(0,10):page(key()).assets,

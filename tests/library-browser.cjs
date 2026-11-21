@@ -64,23 +64,31 @@ async function run(){
     assert.equal(await page.locator('.selection-count').textContent(),'已选 30 张');
     await page.locator('#selection-toolbar [data-dir=create]').click();
     await page.getByRole('textbox',{name:'文件夹名称'}).fill('抽卡候选');
+    let savedGroup;
     await page.route('**/api/library/operations',async route=>{
       const saved=await route.fetch();
       assert.equal(saved.status(),200);
+      savedGroup=(await saved.json()).folder;
       await route.abort('connectionreset');
     },{times:1});
     await page.getByRole('textbox',{name:'文件夹名称'}).press('Enter');
     await page.waitForFunction(()=>document.querySelector('.dir-feedback')?.textContent.trim());
     assert.equal(await page.locator('.selection-count').textContent(),'已选 30 张');
+    const pendingPages=[];
+    const holdParent=route=>{
+      const query=new URL(route.request().url()).searchParams;
+      if(query.get('folder')==='tpl-A')pendingPages.push(route);
+      else return route.continue();
+    };
+    await page.route('**/api/library?**',holdParent);
     await page.locator('.dir-form [type=submit]').click();
     const group=page.locator('.dir-card').filter({hasText:'抽卡候选'});
-    try{await group.waitFor();}catch(error){
-      console.error({posts,reads:reads.filter(s=>s.startsWith('/api/library')),state:await page.evaluate(()=>({
-        location:S.coll,tab:S.tab,hidden:document.hidden,history:history.state?.depth,notice:document.querySelector('.dir-feedback')?.textContent,
-        toast:document.querySelector('#toast')?.textContent,page:document.querySelector('#page')?.textContent.slice(0,280),
-        selection:StudioSelection.chosen().length,folders:StudioFolders.page('tpl-A').folders,errors:StudioFolders.page('tpl-A').errors,
-        layers:layers.map(l=>l.type),groups:[...document.querySelectorAll('.dir-card')].map(e=>e.textContent).slice(0,4)
-      }))});throw error;
+    try{
+      await group.waitFor();
+      assert.equal(await group.getAttribute('data-id'),savedGroup);
+    }finally{
+      await page.unroute('**/api/library?**',holdParent);
+      for(const route of pendingPages)await route.continue().catch(()=>{});
     }
     assert.equal(posts.filter(s=>s==='/api/library/operations').length,1);
     assert.ok(reads.some(s=>s.startsWith('/api/library/operations/')),'retried by reading the operation receipt');

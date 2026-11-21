@@ -37,7 +37,7 @@ globalThis.StudioFolderActions=(function folderActions(){
     if(layer?.isConnected&&topSheet()===layer)await back();
     if(leave&&StudioSelection.active())await StudioSelection.leave();
     if(recipe)await StudioService.ensureTemplates(true);
-    await F.invalidate().catch(()=>{});
+    F.invalidate().catch(()=>{});
     if(target){const i=recent.indexOf(target);if(i>=0)recent.splice(i,1);recent.unshift(target);recent.splice(5);}
     if(!message)return;
     toast(message,{ms:6500,...(result.can_undo?{action:'撤销',run:async()=>{
@@ -52,6 +52,7 @@ globalThis.StudioFolderActions=(function folderActions(){
     const original=chosenFrom(ids);
     form(ids.length?`用 ${ids.length} 张作品建组`:'新建文件夹',`<label class="field-label">文件夹名称<input class="input" name="folder-name" maxlength="100" enterkeyhint="done" required></label><p class="note">${esc(textPath(parent))}</p>`,async l=>{
       const name=$('input',l).value.trim(),r=await write({action:'create',name,target:parent||null,assets:ids,expected:original});
+      F.applyMove(r.folder,ids,original,{name,parent});
       await refreshAfter(r,l,{leave:!!ids.length,target:r.folder,message:ids.length?`已移动 ${ids.length} 张作品`:'已创建文件夹'});
     },'input');
   }
@@ -107,6 +108,7 @@ globalThis.StudioFolderActions=(function folderActions(){
     const expected=chosenFrom(ids);
     return picker({initial,ids,newGroup:parent=>newFolder(parent,ids),confirm:async(target,l)=>{
       const r=await write({action:'move',target,assets:ids,expected});
+      F.applyMove(target,ids,expected);
       await refreshAfter(r,l,{leave:!!selected().length,target,message:`已移动 ${r.count} 张作品`});
     }});
   }
