@@ -4,7 +4,7 @@ const StudioSelection=(()=>{
   let selecting=false,scope='',ids=new Set();
   const currentScope=()=>S.coll?'collection:'+S.coll:'works:'+S.worksTab;
   const visible=()=>[...new Set($$('#page .tile').map(el=>el.dataset.id))];
-  function close(){selecting=false;ids.clear();$('#selection-toolbar')?.remove();$('#page').classList.remove('selecting');paint();}
+  function close(){selecting=false;ids.clear();$('#selection-toolbar')?.remove();$('#page').classList.remove('selecting');paint();globalThis.StudioFolders?.changed();}
   function begin(id){
     if(!selecting){selecting=true;scope=currentScope();ids=new Set();pushLayer('selection',close);}
     if(id)ids.add(id);paint();
@@ -13,7 +13,7 @@ const StudioSelection=(()=>{
     for(const id of new Set([...ids,...next])){if(ids.has(id)===next.has(id))continue;for(const tile of tiles.get(id)||[]){tile.classList.toggle('batch-selected',next.has(id));tile.setAttribute('aria-pressed',String(next.has(id)));}}
     ids=new Set(next);updateCount();
   }
-  function updateCount(){const bar=$('#selection-toolbar');if(!bar)return;$('.selection-count',bar).textContent=`已选 ${ids.size} 张`;for(const b of $$('[data-selection="menu"],[data-dir="move"],[data-dir="create"]',bar))b.disabled=!ids.size;}
+  function updateCount(){const bar=$('#selection-toolbar');if(!bar)return;$('.selection-count',bar).textContent=`已选 ${ids.size} 张`;for(const b of $$('[data-selection="menu"],[data-dir="move"],[data-dir="add-confirm"],[data-dir="create"]',bar))b.disabled=!ids.size;}
   function toggle(id){ids.has(id)?ids.delete(id):ids.add(id);paint();}
   function paint(){
     const page=$('#page');page.classList.toggle('selecting',selecting&&S.tab==='works');

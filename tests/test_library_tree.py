@@ -97,6 +97,7 @@ class LibraryTreeTests(unittest.TestCase):
     def test_legacy_migration_keeps_custom_names_trash_orphans_and_restart(self):
         with studio.db() as c:
             c.execute("DELETE FROM settings WHERE key='library_migrated'")
+            c.execute("DROP TRIGGER folder_legacy_collection")
             c.execute("DELETE FROM folders")
             c.execute("INSERT INTO collections VALUES ('legacy','自定义','','0','0',0)")
             c.execute("INSERT INTO collections VALUES ('trash','旧回收','','0','0',1)")
@@ -105,6 +106,13 @@ class LibraryTreeTests(unittest.TestCase):
                 VALUES ('j','原文','{}','["asset"]','legacy',1,0)""")
             c.execute("""INSERT INTO assets(id,kind,name,width,height,created) VALUES
                 ('asset','reference','旧作品',1,1,0),('orphan','generated','历史已清理',1,1,0)""")
+            c.execute("DROP TRIGGER folder_new_template")
+            c.execute("INSERT INTO templates(id,title,text,created,updated) VALUES ('old','旧模板','配方',0,0)")
+            c.execute("""INSERT INTO jobs(id,collection_id,template_id,outputs,created) VALUES
+                ('no-collection','','old','["from-template"]',0),('probe','system-probe','','["probe-art"]',0)""")
+            c.execute("""INSERT INTO assets(id,kind,width,height,job_id) VALUES
+                ('from-template','generated',1,1,'no-collection'),('probe-art','generated',1,1,'probe')""")
+            c.execute("UPDATE assets SET folder_id=NULL,origin_template_id='' WHERE id IN ('from-template','probe-art')")
         studio.initialize()
         self.assertEqual(self.browse(folder="legacy")["assets"][0]["id"],"asset")
         self.assertEqual(self.browse(folder="legacy")["path"][0]["name"],"自定义")
@@ -113,6 +121,9 @@ class LibraryTreeTests(unittest.TestCase):
         self.assertEqual(self.browse(folder="untemplated")["path"][0]["name"],"待整理")
         studio.initialize()
         self.assertEqual(self.browse(folder="legacy")["asset_total"],1)
+        self.assertEqual(self.browse(folder="tpl-old")["assets"][0]["id"],"from-template")
+        self.assertEqual(studio.query("SELECT collection_id FROM jobs WHERE id='probe'",one=True)["collection_id"],"system-probe")
+        self.assertIsNone(studio.query("SELECT folder_id FROM assets WHERE id='probe-art'",one=True)["folder_id"])
 
     def test_generation_defaults_explicit_destination_and_lost_reply(self):
         folder=self.op("create",name="深层")["folder"]
@@ -148,3 +159,31 @@ class LibraryTreeTests(unittest.TestCase):
         self.assertFalse(set(f["id"] for f in page)&set(f["id"] for f in older))
         self.assertEqual(self.browse(view="all",part="assets",asset_offset=80,limit=30)["asset_total"],5000)
         self.assertTrue(self.browse(search="组199")["folders"][0]["path"])
+
+    def test_trash_purge_follows_artwork_location_and_keeps_live_provenance(self):
+        with studio.db() as c:
+            c.execute("INSERT INTO collections(id,name,created,updated) VALUES ('legacy','旧组',0,0)")
+            c.execute("""INSERT INTO jobs(id,batch_id,prompt,status,refs,options,outputs,collection_id)
+                VALUES ('j','b','老提示词','succeeded','[]','{}','["keeper","removed"]','legacy')""")
+            for aid in ("keeper","removed"):
+                source=studio.DATA/"assets"/(aid+".png")
+                source.write_bytes(b'fixture')
+                c.execute("""INSERT INTO assets(id,kind,name,width,height,bytes,path,job_id,folder_id)
+                    VALUES (?,'generated',?,1,1,7,?,'j','legacy')""",(aid,aid,str(source)))
+        self.op("move",assets=["keeper"],target="untemplated")
+        nested=self.op("create",name="子模板",target="legacy")["folder"]
+        recipe=self.op("recipe",folder=nested,text="隐藏配方")["template_id"]
+        self.op("trash",folder="legacy")
+        self.assertNotIn(recipe,[t["id"] for t in self.client.get("/api/templates").json()])
+        self.assertIn("legacy",[f["id"] for f in self.client.get("/api/library/trash").json()["items"]])
+        self.op("restore",folder="legacy")
+        self.assertIn(recipe,[t["id"] for t in self.client.get("/api/templates").json()])
+        self.assertEqual(self.browse(folder="legacy")["asset_total"],1)
+        self.op("trash",folder="legacy")
+        result=self.client.post("/api/storage/empty-trash",json={"confirm":"empty-trash"})
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertTrue((studio.DATA/"assets"/"keeper.png").exists())
+        self.assertFalse((studio.DATA/"assets"/"removed.png").exists())
+        self.assertEqual(self.client.get("/api/library/trash").json()["items"],[])
+        self.assertEqual(self.client.get("/api/templates/"+recipe).status_code,404)
+        self.assertEqual(studio.query("SELECT prompt FROM jobs WHERE id='j'",one=True)["prompt"],"老提示词")

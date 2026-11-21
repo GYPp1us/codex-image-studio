@@ -80,7 +80,12 @@ public final class MainActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(true);
         settings.setSupportMultipleWindows(false);
-        settings.setUserAgentString(settings.getUserAgentString()+" ImageStudioAndroid/1.2");
+        try {
+            String version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            settings.setUserAgentString(settings.getUserAgentString() + " ImageStudioAndroid/" + version);
+        } catch (android.content.pm.PackageManager.NameNotFoundException impossible) {
+            throw new IllegalStateException(impossible);
+        }
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web,false);
         web.setWebViewClient(new WebViewClient() {

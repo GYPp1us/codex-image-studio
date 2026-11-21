@@ -21,12 +21,18 @@ def initialize(c):
     c.execute("""CREATE TABLE IF NOT EXISTS library_operations(id TEXT PRIMARY KEY,request TEXT NOT NULL,
         result TEXT NOT NULL,undo TEXT,created REAL NOT NULL)""")
     c.execute("CREATE TABLE IF NOT EXISTS generation_receipts(id TEXT PRIMARY KEY,request TEXT NOT NULL,result TEXT NOT NULL)")
+    c.execute("CREATE TABLE IF NOT EXISTS library_revision(id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL)")
+    c.execute("INSERT OR IGNORE INTO library_revision VALUES (1,0)")
     columns = {r[1] for r in c.execute("PRAGMA table_info(assets)")}
     if "folder_id" not in columns:
         c.execute("ALTER TABLE assets ADD COLUMN folder_id TEXT")
         c.execute("ALTER TABLE assets ADD COLUMN origin_template_id TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS artwork_folder ON assets(folder_id,deleted,created DESC,id)")
     c.execute("CREATE INDEX IF NOT EXISTS artwork_origin ON assets(origin_template_id,deleted,created DESC,id)")
+    for table, columns in (("assets","folder_id,deleted,name,favorite"),("folders","parent_id,name,deleted,template_id")):
+        for event, clause in (("insert","INSERT"),("update","UPDATE OF " + columns),("delete","DELETE")):
+            c.execute(f"""CREATE TRIGGER IF NOT EXISTS library_rev_{table}_{event} AFTER {clause} ON {table}
+                BEGIN UPDATE library_revision SET value=value+1 WHERE id=1; END""")
     if not c.execute("SELECT 1 FROM settings WHERE key='library_migrated'").fetchone():
         c.execute("""INSERT INTO folders(id,name,template_id,created,deleted)
             SELECT g.id,CASE WHEN g.id='untemplated' AND g.name='无模板' THEN '待整理' ELSE g.name END,
@@ -40,7 +46,8 @@ def initialize(c):
             WHERE j.collection_id!='system-probe') UPDATE assets SET job_id=(SELECT id FROM outputs
             WHERE aid=assets.id ORDER BY created,id LIMIT 1) WHERE job_id IS NULL AND id IN (SELECT aid FROM outputs)""")
         c.execute("""UPDATE assets SET folder_id=COALESCE((SELECT f.id FROM jobs j JOIN folders f
-            ON f.id=j.collection_id WHERE j.id=assets.job_id),'untemplated'),
+            ON f.id=j.collection_id WHERE j.id=assets.job_id),
+            (SELECT f.id FROM jobs j JOIN folders f ON f.template_id=j.template_id WHERE j.id=assets.job_id),'untemplated'),
             origin_template_id=COALESCE((SELECT template_id FROM jobs WHERE id=assets.job_id),'')
             WHERE (kind='generated' OR job_id IS NOT NULL) AND NOT EXISTS
             (SELECT 1 FROM jobs WHERE id=assets.job_id AND collection_id='system-probe')""")
@@ -53,6 +60,10 @@ def initialize(c):
         BEGIN UPDATE folders SET name=NEW.title WHERE template_id=NEW.id AND name=OLD.title; END""")
     c.execute("""CREATE TRIGGER IF NOT EXISTS folder_remove_template AFTER DELETE ON templates
         BEGIN UPDATE folders SET template_id=NULL WHERE template_id=OLD.id; END""")
+    c.execute("""CREATE TRIGGER IF NOT EXISTS folder_legacy_collection AFTER INSERT ON collections
+        WHEN NEW.id!='system-probe' AND NOT EXISTS(SELECT 1 FROM folders WHERE 'tpl-'||template_id=NEW.id)
+        BEGIN INSERT OR IGNORE INTO folders(id,name,created,deleted) VALUES
+        (NEW.id,CASE WHEN NEW.id='untemplated' AND NEW.name='无模板' THEN '待整理' ELSE NEW.name END,NEW.created,NEW.deleted); END""")
     c.execute("""CREATE TRIGGER IF NOT EXISTS folder_collection_visibility AFTER UPDATE OF deleted ON collections
         WHEN OLD.deleted!=NEW.deleted BEGIN UPDATE folders SET deleted=NEW.deleted WHERE id=NEW.id; END""")
     c.execute("""CREATE TRIGGER IF NOT EXISTS folder_collection_name AFTER UPDATE OF name ON collections
@@ -63,12 +74,14 @@ def initialize(c):
         BEGIN UPDATE assets SET folder_id=COALESCE((SELECT f.id FROM jobs j JOIN folders f ON
         f.id=json_extract(j.options,'$.folder_id') AND f.deleted=0 WHERE j.id=NEW.job_id),
         (SELECT f.id FROM jobs j JOIN folders f ON f.template_id=j.template_id AND f.deleted=0 WHERE j.id=NEW.job_id),
+        (SELECT f.id FROM jobs j JOIN folders f ON f.id=j.collection_id WHERE j.id=NEW.job_id),
         'untemplated'),origin_template_id=COALESCE((SELECT template_id FROM jobs WHERE id=NEW.job_id),'')
         WHERE id=NEW.id; END""")
     c.execute("""CREATE TRIGGER IF NOT EXISTS folder_existing_output AFTER UPDATE OF outputs ON jobs
         WHEN NEW.collection_id!='system-probe' AND NEW.outputs!='[]' BEGIN UPDATE assets SET
         folder_id=COALESCE((SELECT id FROM folders WHERE id=json_extract(NEW.options,'$.folder_id') AND deleted=0),
-        (SELECT id FROM folders WHERE template_id=NEW.template_id AND deleted=0),'untemplated'),
+        (SELECT id FROM folders WHERE template_id=NEW.template_id AND deleted=0),
+        (SELECT id FROM folders WHERE id=NEW.collection_id),'untemplated'),
         origin_template_id=COALESCE(NEW.template_id,''),job_id=COALESCE(job_id,NEW.id)
         WHERE folder_id IS NULL AND id IN (SELECT value FROM json_each(NEW.outputs)); END""")
 
@@ -137,7 +150,7 @@ def children(c, parent, offset, limit, search=""):
 
 class Operation(BaseModel):
     operation_id: str = Field(min_length=8, max_length=100)
-    action: Literal["create", "move", "relocate", "detach", "dissolve", "rename", "recipe", "unrecipe", "undo"]
+    action: Literal["create", "move", "relocate", "detach", "dissolve", "rename", "recipe", "unrecipe", "undo", "trash", "restore"]
     folder: str | None = None
     target: str | None = None
     name: str = Field(default="", max_length=100)
@@ -196,6 +209,14 @@ def mutate(c, op):
     if op.action == "undo":
         undo_move(c, op.original)
         return {"ok": True}, None
+    if op.action == "restore":
+        row = c.execute("SELECT parent_id FROM folders WHERE id=? AND deleted=1", (op.folder,)).fetchone()
+        if not row:
+            raise HTTPException(404, "已删除的文件夹不存在")
+        path_to(c,row["parent_id"])
+        c.execute("UPDATE folders SET deleted=0 WHERE id=?", (op.folder,))
+        c.execute("UPDATE collections SET deleted=0 WHERE id=?", (op.folder,))
+        return {"folder":op.folder}, None
     if op.action in ("create", "move"):
         parent = target
         dest = path_to(c, target)
@@ -228,6 +249,10 @@ def mutate(c, op):
         c.execute("UPDATE folders SET parent_id=? WHERE id=?", (target, op.folder))
     elif op.action == "rename":
         c.execute("UPDATE folders SET name=? WHERE id=?", (name, op.folder))
+        c.execute("UPDATE templates SET title=? WHERE id=? AND title=?", (name,folder["template_id"],folder["name"]))
+    elif op.action == "trash":
+        c.execute("UPDATE folders SET deleted=1 WHERE id=?", (op.folder,))
+        c.execute("UPDATE collections SET deleted=1 WHERE id=?", (op.folder,))
     elif op.action == "dissolve":
         if folder["template_id"]:
             raise HTTPException(409, "先将模板转回普通文件夹")
@@ -254,6 +279,10 @@ def mutate(c, op):
 
 
 def register(app, studio):
+    @app.get("/api/library/trash")
+    def trash(session=Depends(studio.require_user)):
+        return {"items":studio.query("SELECT id,name,parent_id FROM folders WHERE deleted=1 ORDER BY created DESC,id")}
+
     @app.get("/api/library/origins")
     def origins(session=Depends(studio.require_user)):
         return studio.query("""SELECT id,MAX(title) AS title FROM (
@@ -303,7 +332,7 @@ def register(app, studio):
     @app.post("/api/library/operations")
     def change(op: Operation, session=Depends(studio.require_user)):
         payload = json.dumps(op.model_dump(), sort_keys=True)
-        with studio.db() as c:
+        with studio.STORAGE.lock, studio.db() as c:
             c.execute("BEGIN IMMEDIATE")
             old = c.execute("SELECT request,result FROM library_operations WHERE id=?", (op.operation_id,)).fetchone()
             if old:

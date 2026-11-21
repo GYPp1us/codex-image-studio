@@ -34,8 +34,13 @@ class ConfirmCacheClear(BaseModel):
 
 
 def storage_report(studio, task_clearable):
-    asset_rows = studio.query("""SELECT a.path,a.kind,a.deleted,j.collection_id,c.name,c.deleted AS collection_deleted
-        FROM assets a LEFT JOIN jobs j ON j.id=a.job_id LEFT JOIN collections c ON c.id=j.collection_id""")
+    asset_rows = studio.query("""WITH RECURSIVE hidden(id) AS (SELECT id FROM folders WHERE deleted=1
+        UNION SELECT f.id FROM folders f JOIN hidden h ON f.parent_id=h.id)
+        SELECT a.path,a.kind,a.deleted,COALESCE(f.id,j.collection_id) AS collection_id,
+        COALESCE(f.name,c.name) AS name,CASE WHEN f.id IS NULL THEN c.deleted
+        ELSE f.id IN (SELECT id FROM hidden) END AS collection_deleted
+        FROM assets a LEFT JOIN folders f ON f.id=a.folder_id LEFT JOIN jobs j ON j.id=a.job_id
+        LEFT JOIN collections c ON c.id=j.collection_id""")
     assets = {Path(row['path']): row for row in asset_rows}
     labels = {
         'references': '参考图', 'other_outputs': '其他产物', 'trash': '回收站',
@@ -83,7 +88,8 @@ def storage_report(studio, task_clearable):
         for job in studio.query("SELECT id,prompt,status FROM jobs WHERE COALESCE(json_extract(options,'$.stitch'),0)>0 ORDER BY created DESC")
         if task_sizes[job['id']]
     ]
-    value['trash'] = {table: studio.query(f'SELECT COUNT(*) AS n FROM {table} WHERE deleted=1', one=True)['n'] for table in ('assets','collections')}
+    value['trash'] = {key: studio.query(f'SELECT COUNT(*) AS n FROM {table} WHERE deleted=1', one=True)['n']
+                      for key,table in (('assets','assets'),('collections','folders'))}
     return value
 
 
@@ -633,11 +639,17 @@ def register(app,studio):
             for job in active:
                 protected.update(json.loads(job['refs']));protected.update(json.loads(job['outputs']))
                 if source:=json.loads(job['options']).get('source_asset_id'):protected.add(source)
-            deleted_groups=studio.query('SELECT id FROM collections WHERE deleted=1')
+            deleted_groups=studio.query("""WITH RECURSIVE trashed(id) AS (SELECT id FROM folders WHERE deleted=1
+                UNION SELECT f.id FROM folders f JOIN trashed t ON f.parent_id=t.id) SELECT id FROM trashed
+                UNION SELECT id FROM collections WHERE deleted=1""")
             group_ids={g['id'] for g in deleted_groups}
-            removed_jobs=[j for j in studio.query('SELECT * FROM jobs') if j['collection_id'] in group_ids and j['status'] not in ('queued','running','retrying')]
+            all_assets=studio.query('SELECT * FROM assets')
+            retained_origins={a['job_id'] for a in all_assets if a['folder_id'] and a['folder_id'] not in group_ids and not a['deleted']}
+            removed_jobs=[j for j in studio.query('SELECT * FROM jobs') if j['collection_id'] in group_ids
+                          and j['id'] not in retained_origins and j['status'] not in ('queued','running','retrying')]
             removed_job_ids={j['id'] for j in removed_jobs}
-            candidates=[a for a in studio.query('SELECT * FROM assets') if a['deleted'] or a['job_id'] in removed_job_ids]
+            candidates=[a for a in all_assets if a['deleted'] or a['folder_id'] in group_ids
+                        or (not a['folder_id'] and a['job_id'] in removed_job_ids)]
             assets=[a for a in candidates if a['id'] not in protected]
             removed={a['id'] for a in assets};released=0
             # Keep assets used by another live job unless they were explicitly trashed.
@@ -661,12 +673,25 @@ def register(app,studio):
                     connection.execute('DELETE FROM generation_calls WHERE job_id=?',(job['id'],))
                     connection.execute('DELETE FROM attempts WHERE job_id=?',(job['id'],));connection.execute('DELETE FROM jobs WHERE id=?',(job['id'],))
                 connection.execute('DELETE FROM collections WHERE deleted=1 AND NOT EXISTS(SELECT 1 FROM jobs WHERE jobs.collection_id=collections.id)')
+                # Keep protected material and its ancestors in the trash until its active job ends.
+                empty_groups=[r[0] for r in connection.execute("""WITH RECURSIVE keep(id) AS (
+                    SELECT folder_id FROM assets WHERE folder_id IS NOT NULL
+                    UNION SELECT COALESCE(json_extract(j.options,'$.folder_id'),f.id,j.collection_id,'untemplated')
+                    FROM jobs j LEFT JOIN folders f ON f.template_id=j.template_id WHERE j.status IN ('queued','running','retrying')
+                    UNION SELECT 'untemplated' UNION SELECT f.parent_id FROM folders f JOIN keep k ON f.id=k.id
+                    WHERE f.parent_id IS NOT NULL)
+                    SELECT id FROM folders WHERE id IN (SELECT value FROM json_each(?)) AND id NOT IN (SELECT id FROM keep)""",
+                    (json.dumps(list(group_ids)),))]
+                folder_ids=(json.dumps(empty_groups),)
+                connection.execute("""DELETE FROM templates WHERE id IN (SELECT template_id FROM folders
+                    WHERE id IN (SELECT value FROM json_each(?)))""",folder_ids)
+                connection.execute("DELETE FROM folders WHERE id IN (SELECT value FROM json_each(?))",folder_ids)
             for asset in assets:
                 released+=studio.STORAGE.remove(asset['path'])
                 for suffix in ('.webp','-preview.webp'):released+=studio.STORAGE.remove(studio.DATA/'thumbs'/f"{asset['id']}{suffix}")
                 released+=studio.STORAGE.remove(studio.DATA/'previews'/asset['id'])
             for job in removed_jobs:released+=studio.STORAGE.remove(studio.DATA/'jobs'/job['id'])
-            with sqlite3.connect(studio.DATA/'studio.sqlite3',timeout=20) as connection:
+            with contextlib.closing(sqlite3.connect(studio.DATA/'studio.sqlite3',timeout=20)) as connection:
                 connection.execute('PRAGMA wal_checkpoint(TRUNCATE)');connection.execute('VACUUM')
             studio.STORAGE.invalidate()
             return {'ok':True,'assets':len(assets),'removed_ids':list(removed),'jobs':len(removed_jobs),'protected_assets':len(candidates)-len(assets),

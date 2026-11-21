@@ -199,7 +199,7 @@ def initialize():
         library_tree.initialize(c)
         # The legacy task lists remain available for older clients.
         for job in c.execute("SELECT j.id,j.batch_id,j.prompt,j.template_id,j.collection_id,j.created,COALESCE(g.deleted,0) AS collection_deleted FROM jobs j LEFT JOIN collections g ON g.id=j.collection_id").fetchall():
-            if not job['template_id'] and job['collection_deleted']:continue
+            if job['collection_id']=='system-probe' or (not job['template_id'] and job['collection_deleted']):continue
             cid = 'tpl-' + job['template_id'] if job['template_id'] else UNTEMPLATED_COLLECTION
             if job['collection_id'] != cid:
                 if not job['template_id']:archive_deleted_untemplated(c)
@@ -859,8 +859,11 @@ def serialize_prompt(saved):
 @app.get("/api/templates")
 @app.get("/api/prompts")
 def list_prompts(search: str = "", session=Depends(require_user)):
-    return [serialize_prompt(p) for p in query("""SELECT t.*,f.id AS folder_id FROM templates t
-        LEFT JOIN folders f ON f.template_id=t.id WHERE t.text LIKE ? OR t.title LIKE ?
+    return [serialize_prompt(p) for p in query("""WITH RECURSIVE live(id) AS (
+        SELECT id FROM folders WHERE parent_id IS NULL AND deleted=0 UNION ALL
+        SELECT f.id FROM folders f JOIN live l ON f.parent_id=l.id WHERE f.deleted=0)
+        SELECT t.*,f.id AS folder_id FROM templates t JOIN folders f ON f.template_id=t.id
+        WHERE f.id IN (SELECT id FROM live) AND (t.text LIKE ? OR t.title LIKE ?)
         ORDER BY t.favorite DESC,t.updated DESC LIMIT 100""", (f"%{search[:100]}%", f"%{search[:100]}%"))]
 
 
@@ -1106,7 +1109,7 @@ def _create_jobs(body):
                 return check_generation_receipt(old, body)
         if not template and not body.system_probe:archive_deleted_untemplated(c)
         c.execute("INSERT INTO collections(id,name,prompt,created,updated) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,deleted=0", (collection_id, template['title'] if template else '无模板', body.prompt.strip(), now(), now()))
-        if not body.system_probe:
+        if not body.system_probe and (body.folder_id or body.template_id):
             options['folder_id'] = library_tree.generation_folder(c, body.folder_id, body.template_id)
         for _ in range(body.count):
             jid = uid()

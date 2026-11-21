@@ -252,7 +252,7 @@ function updateInto(){
   const name=t?(S.collections.find(x=>x.template===t.id)?.name||t.name):"模板读取中";
   const div=t&&!c.ack&&c.prompt.trim().length>4&&similarity(c.prompt,t.text)<.25;
   setHTML(box,c.template?`<span class="into-chip" id="into-chip"><button class="into-choose" data-act="tpl-menu" aria-label="归入 ${esc(name)}，选择模板">${icon("folder",14)}<span class="into-prefix">模板</span><span class="t">${esc(name)}</span></button><button class="into-detach" data-act="detach" aria-label="解除模板">${icon("x",15)}</button></span>`:`<button class="ghost-btn" data-act="tpl-menu">${icon("book",16)}模板${icon("chevd",14)}</button>`);
-  if(globalThis.StudioFolders&&!$('[data-dir="save-target"]',box)){const b=document.createElement('button');b.className='ghost-btn dir-location';b.dataset.dir='save-target';b.ariaLabel='选择作品保存位置';b.textContent='存入 '+(c.folderName||name||'待整理');box.append(b);}
+  if(globalThis.StudioFolders&&!$('[data-dir="save-target"]',box)){const b=document.createElement('button');b.className='ghost-btn dir-location';b.dataset.dir='save-target';b.ariaLabel='选择作品保存位置';box.append(b);}const destination=$('[data-dir="save-target"]',box);if(destination)destination.textContent='存入 '+(c.folderName||(c.template?name:'待整理'));
   setHTML($("#template-warning"),div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:"");
 }
 
@@ -400,7 +400,7 @@ function updateTpls(){
 function go(tab){
   if(layers.length&&layers.at(-1).type!=="coll")return closeOverlays().then(()=>go(tab));
   if(tab===S.tab){if(tab==="works"&&S.coll)back();else $("#page .scroll")?.scrollTo({top:0,behavior:RM?"auto":"smooth"});return Promise.resolve();}
-  return vt("tab",()=>{S.tab=tab;renderPage();if(tab==="templates"&&globalThis.StudioFolders)StudioService.ensureTemplates().catch(StudioService.report);});
+  return vt("tab",()=>{S.tab=tab;renderPage();if(tab==="templates"&&globalThis.StudioFolders)StudioService.ensureTemplates().catch(StudioService.report);if(tab==="queue"&&globalThis.StudioFolders)StudioService.refreshTasks().catch(StudioService.report);});
 }
 function openColl(cid){
   if(globalThis.StudioFolders)return StudioFolders.open(cid);

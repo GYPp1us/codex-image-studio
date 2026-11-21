@@ -21,7 +21,7 @@ function createConnection({probe,resync,paint,now=()=>performance.now(),setTimer
     if(!active||flight)return flight;
     if(force&&recovery)return recovery;
     clearTimer(timer);
-    const token=generation,ctl=new AbortController();
+    const token=generation,started=now(),ctl=new AbortController();
     controller=ctl;
     let deadline;
     const stalled=new Promise((_,reject)=>{deadline=setTimer(()=>{reject(new Error('probe deadline'));ctl.abort();},3000);});
@@ -41,6 +41,7 @@ function createConnection({probe,resync,paint,now=()=>performance.now(),setTimer
       }
     }).catch(()=>{
       if(token!==generation)return;
+      if(lastGood>started){failures=0;phase='online';nextCheck=Math.max(0,4000-(now()-lastGood));notify();return;}
       phase='retrying';nextCheck=[1000,2000,4000,5000][Math.min(failures,3)];failures++;notify();
     }).finally(()=>{
       clearTimer(deadline);

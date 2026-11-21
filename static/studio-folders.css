@@ -1,5 +1,12 @@
 
 .dir-workspace{display:flex;flex:1;min-height:0;overflow:hidden}
+.top:has(.dir-icon) h1{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.dir-hero{width:32px;height:32px;flex:none;border-radius:8px;background:var(--surface-2);overflow:hidden;display:grid;place-items:center}
+.dir-hero img{width:100%;height:100%;object-fit:cover}
+::view-transition-group(directory-cover){animation-duration:200ms}
+.dir-card:active,.dir-crumbs button:active{background:var(--surface-2)}
+.selecting .dir-scroll{padding-bottom:90px}
+.selecting .tile.batch-selected img{transform:none;border-radius:inherit}
 .dir-scroll{min-width:0;flex:1;overflow-y:auto;overscroll-behavior:contain}
 .dir-workspace .dir-side{display:none}
 .dir-icon,.dir-crumbs button,.dir-tree-row button,.dir-location{min-width:44px;min-height:44px}

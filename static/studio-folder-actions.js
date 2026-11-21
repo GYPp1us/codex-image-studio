@@ -56,7 +56,7 @@ globalThis.StudioFolderActions=(function folderActions(){
     },'input');
   }
   async function picker({initial='',title='移动到',confirm,newGroup,allowRoot=false,folder=null,ids=[],showDefault=false}){
-    let at=initial,token=0,more=0,query='',busy=false;
+    let at=initial,token=0,searchRows=[],query='',busy=false;
     const l=openSheet({title,html:`<div class="dir-picker-head"><input class="input" type="search" aria-label="搜索文件夹" placeholder="搜索文件夹"><button type="button" class="icon-btn dir-icon" data-pick="confirm" title="确认位置" aria-label="确认位置">${icon('check')}</button></div><div class="dir-picker-path"></div><div class="dir-picker-list"></div><p class="dir-feedback" role="alert"></p>`});
     const list=$('.dir-picker-list',l),feedback=$('.dir-feedback',l),ok=$('[data-pick="confirm"]',l);
     const seenScopes=new Set();
@@ -64,40 +64,42 @@ globalThis.StudioFolderActions=(function folderActions(){
       if(!F.node(fid))await F.load(fid,'folders');
       const scope=F.path(fid).findLast(n=>n.template_id);if(scope)seenScopes.add(scope.id);
     }
+    if(folder){const owner=F.path(folder).slice(0,-1).findLast(n=>n.template_id);if(owner)seenScopes.add(owner.id);}
+    function allowed(){const trail=F.path(at),scope=trail.findLast(n=>n.template_id);return !query&&!(folder&&trail.some(n=>n.id===folder))&&[...seenScopes].every(id=>id===scope?.id);}
     function location(id,name,label=''){return `<button type="button" class="menu-row" data-pick="go" data-id="${esc(id)}">${icon('folder',18)}<span>${esc(name)}</span><small>${esc(label)}</small></button>`;}
-    async function render(){
+    async function render(append=false){
       const n=++token;feedback.textContent='';
       try{
         let values,total;
         if(query){
-          const d=await StudioService.api(`/api/library?part=folders&search=${encodeURIComponent(query)}&folder_offset=0&limit=${Math.min(80,30+more)}`,{background:true});
-          values=d.folders;total=d.folder_total;
+          const d=await StudioService.api(`/api/library?part=folders&search=${encodeURIComponent(query)}&folder_offset=${append?searchRows.length:0}&limit=30`,{background:true});
+          if(n!==token)return;searchRows=append?[...searchRows,...d.folders]:d.folders;values=searchRows;total=d.folder_total;
         }else{
           const p=await F.load(at,'folders',false);values=p.folders.map(F.node);total=p.total.folders;
         }
         if(n!==token||!l.isConnected)return;
-        const trail=F.path(at),scope=trail.findLast(f=>f.template_id);
-        ok.disabled=!!query||(!at&&!allowRoot)||!!(folder&&trail.some(f=>f.id===folder))||[...seenScopes].some(id=>id!==scope?.id);
+        const trail=F.path(at);
+        ok.disabled=(!at&&!allowRoot)||!allowed();
         $('.dir-picker-path',l).innerHTML=trail.map(f=>`<button type="button" class="dir-location" data-pick="go" data-id="${esc(f.id)}">${esc(f.name)}</button>`).join(' › ');
         const shortcuts=!at&&!query?recent.filter(id=>F.node(id)).map(id=>location(id,F.node(id).name,'最近使用')).join(''):'';
         list.innerHTML=(showDefault?`<button class="menu-row" data-pick="default">${icon('refresh',18)}随当前模板</button>`:'')+shortcuts+
           values.map(f=>location(f.id,f.name,f.path?.map(n=>n.name).join(' › ')||'')).join('')+
           (values.length<total?'<button class="menu-row" data-pick="more">更多文件夹</button>':'')+
-          (newGroup&&!query&&!ok.disabled?`<button class="menu-row" data-pick="new">${icon('folderplus',18)}在此建组</button>`:'');
+          (newGroup&&allowed()?`<button class="menu-row" data-pick="new">${icon('folderplus',18)}在此建组</button>`:'');
       }catch(error){if(n===token)reportError(l,error);}
     }
-    $('input',l).oninput=e=>{query=e.target.value.trim();more=0;render();};
+    $('input',l).oninput=e=>{query=e.target.value.trim();searchRows=[];render();};
     l.onclick=async e=>{
       const b=e.target.closest('[data-pick]');if(!b||busy)return;
       try{
         switch(b.dataset.pick){
           case 'go':at=b.dataset.id;query='';$('input',l).value='';await render();break;
-          case 'more':if(query)more+=30;else await F.load(at,'folders',true);await render();break;
+          case 'more':if(!query)await F.load(at,'folders',true);await render(!!query);break;
           case 'new':newGroup(at);break;
           case 'default':await confirm(null,l);break;
           case 'confirm':if(!ok.disabled){busy=true;ok.disabled=true;await confirm(at,l);}break;
         }
-      }catch(error){reportError(l,error);}finally{busy=false;if(l.isConnected&&topSheet()===l)ok.disabled=!!query||(!at&&!allowRoot)||[...seenScopes].some(id=>id!==F.path(at).findLast(f=>f.template_id)?.id);}
+      }catch(error){reportError(l,error);}finally{busy=false;if(l.isConnected&&topSheet()===l)ok.disabled=(!at&&!allowRoot)||!allowed();}
     };
     await render();return l;
   }
@@ -110,14 +112,15 @@ globalThis.StudioFolderActions=(function folderActions(){
   }
   function menu(id){
     const f=F.node(id),scope=F.path(id).slice(0,-1).findLast(n=>n.template_id);
-    const html=row('compose','在此创作','sparkle',id)+(f.template_id?row('use-recipe','用此模板创作','book',id)+row('origin','查看此模板生成的作品','layers',f.template_id):'')+
+    const html=row('compose','在此创作','sparkle',id)+(scope?row('use-parent',`用「${scope.name}」配方在此创作`,'book',id):'')+(f.template_id?row('use-recipe','用此模板创作','book',id)+row('origin','查看此模板生成的作品','layers',f.template_id):'')+
       (id==='untemplated'?'':row('recipe',f.template_id?'编辑模板':'设为模板','book',id)+row('rename','重命名','edit',id)+row('relocate','移动文件夹','folder',id)+
-      (scope?row('detach-folder',`移出模板 ${scope.name}`,'arrow',id):'')+(f.template_id?row('unrecipe','转回普通文件夹','folder',id):row('dissolve','解散分组','layers',id)));
+      (scope?row('detach-folder',`移出模板 ${scope.name}`,'arrow',id):'')+(f.template_id?row('unrecipe','转回普通文件夹','folder',id):row('dissolve','解散分组','layers',id))+row('trash-folder','移到最近删除','trash',id));
     openSheet({title:f.name,html});
   }
   async function recipe(id){
     const f=F.node(id),parent=F.path(id).slice(0,-1).findLast(n=>n.template_id);
     const initial=f.template_id?await StudioService.api('/api/templates/'+f.template_id):null;
+    if(initial?.references)StudioService.ingestLibrary(initial.references);
     let refs=[...(initial?.refs||[])],options={...(initial?.options||{})};
     const l=form(f.template_id?'编辑模板':'设为模板',`<label class="field-label">提示词<textarea class="input" maxlength="24000" name="text">${esc(initial?.text||'')}</textarea></label><div class="ref-strip" id="dir-refs"></div><div class="dir-tools"><button type="button" class="ghost-btn" data-seed="art">从作品带入</button>${parent?'<button type="button" class="ghost-btn" data-seed="parent">带入上级配方</button>':''}</div>`,async layer=>{
       const r=await write({action:'recipe',folder:id,text:$('textarea',layer).value,refs,options});
@@ -125,7 +128,7 @@ globalThis.StudioFolderActions=(function folderActions(){
     });
     function paint(){StudioReferences.render($('#dir-refs',l),{read:()=>refs,write:v=>{refs=v;paint();},
       add:()=>StudioService.pickerSheet({title:'选择模板参考图',refs,onCommit:v=>{refs=v;paint();}})});}
-    function fill(t){$('textarea',l).value=t.text??t.prompt??'';refs=[...(t.refs||[])];options={...t.options};paint();}
+    function fill(t){if(t.references)StudioService.ingestLibrary(t.references);$('textarea',l).value=t.text??t.prompt??'';refs=[...(t.refs||[])];options={...t.options};paint();}
     l.addEventListener('click',async e=>{
       const seed=e.target.closest('[data-seed]')?.dataset.seed;if(!seed)return;
       try{
@@ -172,6 +175,7 @@ globalThis.StudioFolderActions=(function folderActions(){
         return form(`移出模板 ${owner.name}`,`<p>${esc(textPath(id))}</p><p>移至 ${esc(textPath(target))} › ${esc(F.node(id).name)}</p>`,async l=>refreshAfter(await write({action:'detach',folder:id,target:target||null}),l,{message:'已移出模板，作品来源已保留'}));
       }
       case 'unrecipe':return form('转回普通文件夹','<p>目录和已有作品将保留在原位置。</p>',async l=>refreshAfter(await write({action:'unrecipe',folder:id}),l,{recipe:true,message:'已转回普通文件夹'}));
+      case 'trash-folder':return form('移到最近删除',`<p>移入「${esc(F.node(id).name)}」及其内容，可从最近删除恢复。</p>`,async l=>{const parent=F.node(id).parent_id||'';await write({action:'trash',folder:id});await back();await F.ancestor(parent);await F.invalidate();toast('已移到最近删除');});
       case 'dissolve':{
         const parent=F.node(id).parent_id||'';
         return form('解散分组',`<p>子文件夹移至 ${esc(textPath(parent))}，直属作品移至 ${esc(parent?textPath(parent):'待整理')}。</p>`,async l=>{
@@ -184,14 +188,15 @@ globalThis.StudioFolderActions=(function folderActions(){
       case 'add-confirm':{
         const r=await write({action:'move',assets:ids,target:id,expected:chosenFrom(ids)});await refreshAfter(r,null,{leave:true,target:id,message:`已添加 ${ids.length} 张作品`});return F.open(id);
       }
-      case 'compose':case 'use-recipe':{
-        const f=F.node(id);await closeOverlays();if(k==='use-recipe'){await StudioService.ensureTemplates();if(!tpl(f.template_id))await StudioService.fetchTemplate(f.template_id);await StudioService.loadTemplate(f.template_id);}
+      case 'compose':case 'use-recipe':case 'use-parent':{
+        const f=F.node(id);await closeOverlays();if(k!=='compose'){const pid=k==='use-parent'?F.path(id).slice(0,-1).findLast(n=>n.template_id)?.template_id:f.template_id;await StudioService.useFolderRecipe(pid);}
         else{S.composer.template=null;await go('create');}
         S.composer.folderId=id;S.composer.folderName=f.name;S.composer.ack=false;StudioService.saveDraft();refresh();return;
       }
       case 'save-target':return picker({initial:S.composer.folderId||'',title:'作品保存位置',showDefault:true,confirm:async(to,l)=>{S.composer.folderId=to;S.composer.folderName=F.node(to)?.name;if(!to)S.composer.folderName=null;await back();StudioService.saveDraft();refresh();}});
       case 'filter':{
         const origins=await StudioService.api('/api/library/origins');
+        F.rememberOrigins(origins);
         openSheet({title:'按来源筛选',html:row('all','全部作品','layers')+row('open','待整理','folder','~inbox')+row('origin','无模板','book','')+origins.map(t=>row('origin',t.title,'book',t.id)).join('')});return;
       }
     }

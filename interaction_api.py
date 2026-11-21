@@ -135,20 +135,34 @@ def register(app, studio):
         return {'asset': studio.serialize_asset(asset), 'job': job}
 
     @app.get('/api/batches')
-    def batches(status: str = '', limit: int = 30, offset: int = 0, session=Depends(studio.require_user)):
+    def batches(status: str = '', limit: int = 30, offset: int = 0, overview: bool = False, session=Depends(studio.require_user)):
         # Page batch identities first, then fetch all of their jobs. A page boundary
         # must never turn a 20-image batch into two incomplete cards.
         predicate, args = (' WHERE history_deleted=0 AND status=?', [status]) if status else (' WHERE history_deleted=0', [])
+        if status == 'active':
+            predicate,args = (" WHERE history_deleted=0 AND status IN ('queued','running','retrying')", [])
         key = "COALESCE(NULLIF(batch_id,''),id)"
         with studio.db() as connection:
             connection.execute('BEGIN')
             identities = connection.execute(f'SELECT {key} AS id,MAX(created) AS created FROM jobs{predicate} '
                 f'GROUP BY {key} ORDER BY created DESC,id DESC LIMIT ? OFFSET ?', (*args, max(1, min(limit, 100)), max(0, offset))).fetchall()
-            rows = [(dict(identity), connection.execute(f'SELECT * FROM jobs WHERE {key}=? AND history_deleted=0 ORDER BY created,id', (identity['id'],)).fetchall()) for identity in identities]
+            if overview:
+                active = connection.execute(f"""SELECT {key} AS id,MAX(created) AS created FROM jobs
+                    WHERE history_deleted=0 AND status IN ('queued','running','retrying') GROUP BY {key}""").fetchall()
+                identities = {r['id']:r for r in [*identities,*active]}.values()
+            identities = list(identities)
+            members = {r['id']:[] for r in identities}
+            job_rows = connection.execute(f"""SELECT * FROM jobs WHERE history_deleted=0 AND {key}
+                IN (SELECT value FROM json_each(?)) ORDER BY created,id""", (json.dumps(list(members)),))
+            for row in job_rows:
+                members[row['batch_id'] or row['id']].append(row)
+            rows = [(dict(identity),members[identity['id']]) for identity in identities]
             total = connection.execute(f'SELECT COUNT(DISTINCT {key}) FROM jobs{predicate}', args).fetchone()[0]
             revision = connection.execute('SELECT COUNT(*),COALESCE(MAX(history_deleted),0) FROM jobs WHERE history_deleted>0').fetchone()
+            library_revision = connection.execute("SELECT value FROM library_revision WHERE id=1").fetchone()[0]
         items = [identity | {'prompt': jobs[0]['prompt'], 'jobs': [studio.serialize_job(job) for job in jobs]} for identity,jobs in rows]
-        return {'items': items, 'total': total, 'history_revision': f'{revision[0]}:{revision[1]}'}
+        return {'items': items, 'total': total, 'history_revision': f'{revision[0]}:{revision[1]}',
+                'library_revision':library_revision}
 
     def delete_history(predicate, identity):
         with studio.db() as connection:

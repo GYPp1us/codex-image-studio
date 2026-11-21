@@ -1,8 +1,8 @@
 "use strict";
 globalThis.StudioFolders=(function folders(){
-  const pages=new Map(),nodes=new Map(),anchors=new Map(),expanded=new Set(['']),pendingFrame=new WeakMap();
+  const pages=new Map(),nodes=new Map(),originNames=new Map(),anchors=new Map(),expanded=new Set(['']),pendingFrame=new WeakMap();
   const root={id:'',name:'作品'},key=()=>S.coll||'',flow=k=>k.startsWith('~');
-  let observer,revision=0,backFrame=false;
+  let observer,revision=0,backFrame=false,serverRevision=null,dirty=false;
   function page(k){
     if(!pages.has(k))pages.set(k,{folders:[],assets:[],tasks:{},errors:{},loaded:{},total:{},rev:0});
     return pages.get(k);
@@ -13,7 +13,7 @@ globalThis.StudioFolders=(function folders(){
     nodes.set(f.id,{...prev,...f,template:f.template_id||null});
   }
   function path(k){
-    if(flow(k))return [root,{id:k,name:k==='~all'?'全部作品':k==='~inbox'?'待整理':`来源 · ${tpl(k.slice(8))?.name||node('tpl-'+k.slice(8))?.name||'无模板'}`}];
+    if(flow(k))return [root,{id:k,name:k==='~all'?'全部作品':k==='~inbox'?'待整理':`来源 · ${tpl(k.slice(8))?.name||originNames.get(k.slice(8))||node('tpl-'+k.slice(8))?.name||(k.slice(8)?'历史模板':'无模板')}`}];
     const result=[],visited=new Set();
     let f=node(k);
     while(f?.id&&!visited.has(f.id)){result.unshift(f);visited.add(f.id);f=node(f.parent_id);}
@@ -73,7 +73,7 @@ globalThis.StudioFolders=(function folders(){
     const k=key(),normal=!flow(k);
     const actions=button('tree','目录树','layers')+(normal?button('create','新建文件夹','folderplus'):'')+button('select','选择作品','select')+(flow(k)?button('filter','筛选作品来源','sliders'):'')+(k&&normal?button('menu','文件夹操作','more',k):'');
     const tabs=!k?`<div class="seg" id="works-seg"><span class="ind"></span>${[['generated','作品'],['references','参考图'],['favorites','收藏']].map(([id,name])=>`<button class="${S.worksTab===id?'on':''}" data-act="works-tab" data-v="${id}">${name}</button>`).join('')}</div>`:'';
-    return `${topBar(k?(node(k)?.name||path(k).at(-1)?.name||'作品'):'作品',actions)}<div class="dir-workspace"><aside class="dir-side" aria-label="作品目录"></aside><div class="scroll dir-scroll">${tabs}<div id="dir-path"></div>${!k?`<div class="section-h"><h2>最近生成</h2>${button('all','查看全部作品','chevr')}</div><div class="recent" id="recent"></div>`:''}${normal?'<div class="colls" id="colls"></div><div data-more-slot="folders"></div>':''}<div class="grid" id="grid"></div><div data-more-slot="assets"></div><div id="dir-empty"></div></div></div>`;
+    return `${topBar(k?esc(node(k)?.name||path(k).at(-1)?.name||'作品'):'作品',actions).replace('<h1>',k&&normal?`<span class="dir-hero">${node(k)?.covers?.[0]?`<img src="/media/${encodeURIComponent(node(k).covers[0])}?thumbnail=1" alt="">`:icon('folder',18)}</span><h1>`:'<h1>')}<div class="dir-workspace"><aside class="dir-side" aria-label="作品目录"></aside><div class="scroll dir-scroll">${tabs}<div id="dir-path"></div>${!k?`<div class="section-h"><h2>最近生成</h2>${button('all','查看全部作品','chevr')}</div><div class="recent" id="recent"></div>`:''}${normal?'<div class="colls" id="colls"></div><div data-more-slot="folders"></div>':''}<div class="grid" id="grid"></div><div data-more-slot="assets"></div><div id="dir-empty"></div></div></div>`;
   }
   function moreButton(k,type){
     const p=page(k);
@@ -117,7 +117,7 @@ globalThis.StudioFolders=(function folders(){
   function mount(){
     if(!active())return;
     const box=$('#page .dir-workspace');if(!box)return;
-    if(!box.dataset.mounted){box.dataset.mounted='1';box.dataset.restore='1';required(key()).catch(()=>{});if(key()&&globalThis.matchMedia?.('(min-width: 860px)').matches)load('','folders').catch(()=>{});}
+    if(!box.dataset.mounted){box.dataset.mounted='1';box.dataset.restore='1';required(key()).catch(()=>{});if(key()&&globalThis.matchMedia?.('(min-width: 860px)').matches)load('','folders').then(()=>{revision++;draw();}).catch(()=>{});}
     draw();
   }
   function saveAnchor(){
@@ -144,8 +144,11 @@ globalThis.StudioFolders=(function folders(){
     });
     layers.at(-1).directory=id;layers.at(-1).fromDirectory=previous.tab==='works'&&previous.worksTab==='generated'?(previous.coll||''):null;
     const cover=$$('#page .dir-card').find(el=>el.dataset.id===id)?.querySelector('.cover');
-    if(cover)cover.style.viewTransitionName='directory-cover';
-    return vt('push',()=>{S.tab='works';S.worksTab='generated';S.coll=id||null;renderPage();});
+    const shared=cover&&!RM&&cover.getBoundingClientRect().bottom>0&&cover.getBoundingClientRect().top<document.documentElement.clientHeight;
+    if(shared)cover.style.viewTransitionName='directory-cover';
+    let hero;
+    return vt('push',()=>{S.tab='works';S.worksTab='generated';S.coll=id||null;renderPage();hero=$('#page .dir-hero');if(hero&&shared)hero.style.viewTransitionName='directory-cover';})
+      .finally(()=>{if(hero)hero.style.viewTransitionName='';if(cover)cover.style.viewTransitionName='';});
   }
   async function ancestor(id){
     if(id===key())return;
@@ -165,6 +168,8 @@ globalThis.StudioFolders=(function folders(){
     return active()?required(key(),true):Promise.resolve();
   }
   return {active,layout,mount,draw,open,ancestor,page,node,path,button,crumbs,load,treeHTML,expanded,invalidate,resume,
-    changed(){revision++;draw();},items:kind=>kind==='dir-recent'?page('~all').assets.slice(0,10):page(key()).assets,
-    reset(){observer?.disconnect();pages.clear();nodes.clear();anchors.clear();expanded.clear();expanded.add('');revision++;}};
+    rememberOrigins(items){for(const item of items)originNames.set(item.id,item.title);},
+    observeRevision(value){if(value==null)return;const old=serverRevision;serverRevision=value;if(old!=null&&old!==value){if(StudioSelection.active())dirty=true;else invalidate().catch(()=>{});}},
+    changed(){revision++;if(dirty&&!StudioSelection.active()){dirty=false;invalidate().catch(()=>{});}draw();},items:kind=>kind==='dir-recent'?page('~all').assets.slice(0,10):page(key()).assets,
+    reset(){observer?.disconnect();pages.clear();nodes.clear();originNames.clear();anchors.clear();expanded.clear();expanded.add('');serverRevision=null;dirty=false;revision++;}};
 })();
