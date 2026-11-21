@@ -33,6 +33,7 @@ const P={
   more:'<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>',
   grip:'<path d="M9 5h.01M15 5h.01M9 12h.01M15 12h.01M9 19h.01M15 19h.01" stroke-width="3"/>',
   star:'<path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>',
+  search:'<circle cx="10" cy="10" r="6.5"/><path d="m15 15 6 6"/>',
   trash:'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   sliders:'<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   copy:'<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>',
@@ -153,12 +154,13 @@ function syncList(box,items,key,html){
 }
 
 /* ================= view transitions ================= */
-let pageTransition=null;
+let pageTransition=null,pageVersion=0;
 function vt(kind,fn){
+  const version=++pageVersion;
   pageTransition?.skipTransition?.();
   if(RM||!document.startViewTransition||$("#overlays .screen,#overlays .sheet-layer,#viewer.open")){fn();return Promise.resolve();}
   document.documentElement.dataset.vt=kind;
-  const transition=document.startViewTransition(fn);
+  const transition=document.startViewTransition(()=>{if(pageVersion===version)fn();});
   pageTransition=transition;
   return transition.finished.catch(()=>{}).finally(()=>{
     if(pageTransition===transition){pageTransition=null;delete document.documentElement.dataset.vt;}
@@ -175,8 +177,8 @@ function renderPage(){
   else if(S.tab==="queue")p.innerHTML=queueHTML();
   else p.innerHTML=tplsHTML();
   hydrateIcons(p);
-  if(S.tab==="works"&&!S.coll){const s=$("#page .scroll"),tab=S.worksTab;if(s){s.scrollTop=S.worksScrolls[tab]||0;s.addEventListener("scroll",()=>{S.worksScrolls[tab]=s.scrollTop;if(tab==="generated")S.worksScroll=s.scrollTop;},{passive:true});}}
   updatePage();updateChrome();
+  if(S.tab==="works"&&!S.coll){const s=$("#page .scroll"),tab=S.worksTab;if(s){s.scrollTop=S.worksScrolls[tab]||0;s.addEventListener("scroll",()=>{S.worksScrolls[tab]=s.scrollTop;if(tab==="generated")S.worksScroll=s.scrollTop;},{passive:true});}}
 }
 function refresh(){updatePage();updateChrome();}
 function updatePage(){
@@ -195,7 +197,9 @@ function updateChrome(){
   if(Date.now()>=badgeHold){const n=activeTasks().length,b=$("#badge");b.textContent=n;b.classList.toggle("zero",n===0);
     if(lastBadge>=0&&n>lastBadge&&!RM){b.classList.remove("bump");void b.offsetWidth;b.classList.add("bump");}lastBadge=n;}
   const slot=$("#page .banner-slot");if(slot){const net=S.network,slow=net?.pageSlow&&S.tab==='works',hint=net?.phase==='retrying'?'正在重新连接':net?.phase==='checking'?'正在检查连接':net?.phase==='syncing'?'正在同步工作台':slow?'作品同步中':'';
-    const viewerRetry=$('#viewer .net-retry');if(viewerRetry)viewerRetry.hidden=!hint;
+    const retryHidden=!hint&&!S.offline;
+    const viewerRetry=$('#viewer .net-retry');if(viewerRetry)viewerRetry.hidden=retryHidden;
+    const menuRetry=$('.art-actions .art-retry');if(menuRetry)menuRetry.hidden=retryHidden;
     const want=hint?`<div class="banner net-status" role="status"><span>${hint}</span><button class="icon-btn" data-act="reconnect" aria-label="重新连接工作台" title="重新连接工作台">${icon('refresh',18)}</button></div>`:S.disconnected?`<div class="banner">${icon("alert",18)}<span>订阅尚未连接</span><button data-act="reconnect-set">连接订阅</button></div>`:S.offline?`<div class="banner">${icon("alert",18)}<span>与服务器的连接已断开</span><button data-act="reconnect">重新连接</button></div>`:S.paused&&S.tab!=="queue"?`<div class="banner">${icon("clock",18)}<span>调度已暂停，新任务不会开始</span><button data-act="unpause">恢复</button></div>`:"";
     if(slot.dataset.h!==want){slot.innerHTML=want;slot.dataset.h=want;}}
   placeToast();
@@ -232,6 +236,7 @@ function genHTML(){const c=S.composer;return `${topBar("创作",modeSeg())}
     <div class="card-head prompt-head"><label class="label" for="prompt">提示词</label><button class="icon-btn prompt-expand" data-act="prompt-full" aria-label="全屏编辑提示词">${icon("expand",17)}</button><span class="grow"></span><button class="clear-btn off" id="clear-btn" data-act="clear-all" aria-label="清空提示词与参考图">${icon("x",14)}清空</button><div id="into"></div></div>
     <div id="template-warning"></div>
     <textarea id="prompt" placeholder="描述你想要的画面…" maxlength="24000">${esc(c.prompt)}</textarea>
+    ${globalThis.StudioFolders?`<button type="button" class="composer-destination" data-dir="save-target">${icon('folder',18)}<span>保存到</span><strong></strong>${icon('chevr',15)}</button>`:''}
   </section>
   <section class="card">
     <div class="card-head"><span class="label">参考图</span><span class="muted small" id="ref-count"></span></div>
@@ -252,7 +257,13 @@ function updateInto(){
   const name=t?(S.collections.find(x=>x.template===t.id)?.name||t.name):"模板读取中";
   const div=t&&!c.ack&&c.prompt.trim().length>4&&similarity(c.prompt,t.text)<.25;
   setHTML(box,c.template?`<span class="into-chip" id="into-chip"><button class="into-choose" data-act="tpl-menu" aria-label="归入 ${esc(name)}，选择模板">${icon("folder",14)}<span class="into-prefix">模板</span><span class="t">${esc(name)}</span></button><button class="into-detach" data-act="detach" aria-label="解除模板">${icon("x",15)}</button></span>`:`<button class="ghost-btn" data-act="tpl-menu">${icon("book",16)}模板${icon("chevd",14)}</button>`);
-  if(globalThis.StudioFolders&&!$('[data-dir="save-target"]',box)){const b=document.createElement('button');b.className='ghost-btn dir-location';b.dataset.dir='save-target';b.ariaLabel='选择作品保存位置';box.append(b);}const destination=$('[data-dir="save-target"]',box);if(destination)destination.textContent='存入 '+(c.folderName||(c.template?name:'待整理'));
+  const destination=$('#prompt-card [data-dir="save-target"]');
+  if(destination){
+    const folderName=c.folderName||(c.template?name:'待整理');
+    $('strong',destination).textContent=folderName;
+    destination.setAttribute('aria-label','选择作品保存位置，当前为'+folderName);
+    destination.title=folderName;
+  }
   setHTML($("#template-warning"),div?`<div class="diverge">${icon("alert",16)}<div>正文与模板「${esc(t.name)}」差异较大，结果仍会归入该列表。<div class="dv-actions"><button data-act="detach">改为无模板</button><button data-act="dv-keep">保持归入</button></div></div></div>`:"");
 }
 
@@ -293,14 +304,39 @@ function updBp(){
 }
 
 /* ---------- works ---------- */
-function worksHTML(){return `${topBar("作品")}<div class="scroll"><div class="seg" id="works-seg"><span class="ind"></span>${[["generated","作品"],["references","参考图"],["favorites","收藏"]].map(([key,label])=>`<button class="${S.worksTab===key?"on":""}" data-act="works-tab" data-v="${key}">${label}</button>`).join("")}</div>${S.worksTab==="generated"?'<div class="section-h"><h2>最近生成</h2></div><div class="recent" id="recent"></div><div class="section-h"><h2>列表</h2><span class="muted small" id="coll-count"></span></div><div class="colls" id="colls"></div>':'<div class="section-h"><h2 id="works-title"></h2><span class="muted small" id="works-count"></span></div><div class="grid" id="works-grid"></div><p class="empty" id="works-empty"></p><button class="secondary load-more" data-act="works-more">加载更多</button>'}</div>`;}
+const worksPanels=[['generated','图库'],['references','参考图'],['favorites','收藏']];
+function worksSegments(){
+  return `<nav class="seg works-segments" id="works-seg" aria-label="作品分类"><span class="ind" aria-hidden="true"></span>${worksPanels.map(([key,label])=>`<button type="button" class="${S.worksTab===key?'on':''}" aria-pressed="${S.worksTab===key}" data-act="works-tab" data-v="${key}">${label}</button>`).join('')}</nav>`;
+}
+function worksTransition(direction,update,previousPanel=null){
+  pageVersion++;
+  pageTransition?.skipTransition?.();
+  pageTransition=null;
+  delete document.documentElement.dataset.vt;
+  update();
+  const content=$('#page .scroll');
+  if(RM||!content)return;
+  const timing={duration:D(200),easing:E.std};
+  content.animate([{opacity:.55,transform:`translateX(${direction*16}px)`},{opacity:1,transform:'none'}],timing);
+  const ind=$('#works-seg .ind');
+  if(ind&&previousPanel!==null){
+    const next=worksPanels.findIndex(([key])=>key===S.worksTab);
+    ind.animate([{transform:`translateX(${previousPanel*100}%)`},{transform:`translateX(${next*100}%)`}],timing);
+  }
+}
+function worksHTML(){
+  const actions=globalThis.StudioFolders?StudioFolders.button('select','选择作品','select'):'';
+  const content=S.worksTab==='generated'
+    ?'<div class="section-h"><h2>最近生成</h2></div><div class="recent" id="recent"></div><div class="section-h"><h2>文件夹</h2><span class="muted small" id="coll-count"></span></div><div class="colls" id="colls"></div>'
+    :'<div class="works-count" id="works-count"></div><div class="grid" id="works-grid"></div><p class="empty" id="works-empty"></p><button class="secondary load-more" data-act="works-more">加载更多</button>';
+  return topBar('作品',actions)+worksSegments()+'<div class="scroll">'+content+'</div>';
+}
 const liveIn=cid=>S.batches.filter(b=>b.coll===cid).flatMap(b=>b.tasks).filter(t=>t.status==="queued"||t.status==="running").length;
 const tileHTML=(im,list)=>`<button class="tile${im.fav?" fav":""}"${im.badge?` data-badge="${esc(im.badge)}"`:""} data-act="img" data-id="${im.id}" data-list="${list}" aria-label="${esc(im.name)}"><img loading="lazy" decoding="async" src="${src(im)}" alt="" draggable="false"></button>`;
 function updateWorks(){
-  const seg=$("#works-seg"),on=$("button.on",seg),ind=$(".ind",seg);if(on){ind.style.width=on.offsetWidth+"px";ind.style.transform=`translateX(${on.offsetLeft-3}px)`;}
   if(S.worksTab!=="generated"){
     const tab=S.worksTab,items=StudioService.workItems(tab),state=StudioService.workState(tab);
-    $("#works-title").textContent=tab==="references"?"参考图":"已收藏";$("#works-count").textContent=state.ready?`${items.length}${state.offset<state.total?" / "+state.total:""} 张`:"";
+    $("#works-count").textContent=state.ready?`${items.length}${state.offset<state.total?" / "+state.total:""} 张`:"";
     syncList($("#works-grid"),items,i=>i.id,im=>tileHTML(im,tab));const empty=$("#works-empty");empty.hidden=!!items.length;empty.textContent=state.loading?"正在读取…":state.error?"读取失败，请重试":tab==="references"?"添加的参考图会显示在这里":"长按图片或在更多菜单中收藏";
     const more=$('[data-act="works-more"]');more.hidden=state.ready&&state.offset>=state.total;more.disabled=state.loading;more.textContent=state.loading?"正在读取…":state.error?"重新读取":"加载更多";return;
   }
@@ -400,7 +436,15 @@ function updateTpls(){
 function go(tab){
   if(layers.length&&layers.at(-1).type!=="coll")return closeOverlays().then(()=>go(tab));
   if(tab===S.tab){if(tab==="works"&&S.coll)back();else $("#page .scroll")?.scrollTo({top:0,behavior:RM?"auto":"smooth"});return Promise.resolve();}
-  return vt("tab",()=>{S.tab=tab;renderPage();if(tab==="templates"&&globalThis.StudioFolders)StudioService.ensureTemplates().catch(StudioService.report);if(tab==="queue"&&globalThis.StudioFolders)StudioService.refreshTasks().catch(StudioService.report);});
+  const previous=S.tab;
+  const show=()=>{S.tab=tab;renderPage();if(tab==="templates"&&globalThis.StudioFolders)StudioService.ensureTemplates().catch(StudioService.report);if(tab==="queue"&&globalThis.StudioFolders)StudioService.refreshTasks().catch(StudioService.report);};
+  if(globalThis.StudioFolders&&(previous==='works'||tab==='works')){
+    if(StudioFolders.active())StudioFolders.saveAnchor();
+    const tabs=['create','works','queue','templates'];
+    worksTransition(Math.sign(tabs.indexOf(tab)-tabs.indexOf(previous)),show);
+    return Promise.resolve();
+  }
+  return vt("tab",show);
 }
 function openColl(cid){
   if(globalThis.StudioFolders)return StudioFolders.open(cid);
@@ -893,11 +937,20 @@ function tplMenuSheet(){
 function tplSaveForm(...args){return StudioService.tplSaveForm(...args);}
 function imageMenu(id,fromViewer){
   const im=img(id);if(!im)return;
-  const rows=fromViewer?[["native",StudioZoom.isNative()?"适应屏幕":"以原始像素查看","select"],["fav",im.fav?"取消收藏":"收藏","star"],["info","名称与标签","edit"],["dl","下载原图","download"]]
-    :[["quick","速改…","edit"],["fav",im.fav?"取消收藏":"收藏","star"],["ref","用作参考图","imgplus"],["reroll","再抽一张","refresh"],["redraw","局部重绘","select"],["up","发送到超分","grid"],["dl","下载","download"]];
-  openSheet({html:`<div class="sheet-hd"><img src="${src(im)}" alt=""><div><b>${esc(im.name)}</b><span>${im.w} × ${im.h} · ${esc(coll(im.coll)?.name||"")}</span></div></div>
-    ${globalThis.StudioFolders&&im.folder_id?`<button class="menu-row" data-dir="single-move" data-id="${esc(id)}">${icon("folder",20)}移动到…</button><button class="menu-row" data-dir="locate" data-id="${esc(im.folder_id)}">${icon("layers",20)}打开所在文件夹</button>`:""}${globalThis.StudioFolders?`<button class="menu-row" data-act="reconnect">${icon("refresh",20)}重新连接工作台</button>`:""}${rows.map(([a,l,i])=>`<button class="menu-row" data-act="im-${a}" data-id="${id}">${icon(i,20)}<span>${l}</span></button>`).join("")}
-    <div class="menu-sep"></div><button class="menu-row danger" data-act="im-del" data-id="${id}">${icon("trash",20)}<span>删除</span><span class="rt">可在最近删除恢复</span></button>`});
+  const row=(act,label,symbol,dir=false,key=id)=>`<button type="button" class="menu-row" data-${dir?'dir':'act'}="${act}" data-id="${esc(key)}">${icon(symbol,20)}<span>${label}</span></button>`;
+  const favorite=row('im-fav',im.fav?'取消收藏':'收藏','star');
+  const location=im.folder_id&&globalThis.StudioFolders;
+  const move=location?row('single-move','移动到','folder',true):'';
+  const locate=location?row('locate','打开所在文件夹','layers',true,im.folder_id):'';
+  const quick=fromViewer?favorite+row('im-dl','下载原图','download')+move:row('im-quick','速改','edit')+favorite+row('im-dl','下载','download');
+  const tools=fromViewer?locate+row('im-native',StudioZoom.isNative()?'适应屏幕':'以原始像素查看','select')+row('im-info','名称与标签','edit'):
+    move+locate+row('im-ref','用作参考图','imgplus')+row('im-reroll','再抽一张','refresh')+row('im-redraw','局部重绘','select')+row('im-up','发送到超分','grid');
+  const folder=coll(im.folder_id||im.coll)?.name;
+  const L=openSheet({cls:'art-actions',html:`<div class="sheet-hd art-identity"><img src="${esc(src(im))}" alt=""><div><b>${esc(im.name)}</b><span>${im.w} × ${im.h}${folder?' · '+esc(folder):''}</span></div><button class="icon-btn" data-act="sheet-close" aria-label="关闭">${icon('x',20)}</button></div>
+    <div class="art-shortcuts">${quick}</div><div class="art-tools">${tools}</div>
+    ${globalThis.StudioFolders?`<button type="button" class="menu-row art-retry" data-act="reconnect" ${$('#viewer .net-retry')?.hidden?'hidden':''}>${icon('refresh',18)}重新连接工作台</button>`:''}
+    <div class="menu-sep"></div><button class="menu-row danger" data-act="im-del" data-id="${esc(id)}">${icon("trash",20)}<span>移到最近删除</span></button>`});
+  $('.sheet',L).setAttribute('aria-label','作品操作');
 }
 function infoSheet(...args){return StudioService.infoSheet(...args);}
 function upscaleSheet(...args){return StudioService.upscaleSheet(...args);}

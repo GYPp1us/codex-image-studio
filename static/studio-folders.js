@@ -23,8 +23,8 @@ globalThis.StudioFolders=(function folders(){
     return `<button type="button" class="icon-btn dir-icon" data-dir="${act}" data-id="${esc(id)}" aria-label="${esc(label)}" title="${esc(label)}" ${extra}>${icon(symbol,20)}</button>`;
   }
   function crumbs(k){
-    const trail=path(k);
-    return `<nav aria-label="目录路径" class="dir-crumbs">${trail.map((n,i)=>`${i?'<span aria-hidden="true">›</span>':''}<button type="button" data-dir="ancestor" data-id="${esc(n.id)}" ${i===trail.length-1?'aria-current="page"':''}>${esc(n.name)}</button>`).join('')}${trail.length>2?button('path','完整路径','more'):''}</nav>`;
+    const trail=path(k).slice(0,-1);
+    return `<nav aria-label="目录路径" class="dir-crumbs">${trail.map((n,i)=>`${i?'<span aria-hidden="true">›</span>':''}<button type="button" data-dir="ancestor" data-id="${esc(n.id)}">${esc(n.name)}</button>`).join('')}${trail.length>2?button('path','完整路径','more'):''}</nav>`;
   }
   function url(k,type,offset,limit){
     const mode=k==='~all'?'all':k==='~inbox'?'inbox':k.startsWith('~origin:')?'origin':'folder';
@@ -72,8 +72,9 @@ globalThis.StudioFolders=(function folders(){
   function layout(){
     const k=key(),normal=!flow(k);
     const actions=button('tree','目录树','layers')+(normal?button('create','新建文件夹','folderplus'):'')+button('select','选择作品','select')+(flow(k)?button('filter','筛选作品来源','sliders'):'')+(k&&normal?button('menu','文件夹操作','more',k):'');
-    const tabs=!k?`<div class="seg" id="works-seg"><span class="ind"></span>${[['generated','作品'],['references','参考图'],['favorites','收藏']].map(([id,name])=>`<button class="${S.worksTab===id?'on':''}" data-act="works-tab" data-v="${id}">${name}</button>`).join('')}</div>`:'';
-    return `${topBar(k?esc(node(k)?.name||path(k).at(-1)?.name||'作品'):'作品',actions).replace('<h1>',k&&normal?`<span class="dir-hero">${node(k)?.covers?.[0]?`<img src="/media/${encodeURIComponent(node(k).covers[0])}?thumbnail=1" alt="">`:icon('folder',18)}</span><h1>`:'<h1>')}<div class="dir-workspace"><aside class="dir-side" aria-label="作品目录"></aside><div class="scroll dir-scroll">${tabs}<div id="dir-path"></div>${!k?`<div class="section-h"><h2>最近生成</h2>${button('all','查看全部作品','chevr')}</div><div class="recent" id="recent"></div>`:''}${normal?'<div class="colls" id="colls"></div><div data-more-slot="folders"></div>':''}<div class="grid" id="grid"></div><div data-more-slot="assets"></div><div id="dir-empty"></div></div></div>`;
+    const title=k?esc(node(k)?.name||path(k).at(-1)?.name||'作品'):'作品';
+    const header=k?`<header class="top dir-heading">${button('up','返回上一级','back')}<h1>${title}</h1><span class="grow"></span>${actions}</header><div class="banner-slot"></div>`:topBar(title,actions);
+    return `${header}${!k?worksSegments():''}<div class="dir-workspace"><aside class="dir-side" aria-label="作品目录"></aside><div class="scroll dir-scroll">${k?'<div id="dir-path"></div>':''}${!k?`<div class="section-h"><h2>最近生成</h2>${button('all','查看全部作品','chevr')}</div><div class="recent" id="recent"></div>`:''}${normal?'<div class="colls" id="colls"></div><div data-more-slot="folders"></div>':''}<div class="grid" id="grid"></div><div data-more-slot="assets"></div><div id="dir-empty"></div></div></div>`;
   }
   function moreButton(k,type){
     const p=page(k);
@@ -129,26 +130,31 @@ globalThis.StudioFolders=(function folders(){
   function restore(box,k){
     if(box.dataset.restore!=='1')return;
     const a=anchors.get([S.tab,S.worksTab,k].join('/'));if(!a){box.dataset.restore='';return;}
-    const scroller=$('.dir-scroll',box),el=a.id&&[...scroller.querySelectorAll('[data-id]')].find(e=>e.dataset.id===a.id);
-    if(el){scroller.scrollTop+=el.getBoundingClientRect().top-scroller.getBoundingClientRect().top-a.delta;box.dataset.restore='';}
-    else scroller.scrollTop=a.top;
+    const scroller=$('.dir-scroll',box);
+    scroller.scrollTop=a.top;
+    const el=a.id&&[...scroller.querySelectorAll('.dir-card,.tile')].find(e=>e.dataset.id===a.id);
+    if(!el)return;
+    box.dataset.restore='';
+    const top=scroller.scrollTop;
+    // Measure after the saved viewport has laid out its content-visibility cards.
+    requestAnimationFrame(()=>{
+      if(!el.isConnected||Math.abs(scroller.scrollTop-top)>2)return;
+      const drift=el.getBoundingClientRect().top-scroller.getBoundingClientRect().top-a.delta;
+      if(Math.abs(drift)>1)scroller.scrollTop+=drift/sc();
+    });
   }
-  async function open(id){
+  async function open(id,direction=1){
     await closeOverlays();
     if(id===key()&&S.tab==='works'&&S.worksTab==='generated')return;
     saveAnchor();
     const previous={tab:S.tab,worksTab:S.worksTab,coll:S.coll};
     pushLayer('coll',()=>{
+      if(!backFrame)saveAnchor();
       Object.assign(S,previous);
-      if(!backFrame){backFrame=true;queueMicrotask(()=>{backFrame=false;vt('pop',renderPage);});}
+      if(!backFrame){backFrame=true;queueMicrotask(()=>{backFrame=false;worksTransition(-direction,renderPage);});}
     });
     layers.at(-1).directory=id;layers.at(-1).fromDirectory=previous.tab==='works'&&previous.worksTab==='generated'?(previous.coll||''):null;
-    const cover=$$('#page .dir-card').find(el=>el.dataset.id===id)?.querySelector('.cover');
-    const shared=cover&&!RM&&cover.getBoundingClientRect().bottom>0&&cover.getBoundingClientRect().top<document.documentElement.clientHeight;
-    if(shared)cover.style.viewTransitionName='directory-cover';
-    let hero;
-    return vt('push',()=>{S.tab='works';S.worksTab='generated';S.coll=id||null;renderPage();hero=$('#page .dir-hero');if(hero&&shared)hero.style.viewTransitionName='directory-cover';})
-      .finally(()=>{if(hero)hero.style.viewTransitionName='';if(cover)cover.style.viewTransitionName='';});
+    worksTransition(direction,()=>{S.tab='works';S.worksTab='generated';S.coll=id||null;renderPage();});
   }
   async function ancestor(id){
     if(id===key())return;
@@ -156,7 +162,7 @@ globalThis.StudioFolders=(function folders(){
     const ix=layers.findLastIndex(l=>l.type==='coll'&&l.directory===id);
     if(ix>=0)return traverseHistory(()=>layers.length-1-ix);
     if(!id&&layers[0]?.type==='coll'&&layers[0].fromDirectory==='')return traverseHistory(()=>layers.length);
-    return open(id);
+    return open(id,-1);
   }
   function applyMove(target,ids,previous,created){
     // A server receipt already confirms these positions even if the following page read stalls.
@@ -200,7 +206,7 @@ globalThis.StudioFolders=(function folders(){
     for(const p of pages.values())p.tasks={};
     return active()?required(key(),true):Promise.resolve();
   }
-  return {active,layout,mount,draw,open,ancestor,page,node,path,button,crumbs,load,treeHTML,expanded,applyMove,invalidate,resume,
+  return {active,layout,mount,draw,open,ancestor,page,node,path,button,crumbs,load,treeHTML,expanded,saveAnchor,applyMove,invalidate,resume,
     rememberOrigins(items){for(const item of items)originNames.set(item.id,item.title);},
     observeRevision(value){if(value==null)return;const old=serverRevision;serverRevision=value;if(old!=null&&old!==value){if(StudioSelection.active())dirty=true;else invalidate().catch(()=>{});}},
     changed(){revision++;if(dirty&&!StudioSelection.active()){dirty=false;invalidate().catch(()=>{});}draw();},items:kind=>kind==='dir-recent'?page('~all').assets.slice(0,10):page(key()).assets,

@@ -24,7 +24,7 @@ const StudioSelection=(()=>{
     updateCount();
   }
   async function execute(op,button){
-    const chosen=[...ids];if(!chosen.length)return;
+    const chosen=[...ids].filter(id=>op==='favorite'?!img(id)?.fav:op==='unfavorite'?img(id)?.fav:true);if(!chosen.length)return;
     await StudioFeedback.run('asset-selection',button,async()=>{
       if(op==='reference'){
         const next=[...new Set([...S.composer.refs,...chosen])];if(next.length>8)throw new Error('参考图合计最多 8 张，请减少选择');
@@ -37,7 +37,11 @@ const StudioSelection=(()=>{
     });
   }
   function menu(){
-    openSheet({title:`批量操作 · ${ids.size} 张`,html:`<p class="note">对当前选中的图片操作，未加载的图片不会自动加入。</p><button class="menu-row" data-selection="favorite">${icon('star',20)}<span>收藏所选图片</span></button><button class="menu-row" data-selection="unfavorite">${icon('star',20)}<span>取消收藏</span></button><button class="menu-row" data-selection="reference">${icon('imgplus',20)}<span>加入创作参考图</span><span class="rt">最多 8 张</span></button><div class="menu-sep"></div><button class="menu-row danger" data-selection="delete-confirm">${icon('trash',20)}<span>移到最近删除</span></button>`});
+    const starred=[...ids].filter(id=>img(id)?.fav).length,plain=ids.size-starred;
+    const favorite=(action,label,detail)=>`<button class="menu-row" data-selection="${action}">${icon('star',20)}<span>${label}</span>${detail?`<small class="rt">${detail}</small>`:''}</button>`;
+    const add=plain?favorite('favorite','加入收藏',starred?`${plain} 张未收藏`:''):'';
+    const remove=starred?favorite('unfavorite','取消收藏',plain?`${starred} 张已收藏`:''):'';
+    openSheet({title:`已选 ${ids.size} 张`,html:`${add}${remove}<button class="menu-row" data-selection="reference">${icon('imgplus',20)}<span>加入创作参考图</span><span class="rt">最多 8 张</span></button><div class="menu-sep"></div><button class="menu-row danger" data-selection="delete-confirm">${icon('trash',20)}<span>移到最近删除</span></button>`});
   }
   async function leave(){if(selecting)await back();}
   app.addEventListener('click',e=>{const button=e.target.closest('[data-selection]');if(!button)return;e.preventDefault();e.stopPropagation();const action=button.dataset.selection;

@@ -57,8 +57,13 @@ globalThis.StudioFolderActions=(function folderActions(){
     },'input');
   }
   async function picker({initial='',title='移动到',confirm,newGroup,allowRoot=false,folder=null,ids=[],showDefault=false}){
-    let at=initial,token=0,searchRows=[],query='',busy=false;
-    const l=openSheet({title,html:`<div class="dir-picker-head"><input class="input" type="search" aria-label="搜索文件夹" placeholder="搜索文件夹"><button type="button" class="icon-btn dir-icon" data-pick="confirm" title="确认位置" aria-label="确认位置">${icon('check')}</button></div><div class="dir-picker-path"></div><div class="dir-picker-list"></div><p class="dir-feedback" role="alert"></p>`});
+    let at=initial,token=0,searchRows=[],query='',busy=false,ready=false;
+    const l=openSheet({title,cls:'location-picker',html:`
+      <label class="pick-search">${icon('search',18)}<input class="input" type="search" aria-label="搜索文件夹" placeholder="搜索文件夹"></label>
+      <nav class="dir-picker-path" aria-label="当前位置"></nav>
+      <div class="dir-picker-list"></div>
+      <p class="dir-feedback" role="alert"></p>
+      <footer class="pick-footer"><div><small>目标位置</small><strong></strong></div><button type="button" class="icon-btn dir-icon" data-pick="confirm" title="确认位置" aria-label="确认位置" disabled>${icon('check')}</button></footer>`});
     const list=$('.dir-picker-list',l),feedback=$('.dir-feedback',l),ok=$('[data-pick="confirm"]',l);
     const seenScopes=new Set();
     for(const fid of new Set(ids.map(aid=>img(aid)?.folder_id).filter(Boolean))){
@@ -67,40 +72,75 @@ globalThis.StudioFolderActions=(function folderActions(){
     }
     if(folder){const owner=F.path(folder).slice(0,-1).findLast(n=>n.template_id);if(owner)seenScopes.add(owner.id);}
     function allowed(){const trail=F.path(at),scope=trail.findLast(n=>n.template_id);return !query&&!(folder&&trail.some(n=>n.id===folder))&&[...seenScopes].every(id=>id===scope?.id);}
-    function location(id,name,label=''){return `<button type="button" class="menu-row" data-pick="go" data-id="${esc(id)}">${icon('folder',18)}<span>${esc(name)}</span><small>${esc(label)}</small></button>`;}
+    function location(f,detail='',shortcut=false){
+      const glyph=icon(f.template_id?'book':'folder',18);
+      return `<button type="button" class="${shortcut?'pick-shortcut':'pick-row'}" data-pick="go" data-id="${esc(f.id)}">${glyph}<span><b>${esc(f.name)}</b>${detail?`<small>${esc(detail)}</small>`:''}</span>${shortcut?'':icon('chevr',16)}</button>`;
+    }
+    function section(title,items,cls=''){
+      return items?`<section class="pick-section"><h3>${title}</h3><div class="${cls}">${items}</div></section>`:'';
+    }
+    function canConfirm(){return ready&&!busy&&(!!at||allowRoot)&&allowed();}
     async function render(append=false){
-      const n=++token;feedback.textContent='';
+      const n=++token;ready=false;ok.disabled=true;feedback.textContent='';
+      list.setAttribute('aria-busy','true');
       try{
         let values,total;
         if(query){
           const d=await StudioService.api(`/api/library?part=folders&search=${encodeURIComponent(query)}&folder_offset=${append?searchRows.length:0}&limit=30`,{background:true});
           if(n!==token)return;searchRows=append?[...searchRows,...d.folders]:d.folders;values=searchRows;total=d.folder_total;
         }else{
-          const p=await F.load(at,'folders',false);values=p.folders.map(F.node);total=p.total.folders;
+          const p=await F.load(at,'folders',append);values=p.folders.map(F.node);total=p.total.folders;
         }
-        if(n!==token||!l.isConnected)return;
+        if(n!==token||!l.isConnected||!list.isConnected)return;
         const trail=F.path(at);
-        ok.disabled=(!at&&!allowRoot)||!allowed();
-        $('.dir-picker-path',l).innerHTML=trail.map(f=>`<button type="button" class="dir-location" data-pick="go" data-id="${esc(f.id)}">${esc(f.name)}</button>`).join(' › ');
-        const shortcuts=!at&&!query?recent.filter(id=>F.node(id)).map(id=>location(id,F.node(id).name,'最近使用')).join(''):'';
-        list.innerHTML=(showDefault?`<button class="menu-row" data-pick="default">${icon('refresh',18)}随当前模板</button>`:'')+shortcuts+
-          values.map(f=>location(f.id,f.name,f.path?.map(n=>n.name).join(' › ')||'')).join('')+
+        ready=true;ok.disabled=!canConfirm();
+        $('.pick-footer strong',l).textContent=trail.map(f=>f.name).join(' › ');
+        let hint='目标位置';
+        if(query)hint='进入搜索结果以选择位置';
+        else if(seenScopes.size>1)hint='所选作品分属不同模板';
+        else if(folder&&trail.some(n=>n.id===folder))hint='请选择当前文件夹之外的位置';
+        else if(!allowed())hint='请在「'+F.node([...seenScopes][0]).name+'」内选择';
+        else if(!at&&!allowRoot)hint='请选择文件夹';
+        $('.pick-footer small',l).textContent=hint;
+        const pathBar=$('.dir-picker-path',l);
+        pathBar.hidden=trail.length===1;
+        pathBar.innerHTML=trail.map((f,i)=>i===trail.length-1
+          ?`<strong aria-current="page">${esc(f.name)}</strong>`
+          :`<button type="button" data-pick="go" data-id="${esc(f.id)}">${esc(f.name)}</button>${icon('chevr',13)}`).join('');
+        const shortcuts=!at&&!query?recent.map(F.node).filter(f=>f&&!f.deleted):[];
+        const shown=new Set(shortcuts.map(f=>f.id));
+        const matches=values.filter(f=>!shown.has(f.id));
+        const parentPath=f=>(f.path||F.path(f.id)).slice(0,-1).map(n=>n.name).join(' › ');
+        list.innerHTML=(showDefault?`<button class="pick-default" data-pick="default">${icon('refresh',16)}随当前模板</button>`:'')+
+          section('最近使用',shortcuts.map(f=>location(f,f.parent_id?parentPath(f):'',true)).join(''),'pick-recents')+
+          section(query?'搜索结果':'文件夹',matches.map(f=>location(f,query?parentPath(f):'')).join(''))+
+          (query&&!values.length?'<p class="pick-empty">没有匹配的文件夹</p>':'')+
           (values.length<total?'<button class="menu-row" data-pick="more">更多文件夹</button>':'')+
-          (newGroup&&allowed()?`<button class="menu-row" data-pick="new">${icon('folderplus',18)}在此建组</button>`:'');
-      }catch(error){if(n===token)reportError(l,error);}
+          (newGroup&&allowed()?`<button class="pick-default" data-pick="new">${icon('folderplus',18)}在此建组</button>`:'');
+        if(!append)list.scrollTop=0;
+      }catch(error){
+        if(n!==token||!list.isConnected)return;
+        list.innerHTML='<button class="pick-default" data-pick="retry">'+icon('refresh',18)+'重新读取文件夹</button>';
+        reportError(l,error);
+      }finally{if(n===token)list.removeAttribute('aria-busy');}
     }
     $('input',l).oninput=e=>{query=e.target.value.trim();searchRows=[];render();};
     l.onclick=async e=>{
       const b=e.target.closest('[data-pick]');if(!b||busy)return;
+      if(!ready&&['new','go','more'].includes(b.dataset.pick)&&list.contains(b))return;
       try{
         switch(b.dataset.pick){
           case 'go':at=b.dataset.id;query='';$('input',l).value='';await render();break;
-          case 'more':if(!query)await F.load(at,'folders',true);await render(!!query);break;
+          case 'retry':await render();break;
+          case 'more':await render(true);break;
           case 'new':newGroup(at);break;
-          case 'default':await confirm(null,l);break;
+          case 'default':busy=true;ok.disabled=true;await confirm(null,l);break;
           case 'confirm':if(!ok.disabled){busy=true;ok.disabled=true;await confirm(at,l);}break;
         }
-      }catch(error){reportError(l,error);}finally{busy=false;if(l.isConnected&&topSheet()===l)ok.disabled=(!at&&!allowRoot)||!allowed();}
+      }catch(error){if(list.isConnected)reportError(l,error);}finally{
+        if(b.dataset.pick==='default'||b.dataset.pick==='confirm')busy=false;
+        if(list.isConnected&&topSheet()===l)ok.disabled=!canConfirm();
+      }
     };
     await render();return l;
   }
@@ -155,6 +195,7 @@ globalThis.StudioFolderActions=(function folderActions(){
     const k=a.dataset.dir,id=a.dataset.id||'',fid=directory(),ids=selected();
     switch(k){
       case 'open':case 'locate':return F.open(id);
+      case 'up':return F.ancestor(F.path(S.coll||'').at(-2)?.id||'');
       case 'ancestor':if(topSheet())await back();return F.ancestor(id);
       case 'all':return F.open('~all');
       case 'origin':return F.open('~origin:'+id);

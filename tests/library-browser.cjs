@@ -49,6 +49,10 @@ async function run(){
     await page.goto(base);await page.locator('#prompt').waitFor();
     assert.ok(!reads.includes('/api/collections')&&!reads.includes('/api/library'),'composer fetched library at startup');
     if(process.argv.includes('--quality')){await require('./library-quality.cjs').quality(page,context,base);assert.deepEqual(errors,[]);return;}
+    if(process.argv.includes('--panels')){
+      await require('./library-panels.cjs').panels(page);
+      assert.deepEqual(errors,[]);return;
+    }
     await page.locator('[data-act=tab][data-tab=works]').click();
     await page.locator('[data-dir=open][data-id="tpl-A"]').first().click();
     await tile(30).waitFor();

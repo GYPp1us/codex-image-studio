@@ -56,7 +56,15 @@ const StudioService=(()=>{
   async function loadWorks(tab,more=false){
     if(!['references','favorites'].includes(tab))return;const page=workState(tab);if(page.loading)return;const epoch=sessionEpoch,offset=more?page.offset:0;page.loading=true;page.error=false;
     if(S.tab==='works'&&!S.coll&&S.worksTab===tab)refresh();
-    try{const d=await api(`/api/assets?kind=${tab==='references'?'reference':'all'}${tab==='favorites'?'&favorite=true':''}&limit=80&offset=${offset}`);if(epoch!==sessionEpoch)return;d.items.forEach(a=>rememberAsset(a));page.ids=[...new Set([...(more?page.ids:[]),...d.items.map(a=>a.id)])];page.offset=offset+d.items.length;page.total=d.total;page.ready=true;projectImages();}
+    try{
+      const d=await api(`/api/assets?kind=${tab==='references'?'reference':'all'}${tab==='favorites'?'&favorite=true':''}&limit=80&offset=${offset}`);
+      if(epoch!==sessionEpoch)return;
+      d.items.forEach(a=>rememberAsset(a));
+      const ids=d.items.map(a=>a.id);
+      const keepLoaded=!more&&page.total===d.total&&page.offset>ids.length&&ids.every((id,i)=>page.ids[i]===id);
+      if(!keepLoaded){page.ids=[...new Set(more?[...page.ids,...ids]:ids)];page.offset=offset+ids.length;}
+      page.total=d.total;page.ready=true;projectImages();
+    }
     catch(error){page.error=true;throw error;}finally{page.loading=false;if(epoch===sessionEpoch&&S.tab==='works'&&!S.coll&&S.worksTab===tab&&!V.open)refresh();}
   }
   let batchOffset=0,batchTotal=0,historyRevision=null,stopped=false,firstSync=true,lastActive=new Set();
@@ -694,7 +702,15 @@ ${group("set-more","其他",sLink("最近删除","","trash")+sLink("安装应用
       case 'im-native':await back();StudioZoom.toggleNative(true);break;
       case 'v-dl':download(V.list[V.i]);break;
       case 'im-dl':download(id);break;
-      case 'works-tab':{const tab=a.dataset.v;if(!['generated','references','favorites'].includes(tab))break;if(StudioSelection.active())await StudioSelection.leave();S.worksTab=tab;renderPage();if(tab!=='generated')await loadWorks(tab);break;}
+      case 'works-tab':{
+        const tab=a.dataset.v,previous=worksPanels.findIndex(([key])=>key===S.worksTab),next=worksPanels.findIndex(([key])=>key===tab);
+        if(next<0||next===previous)break;
+        if(StudioSelection.active())await StudioSelection.leave();
+        if(globalThis.StudioFolders?.active())StudioFolders.saveAnchor();
+        worksTransition(Math.sign(next-previous),()=>{S.worksTab=tab;renderPage();},previous);
+        if(tab!=='generated')await loadWorks(tab);
+        break;
+      }
       case 'works-more':await loadWorks(S.worksTab,workState(S.worksTab).ready&&!workState(S.worksTab).error);break;
       case 'im-fav':{const layer=a.closest('.sheet-layer'),revision=layer?.dataset.revision;rememberAsset(await api('/api/assets/'+id,{method:'PATCH',body:{favorite:!assets.get(id).fav}}));projectImages();await closeOwnedSheet(layer,revision);if(S.worksTab==='favorites')await loadWorks('favorites');if(!V.open)refresh();toast(assets.get(id).fav?'已收藏':'已取消收藏');break;}
       case 'copy-prompt':await navigator.clipboard.writeText(assets.get(id)?.prompt||'');toast('提示词已复制');break;
