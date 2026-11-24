@@ -18,6 +18,7 @@ const StudioLandscape=(()=>{
     const box=$('#landscape-parameters');if(!box||!wide())return;
     const html=`<div class="landscape-panel-heading"><b>生成参数</b><span>与创作一起调整</span></div>${paramsBody()}`;
     if(box.dataset.html!==html&&!box.contains(document.activeElement)){box.innerHTML=html;box.dataset.html=html;hydrateIcons(box);}
+    StudioQuickSettings.paintParameters(box);
   }
   function overview(){
     const slot=$('#queue-overview');if(!slot||!wide())return;

@@ -40,6 +40,7 @@ from quick_settings import QuickSetting
 import account_profile
 import upscale_prompts
 import generation_runtime
+import image_provider
 import workspace_shell
 import library_tree
 
@@ -359,7 +360,7 @@ async def lifespan(app):
     JOB_TASKS.clear();CALL_POOL=None
 
 
-app = FastAPI(title="Image Studio", version="2.0.0-rc1", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Image Studio", version="2.0.0-rc2", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.middleware("http")
@@ -610,6 +611,7 @@ def settings(body: Settings, session=Depends(require_user)):
     for key, value in body.model_dump(exclude_none=True,exclude_unset=True).items():
         if key=='stitch_prompt':value=normalize_redraw_prompt(value)
         if key=='upscale_system_prompts':value=updated_prompts
+        if key=='image_backend':value=setting('image_backend', {}) | value
         set_setting(key, value)
     STORAGE.invalidate()
     WAKE.set()
@@ -970,6 +972,7 @@ class JobInput(BaseModel):
     effort: str | None = Field(default=None, max_length=20)
     template_id: str | None = Field(default=None, max_length=64)
     folder_id: str | None = Field(default=None, max_length=100)
+    reroll_from: str | None = Field(default=None, max_length=64)
     operation_id: str | None = Field(default=None, min_length=8, max_length=100)
 
 
@@ -1031,7 +1034,7 @@ def stage_from_event(event):
     return None
 
 
-def _create_jobs(body):
+def _create_jobs(body, generation=None):
     previous = generation_receipt(body)
     if previous:
         return previous
@@ -1039,7 +1042,9 @@ def _create_jobs(body):
         raise HTTPException(400, "提示词不能为空")
     model = body.model or setting("model", MODEL)
     effort = body.effort or setting("effort", EFFORT)
-    validate_model_choice(model, effort)
+    generation = generation or generation_runtime.snapshot(sys.modules[__name__], body.image_backend, body.reroll_from)
+    if generation['image_backend']['source'] == 'subscription' or body.polish or body.stitch or body.after_upscale:
+        validate_model_choice(model, effort)
     if body.ratio not in ("1:1", "3:2", "2:3", "16:9", "9:16", "auto"):
         raise HTTPException(400, "画幅不支持")
     refs = list(dict.fromkeys(body.refs))
@@ -1076,9 +1081,7 @@ def _create_jobs(body):
     if body.template_id and not template:
         raise HTTPException(400, "模板已删除，请移除模板标签后独立提交")
     options = {"ratio": body.ratio, "transparent": body.transparent, "model": model, "effort": effort, "polish": body.polish, "size": body.size, "call_prompt": setting("polish_prompt", DEFAULT_POLISH_PROMPT) if body.polish else setting("call_prompt", DEFAULT_CALL_PROMPT), "image_requirements": IMAGE_REQUIREMENTS, "template_title": template['title'] if template else ''}
-    options['generation'] = generation_runtime.snapshot(sys.modules[__name__])
-    if body.image_backend is not None:
-        options['generation']['image_backend'].update(body.image_backend.model_dump(exclude_unset=True))
+    options['generation'] = generation
     options.update(stitch=body.stitch,after_upscale=body.after_upscale,source_asset_id=body.source_asset_id,upscale_injection=body.upscale_injection,stitch_prompt=normalize_redraw_prompt(setting('stitch_prompt',DEFAULT_STITCH_PROMPT)) if body.stitch or body.after_upscale else '',redraw_call_prompt=setting('call_prompt',DEFAULT_CALL_PROMPT) if body.stitch or body.after_upscale else '')
     if body.stitch or body.after_upscale:
         frozen=upscale_prompts.snapshot(sys.modules[__name__],body.upscale_policy)
@@ -1124,7 +1127,13 @@ def _create_jobs(body):
 
 
 def generation_signature(body):
-    return hashlib.sha256(json.dumps(body.model_dump(), sort_keys=True).encode()).hexdigest()
+    request = body.model_dump()
+    # Preserve receipts issued before the image source field was introduced.
+    if body.image_backend is not None and 'source' not in body.image_backend.model_fields_set:
+        request['image_backend'].pop('source')
+    if body.reroll_from is None:
+        request.pop('reroll_from')
+    return hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
 
 
 def check_generation_receipt(row, body):
@@ -1148,18 +1157,22 @@ def submitted_jobs(oid: str, session=Depends(require_user)):
     return json.loads(row['result'])
 
 
-def create_jobs(body):
-    with STORAGE.lock:return _create_jobs(body)
+def create_jobs(body, generation=None):
+    with STORAGE.lock:return _create_jobs(body, generation)
 
 
 @app.post("/api/jobs")
 async def add_jobs(body: JobInput, session=Depends(require_user)):
     if previous := generation_receipt(body):
         return previous
-    code, status = await command(CODEX_BIN, "login", "status", timeout=10)
-    if code != 0 or "api key" in status.lower():
-        raise HTTPException(409, "请先在连接设置中完成 ChatGPT 订阅登录")
-    return create_jobs(body)
+    generation = generation_runtime.snapshot(sys.modules[__name__], body.image_backend, body.reroll_from)
+    external = generation['image_backend']['source'] == 'api'
+    if not external or body.polish or body.stitch or body.after_upscale:
+        code, status = await command(CODEX_BIN, "login", "status", timeout=10)
+        if code != 0 or "api key" in status.lower():
+            message = "润色和超分验收需要连接 ChatGPT 订阅" if external else "请先在连接设置中完成 ChatGPT 订阅登录"
+            raise HTTPException(409, message)
+    return create_jobs(body, generation)
 
 
 class UpscaleInput(BaseModel):
@@ -1244,7 +1257,8 @@ async def save_source_asset(jid: str, session=Depends(require_user)):
 
 @app.post("/api/setup/probe")
 async def probe(session=Depends(require_user)):
-    body = JobInput(prompt="A single small matte black circle centered on a plain white background. Minimal geometric illustration, no text.", max_attempts=1, system_probe=True)
+    body = JobInput(prompt="A single small matte black circle centered on a plain white background. Minimal geometric illustration, no text.",
+                    max_attempts=1, system_probe=True, image_backend=generation_runtime.ImageSettings(source='subscription'))
     result = await add_jobs(body, session)
     set_setting("probe", result["ids"][0])
     return result
@@ -1623,6 +1637,7 @@ async def run_job(jid):
 
 
 generation_runtime.register(app, sys.modules[__name__])
+image_provider.register(app, sys.modules[__name__])
 library_tree.register(app, sys.modules[__name__])
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 

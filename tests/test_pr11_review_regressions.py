@@ -277,7 +277,7 @@ class ApiRegressions(unittest.TestCase):
                 response=self.helper.post('/api/jobs',payload)
             self.assertEqual(response.status_code,200,response.text)
             jid=response.json()['ids'][0];job=self.client.get('/api/jobs/'+jid).json()
-            self.assertEqual(job['options']['generation']['image_backend'],expected)
+            self.assertEqual(job['options']['generation']['image_backend'],{'source':'subscription',**expected})
             self.helper.post('/api/jobs/'+jid+'/cancel')
         self.assertEqual(self.studio.setting('image_backend',{}),baseline)
 

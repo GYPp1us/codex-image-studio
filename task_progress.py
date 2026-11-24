@@ -132,7 +132,8 @@ def project(job, paused=False):
         return value
     if options.get('generation'):
         current = mapping(job.get('generation_detail'))
-        mode = current.get('transport') or options['generation'].get('image_backend', {}).get('transport', 'images')
+        backend = options['generation'].get('image_backend', {})
+        mode = current.get('transport') or ('api' if backend.get('source') == 'api' else backend.get('transport', 'images'))
         keys = (['polishing'] if options.get('polish') else []) + ['sending'] + (['dispatching'] if mode in ('responses','cli') else []) + ['generating','receiving','saving']
         stage = job.get('stage') or 'sending'
         if stage == 'thinking': stage = 'dispatching'

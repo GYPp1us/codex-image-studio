@@ -14,12 +14,19 @@ import uvicorn
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=18788)
+    parser.add_argument("--rc2", action="store_true")
     args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     with tempfile.TemporaryDirectory(prefix="studio-library-qa-") as temp:
         os.environ["STUDIO_DATA"] = temp
         os.environ["CODEX_BIN"] = "image-studio-qa-unavailable"
         import app as studio
+        if args.rc2:
+            async def probe(provider):
+                if provider.api_key != "fixture-provider-key":
+                    return {"status": "failed", "message": "供应商拒绝访问，请检查 API 密钥或权限"}
+                return {"status": "ok", "message": "连接成功，模型已在目录中找到", "elapsed_ms": 162}
+            studio.image_provider.probe = probe
         studio.initialize()
         studio.set_setting("paused",True)
         image = Path(temp)/"assets"/"fixture.png"

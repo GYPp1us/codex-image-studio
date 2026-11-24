@@ -79,3 +79,31 @@ html[data-theme="dark"] #prompt::placeholder,html[data-theme="dark"] .input::pla
 .ref-strip .ref{width:80px;height:80px}.ref-preview{width:100%;height:100%;display:block}.ref-preview img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none}.ref-grab{position:absolute;left:0;bottom:0;width:32px;height:32px;display:grid;place-items:center;background:rgba(0,0,0,.55);color:white;touch-action:none;cursor:grab;border-radius:0 8px 0 0}.ref-number{position:absolute;right:5px;bottom:4px;min-width:16px;line-height:18px;text-align:center;font-size:10px;color:white;background:rgba(0,0,0,.55);border-radius:4px;pointer-events:none}.reference-dragging{opacity:.25}.reference-drag-ghost{position:fixed!important;z-index:999;pointer-events:none;box-shadow:0 6px 20px #0005;opacity:.9;will-change:transform}.reference-drag-ghost button{pointer-events:none}.template-refs{margin:4px -20px 12px;padding:4px 20px}
 .ref-strip .ref-add{width:80px;height:80px}.ref-strip .ref .rm{width:32px;height:32px;top:0;right:0;background:transparent}.ref-strip .ref .rm:before{content:"";position:absolute;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.55)}.ref-strip .ref .rm svg{position:relative}
 .v-reference-actions{display:none}.reference-preview .v-info,.reference-preview .v-more,.reference-preview .v-actions,.reference-preview .v-quick,.reference-preview .v-redraw{display:none!important}.reference-preview .v-reference-actions{display:block;position:absolute;bottom:0;left:0;right:0;padding:16px 20px calc(20px + env(safe-area-inset-bottom,0px));background:linear-gradient(transparent,#0c0c0acc);z-index:5}.v-reference-actions .primary{margin:0}.reference-preview.chrome-off .v-reference-actions{opacity:0;pointer-events:none}.reference-preview .v-reference-actions{transition:opacity var(--d2)}
+.provider-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.provider-choices .opt{display:flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:6px 8px;line-height:1.25;white-space:normal}
+.provider-choices .opt svg{flex:none}
+.provider-choices .opt.on{background:var(--sage);border-color:var(--sage-ink);box-shadow:none;color:var(--sage-ink)}
+.provider-heading{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.provider-heading small{font-size:11px;color:var(--ink-3);font-weight:400}
+.provider-model-row{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;margin-top:8px;padding:8px 11px;border-radius:10px;background:var(--surface-2);text-align:left;font-size:13px}
+.provider-model-row span{white-space:nowrap;color:var(--ink-2)}
+.provider-model-row strong{margin-inline-start:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.provider-model-row svg,.s-row[data-act=image-api] svg{flex:none}
+.provider-model-row[hidden],.opt[hidden]{display:none}
+.s-row[data-act=image-api] .s-r{max-width:46%}
+[data-image-api-label=settings]{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.provider-form{display:grid;gap:14px;padding-bottom:4px}
+.provider-fields{display:grid;gap:12px}
+.provider-fields .field-label{display:grid;gap:5px;margin:0;min-width:0}
+.provider-fields .input{min-height:46px;font-size:16px;margin:0}
+.provider-status{display:flex;align-items:center;min-height:44px;padding:7px 10px;margin:0;border:1px solid var(--line);border-radius:10px;line-height:1.45}
+.provider-status[data-tone=ok]{color:var(--sage-ink);background:var(--sage);border-color:transparent}
+.provider-status[data-tone=failed]{color:var(--red);background:var(--red-bg);border-color:transparent}
+.provider-status[data-tone=unverified]{color:var(--amber-ink);background:var(--amber);border-color:transparent}
+.provider-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.provider-actions .primary,.provider-actions .secondary{height:46px;width:100%;margin:0;justify-content:center}
+.provider-disconnect{justify-self:center;min-height:44px;margin-top:-6px}
+@media(min-width:600px) and (min-aspect-ratio:4/3){
+  .provider-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .provider-fields .field-label:first-child{grid-column:1/-1}
+}

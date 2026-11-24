@@ -7,7 +7,8 @@ const root=path.join(__dirname,'..');
 const port=Number(process.env.STUDIO_QA_PORT||18788),base='http://127.0.0.1:'+port;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function run(){
-  const server=cp.spawn(process.env.STUDIO_QA_PYTHON||'python',['tests/library_browser_fixture.py','--port',String(port)],{cwd:root,windowsHide:true,stdio:['ignore','ignore','inherit']});
+  const rc2=process.argv.includes('--rc2')?require('./rc2-browser.cjs'):null;
+  const server=cp.spawn(process.env.STUDIO_QA_PYTHON||'python',['tests/library_browser_fixture.py','--port',String(port),...(rc2?['--rc2']:[])],{cwd:root,windowsHide:true,stdio:['ignore','ignore','inherit']});
   let browser;
   try{
     for(let i=0;i<120;i++){if(server.exitCode!==null)throw Error('fixture exited '+server.exitCode);try{if((await fetch(base+'/api/health')).ok)break;}catch{}await pause(100);}
@@ -16,6 +17,7 @@ async function run(){
     const startup=process.argv.includes('--startup');
     const context=await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:1,isMobile:true,hasTouch:true,serviceWorkers:startup?'allow':'block'});
     await context.addCookies([{name:'studio_session',value:'fixture-local-session',url:base}]);
+    if(rc2)await rc2.seed(context,base);
     const page=await context.newPage(),errors=[],posts=[],reads=[];
     page.on('pageerror',e=>{errors.push(e.message);console.error('page error',e.message);});page.on('request',req=>{const p=new URL(req.url()).pathname;if(req.method()==='POST')posts.push(p);else reads.push(p);});
     page.setDefaultTimeout(10000);
@@ -51,6 +53,10 @@ async function run(){
     if(process.argv.includes('--quality')){await require('./library-quality.cjs').quality(page,context,base);assert.deepEqual(errors,[]);return;}
     if(process.argv.includes('--panels')){
       await require('./library-panels.cjs').panels(page);
+      assert.deepEqual(errors,[]);return;
+    }
+    if(rc2){
+      await rc2.check(page,context,base);
       assert.deepEqual(errors,[]);return;
     }
     await page.locator('[data-act=tab][data-tab=works]').click();

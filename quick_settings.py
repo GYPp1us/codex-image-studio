@@ -14,6 +14,7 @@ VALUES = {
     'quality': get_args(ImageSettings.model_fields['quality'].annotation),
     'image_model': IMAGE_MODELS,
     'transport': get_args(ImageSettings.model_fields['transport'].annotation),
+    'source': get_args(ImageSettings.model_fields['source'].annotation),
     'polish': ('toggle',), 'transparent': ('toggle',), 'fallback': ('toggle',),
 }
 
@@ -21,7 +22,7 @@ VALUES = {
 class QuickSetting(BaseModel):
     model_config = ConfigDict(extra='forbid')
     key: Literal['ratio', 'size', 'count', 'stitch', 'polish', 'transparent',
-                 'model', 'effort', 'image_model', 'quality', 'transport', 'partial_images', 'fallback']
+                 'model', 'effort', 'image_model', 'quality', 'source', 'transport', 'partial_images', 'fallback']
     value: StrictStr | StrictInt
     label: str = Field(default='', max_length=40)
 
@@ -31,7 +32,8 @@ class QuickSetting(BaseModel):
             raise ValueError('不支持的快速设置值')
         if self.key in ('count', 'partial_images'):
             minimum, maximum = (1, 20) if self.key == 'count' else (0, 3)
-            if type(self.value) is not int or not minimum <= self.value <= maximum:
+            # Previously saved presets remain readable and are displayed as one stepper per field.
+            if self.value != 'step' and (type(self.value) is not int or not minimum <= self.value <= maximum):
                 raise ValueError('快速设置数值超出范围')
         if self.key in ('model', 'effort'):
             if not isinstance(self.value, str) or not 1 <= len(self.value) <= 100:

@@ -200,7 +200,9 @@ function updateChrome(){
     const retryHidden=!hint&&!S.offline;
     const viewerRetry=$('#viewer .net-retry');if(viewerRetry)viewerRetry.hidden=retryHidden;
     const menuRetry=$('.art-actions .art-retry');if(menuRetry)menuRetry.hidden=retryHidden;
-    const want=hint?`<div class="banner net-status" role="status"><span>${hint}</span><button class="icon-btn" data-act="reconnect" aria-label="重新连接工作台" title="重新连接工作台">${icon('refresh',18)}</button></div>`:S.disconnected?`<div class="banner">${icon("alert",18)}<span>订阅尚未连接</span><button data-act="reconnect-set">连接订阅</button></div>`:S.offline?`<div class="banner">${icon("alert",18)}<span>与服务器的连接已断开</span><button data-act="reconnect">重新连接</button></div>`:S.paused&&S.tab!=="queue"?`<div class="banner">${icon("clock",18)}<span>调度已暂停，新任务不会开始</span><button data-act="unpause">恢复</button></div>`:"";
+    const needsSubscription=typeof StudioQuickSettings==='undefined'||StudioQuickSettings.source()==='subscription'||
+      S.tab==='create'&&(S.mode==='up'||S.composer.polish||S.composer.stitch!=='关');
+    const want=hint?`<div class="banner net-status" role="status"><span>${hint}</span><button class="icon-btn" data-act="reconnect" aria-label="重新连接工作台" title="重新连接工作台">${icon('refresh',18)}</button></div>`:S.disconnected&&needsSubscription?`<div class="banner">${icon("alert",18)}<span>订阅尚未连接</span><button data-act="reconnect-set">连接订阅</button></div>`:S.offline?`<div class="banner">${icon("alert",18)}<span>与服务器的连接已断开</span><button data-act="reconnect">重新连接</button></div>`:S.paused&&S.tab!=="queue"?`<div class="banner">${icon("clock",18)}<span>调度已暂停，新任务不会开始</span><button data-act="unpause">恢复</button></div>`:"";
     if(slot.dataset.h!==want){slot.innerHTML=want;slot.dataset.h=want;}}
   placeToast();
 }
@@ -291,7 +293,9 @@ function updateCreate(){
   $("#ref-count").textContent=`${c.refs.length} / 8`;
   StudioReferences.render($("#refs"),{read:()=>S.composer.refs,write:refs=>StudioService.setComposerRefs(refs),add:()=>pickerSheet()});
   $("#sum1").textContent=`${c.ratio} · ${c.count} 张`;
-  $("#sum2").textContent=[c.size==="自动"?"自动尺寸":c.size+" 长边",c.polish&&"润色",c.transparent&&"透明",c.stitch!=="关"&&"生成后 "+c.stitch+" 超分",(StudioService.backendLabel?.()||StudioService.modelName(c.model))+(c.polish?" · 润色 "+StudioService.modelName(c.model):"")].filter(Boolean).join(" · ");
+  const label=StudioService.backendLabel?.()||StudioService.modelName(c.model);
+  const apiSource=typeof StudioQuickSettings!=='undefined'&&StudioQuickSettings.source()==='api';
+  $("#sum2").textContent=[apiSource&&label,c.size==="自动"?"自动尺寸":c.size+" 长边",c.polish&&"润色 "+StudioService.modelName(c.model),c.transparent&&"透明",c.stitch!=="关"&&"生成后 "+c.stitch+" 超分",!apiSource&&label].filter(Boolean).join(" · ");
   updBp();
   if(typeof StudioQuickSettings!=='undefined')StudioQuickSettings.render();
 }
@@ -914,15 +918,28 @@ function deleteImage(...args){return StudioService.deleteImage(...args);}
 function loadTemplate(...args){return StudioService.loadTemplate(...args);}
 
 /* ---- sheets content ---- */
-function paramsSheet(){openSheet({title:"生成参数",html:paramsBody()});}
+function animateStep(output,direction){
+  if(!RM)output.animate([{transform:`translateY(${direction>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});
+}
+function paramsSheet(){
+  const layer=openSheet({title:"生成参数",html:paramsBody()});
+  StudioQuickSettings.paintParameters(layer);
+}
 function paramsBody(){
   const c=S.composer,o=(k,v,lab=v,sub="")=>`<button class="opt${sub?" tall":""}${c[k]===v?" on":""}" data-act="opt" data-k="${k}" data-v="${v}">${lab}${sub?`<small>${sub}</small>`:""}</button>`;
   const sw=(k,lab,sub)=>`<button class="row" data-act="sw" data-k="${k}" data-layout="width:100%"><span class="rl">${lab}<small>${sub}</small></span><span class="switch ${c[k]?"on":""}"></span></button>`;
   return `
-    <div class="field-label">图片模型</div><p class="note parameter-hint">长按参数选项可固定到创作页，点按应用到本次生成。</p><div class="opts backend-options">${typeof StudioQuickSettings!=='undefined'?StudioQuickSettings.imageModels.map(([value,label])=>`<button class="opt${StudioQuickSettings.backend().image_model===value?' on':''}" data-act="backend-opt" data-k="image_model" data-v="${value}">${label}</button>`).join(''):''}</div>
-    <div class="field-label">图片质量</div><div class="opts c4">${[['auto','自动'],['low','低'],['medium','中'],['high','高'],['xhigh','极高'],['max','最大']].map(([value,label])=>`<button class="opt${typeof StudioQuickSettings!=='undefined'&&StudioQuickSettings.backend().quality===value?' on':''}" data-act="backend-opt" data-k="quality" data-v="${value}">${label}</button>`).join('')}</div>
+    <div data-image-params>
+      <div class="field-label provider-heading">图片模型来源<small>长按选项可固定</small></div>
+      ${StudioImageProvider.sourceHTML()}
+      <div data-for-source="subscription">
+        <div class="field-label">图片模型</div><div class="opts backend-options">${StudioQuickSettings.imageModels.map(([value,label])=>`<button class="opt" data-act="backend-opt" data-k="image_model" data-v="${value}">${label}</button>`).join('')}</div>
+      </div>
+      <button type="button" class="provider-model-row" data-for-source="api" data-act="image-api" hidden><span>图片模型</span><strong data-image-api-label="composer"></strong>${icon('chevr',16)}</button>
+      <div class="field-label">图片质量</div><div class="opts c4">${[['auto','自动'],['low','低'],['medium','中'],['high','高'],['xhigh','极高'],['max','最大']].map(([value,label])=>`<button class="opt" data-act="backend-opt" data-k="quality" data-v="${value}">${label}</button>`).join('')}</div>
+    </div>
     <div class="field-label">画幅</div><div class="opts">${["1:1","3:2","2:3","16:9","9:16","自动"].map(v=>o("ratio",v)).join("")}</div>
-    <div class="row" data-layout="margin-top:8px"><span class="rl">数量<small>每张为独立会话</small></span><span class="stepper"><button data-act="cnt" data-d="-1" aria-label="减少">${icon("minus",18)}</button><output id="cnt">${c.count}</output><button data-act="cnt" data-d="1" aria-label="增加">${icon("plus",18)}</button></span></div>
+    <div class="row" data-layout="margin-top:8px"><span class="rl">数量<small>每张为独立任务</small></span><span class="stepper"><button data-act="cnt" data-d="-1" aria-label="减少数量">${icon("minus",18)}</button><output id="cnt" data-composer-count>${c.count}</output><button data-act="cnt" data-d="1" aria-label="增加数量">${icon("plus",18)}</button></span></div>
     <div class="field-label">图像尺寸</div><p class="note parameter-hint">请求原生生图尺寸，实际尺寸见图片详情。</p><div class="opts c4">${["自动","1K","2K","4K"].map(v=>o("size",v)).join("")}</div>
     ${sw("polish","帮我润色","由模型补全构图、光线与风格")}${sw("transparent","透明背景","由生图工具决定是否支持")}
     <div class="field-label">生成后超分</div><p class="note parameter-hint">每张生成完成后自动加入该倍率的超分任务。</p><div class="opts c4">${o("stitch","关")}${Object.keys(FACTORS).map(v=>o("stitch",v,v,FACTORS[v]+" 级")).join("")}</div>
@@ -1041,7 +1058,11 @@ app.addEventListener("click",async e=>{
     case"settings":await back();openSettings();break;
     case"scr-back":back();break;
     case"set-toggle":{const p=a.dataset.p,key='setting:'+p;if(StudioFeedback.busy(key))break;const old=getP(p),v=!old;setP(p,v);$(".switch",a).classList.toggle("on",v);try{await StudioFeedback.run(key,a,()=>settingChanged(p));}catch{setP(p,old);$(".switch",a)?.classList.toggle("on",old);}break;}
-    case"set-seg":{const p=a.dataset.p,key='setting:'+p;if(StudioFeedback.busy(key))break;const old=getP(p);setP(p,a.dataset.v);$$("button",a.parentElement).forEach(x=>x.classList.toggle("on",x===a));try{await StudioFeedback.run(key,a,()=>settingChanged(p));}catch{setP(p,old);$$("button",a.parentElement).forEach(x=>x.classList.toggle("on",x.dataset.v===old));}break;}
+    case"set-seg":{const p=a.dataset.p,key='setting:'+p;if(StudioFeedback.busy(key))break;
+      if(p==='imageBackend.source'&&a.dataset.v==='api'&&!StudioImageProvider.current().configured){
+        StudioImageProvider.open({onSaved:()=>{if(a.isConnected)a.click();}});break;
+      }
+      const old=getP(p);setP(p,a.dataset.v);$$("button",a.parentElement).forEach(x=>x.classList.toggle("on",x===a));try{await StudioFeedback.run(key,a,()=>settingChanged(p));}catch{setP(p,old);$$("button",a.parentElement).forEach(x=>x.classList.toggle("on",x.dataset.v===old));refresh();}break;}
     case"set-step":{const p=a.dataset.p,v=clamp(getP(p)+ +a.dataset.d,+a.dataset.min,+a.dataset.max);if(v===getP(p)){a.parentElement.animate([{transform:"translateX(0)"},{transform:`translateX(${a.dataset.d*4}px)`},{transform:"none"}],{duration:D(200)});break;}
       if(StudioFeedback.busy('setting:'+p))break;const old=getP(p);setP(p,v);const o=$(`[data-out="${p}"]`,topScreen());o.textContent=v;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});try{await StudioFeedback.run('setting:'+p,a,()=>settingChanged(p));}catch{setP(p,old);o.textContent=old;}break;}
     case"prompt-edit":promptEditor(a.dataset.k);break;
@@ -1067,7 +1088,7 @@ app.addEventListener("click",async e=>{
     case"backend-opt":if(typeof StudioQuickSettings!=='undefined')StudioQuickSettings.apply({key:a.dataset.k,value:a.dataset.v});break;
     case"opt":{const kk=a.dataset.k;S.composer[kk]=a.dataset.v;$$(`.opt[data-k="${kk}"]`,a.closest(".sheet,.landscape-parameters")||document).forEach(x=>x.classList.toggle("on",x===a));refresh();break;}
     case"sw":{const kk=a.dataset.k;S.composer[kk]=!S.composer[kk];$(".switch",a).classList.toggle("on",S.composer[kk]);refresh();break;}
-    case"cnt":{const c=S.composer;c.count=clamp(c.count+ +a.dataset.d,1,20);const o=$('output',a.closest('.stepper'));o.textContent=c.count;o.animate([{transform:`translateY(${a.dataset.d>0?6:-6}px)`,opacity:.3},{transform:"none",opacity:1}],{duration:D(200),easing:E.emph});refresh();break;}
+    case"cnt":{const output=$('output',a.closest('.stepper'));StudioQuickSettings.step('count',Number(a.dataset.d),output);break;}
     case"tpl-menu":if(globalThis.StudioFolders)await StudioService.ensureTemplates();tplMenuSheet();break;
     case"prompt-full":openComposerPrompt(a);break;
     case"tpl-load":loadTemplate(id);break;

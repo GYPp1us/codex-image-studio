@@ -75,7 +75,7 @@ async function fixture({unauth=false,failQuick=false,huge=false,delayInfo=null,f
  window.HTMLElement.prototype.setPointerCapture=function(){};window.HTMLElement.prototype.blur=function(){};
  const mediaListeners=[],media={matches:systemReduce,addEventListener:(type,listener)=>{if(type==='change')mediaListeners.push(listener);}};
  const context=vm.createContext({document,window,console,Headers,FormData,AbortController,fetch,history,location:{href:'http://fixture/'},navigator:{clipboard:{writeText:async()=>{}},vibrate(){}},localStorage:{getItem:key=>stored[key]??(key==='studio_draft'&&legacyDraft?JSON.stringify(legacyDraft):null),setItem(key,value){stored[key]=value;}},matchMedia:query=>query.includes('color-scheme')?{matches:systemDark,addEventListener(){}}:media,performance,addEventListener,requestAnimationFrame:fn=>setImmediate(()=>fn(performance.now())),cancelAnimationFrame:clearImmediate,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),MutationObserver:window.MutationObserver,getComputedStyle:()=>({opacity:'1',getPropertyValue:()=> '0px'}),StudioImages:{status:async()=>({bytes:0,count:0}),clear:async()=>{}},Image:function(){const image=document.createElement("img");Object.defineProperty(image,"src",{get(){return image.getAttribute("src")||"";},set(value){image.setAttribute("src",value);queueMicrotask(()=>image.onload?.());}});Object.defineProperty(image,"naturalWidth",{value:512});Object.defineProperty(image,"naturalHeight",{value:512});image.decode=()=>Promise.resolve();return image;},devicePixelRatio:1,visualViewport:null});
- for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-generation.js','studio-tasks.js','studio-upscale-prompts.js','studio-recovery.js','studio-quick-settings.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
+ for(const file of ['studio-theme.js','studio-layout.js','studio-feedback.js','studio-progress.js','studio-ui.js','studio-failure-map.js','studio-chrome.js','studio-zoom.js','studio-native-download.js','studio-download.js','studio-references.js','studio-picker.js','studio-avatar.js','studio-selection.js','studio-generation.js','studio-tasks.js','studio-upscale-prompts.js','studio-recovery.js','studio-quick-settings.js','studio-image-provider.js','studio-service.js'])vm.runInContext(fs.readFileSync('static/'+file,'utf8'),context,{filename:file});
  await vm.runInContext('studioReady',context);
  return {context,document,requests,stored,setSystemReduce(value){media.matches=value;mediaListeners.forEach(fn=>fn({matches:value}));},flushTimers(ms){for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}},run:code=>vm.runInContext(code,context),service:vm.runInContext('StudioService',context),prefs,plan};
 }
@@ -654,35 +654,35 @@ test('failed pin save rolls back and leaves the editor and typed name for retry'
  const editor=f.document.querySelector('.quick-editor');editor.querySelector('[data-quick-name]').value='保留名称';editor.querySelector('[data-quick-save]').click();await tick();await tick();await tick();
  assert.equal(f.run('S.settings.quickSettings.length'),0);assert.ok(editor.isConnected);assert.equal(editor.querySelector('[data-quick-name]').value,'保留名称');
 });
-test('quick setting drop uses the last pointer position even before an animation frame',async()=>{
- const f=await fixture();f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:''},{key:'ratio',value:'3:2',label:''},{key:'ratio',value:'2:3',label:''}];renderPage()`);
+test('a drag uses the last pointer position and moves all choices of a parameter together',async()=>{
+ const f=await fixture();f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:''},{key:'size',value:'auto',label:''},{key:'ratio',value:'3:2',label:''},{key:'quality',value:'high',label:''}];renderPage()`);
  const box=f.document.querySelector('.quick-strip');box.getBoundingClientRect=()=>({left:0,right:300,top:0,bottom:50,width:300,height:50});
  for(const el of box.children)el.getBoundingClientRect=()=>{const i=[...box.children].indexOf(el);return {left:i*100,right:i*100+90,top:0,bottom:50,width:90,height:50};};
  const first=box.querySelector('[data-quick-id="ratio=1:1"]');quickPointer(f,first,'pointerdown',20);f.flushTimers(420);quickPointer(f,box,'pointermove',270);quickPointer(f,box,'pointerup',270);await tick();await tick();await tick();
- assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','1:1']);
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['auto','high','1:1','3:2']);
 });
 test('rapid keyboard reorders serialize and preserve both changes while saving',async()=>{
  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({settingsGate:gate});
- f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:''},{key:'ratio',value:'3:2',label:''},{key:'ratio',value:'2:3',label:''}];renderPage()`);
+ f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:''},{key:'size',value:'auto',label:''},{key:'ratio',value:'3:2',label:''},{key:'quality',value:'high',label:''}];renderPage()`);
  const box=f.document.querySelector('.quick-strip'),first=box.querySelector('[data-quick-id="ratio=1:1"]');
  function move(){const e=new f.context.window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(e,{key:'ArrowRight',altKey:true});first.dispatchEvent(e);}
  move();await tick();move();await tick();assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,1);
  assert.match(f.document.querySelector('.quick-save-state').textContent,/保存/);
  release();await tick();await tick();await tick();await tick();
- assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','1:1']);
- const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,2);assert.deepEqual(writes[1].body.quick_settings.map(p=>p.value),['3:2','2:3','1:1']);
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['auto','high','1:1','3:2']);
+ const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,2);assert.deepEqual(writes[1].body.quick_settings.map(p=>p.value),['auto','high','1:1','3:2']);
 });
 
 test('three delayed reorder intents use each preceding saved order',async()=>{
  let release;const gate=new Promise(resolve=>release=resolve),f=await fixture({settingsGate:gate});
- f.run(`S.settings.quickSettings=['1:1','3:2','2:3','16:9'].map(value=>({key:'ratio',value,label:''}));renderPage()`);
+ f.run(`S.settings.quickSettings=[['ratio','1:1'],['size','auto'],['quality','high'],['transport','cli']].map(([key,value])=>({key,value,label:''}));renderPage()`);
  const first=f.document.querySelector('[data-quick-id="ratio=1:1"]');
  for(let i=0;i<3;i++){const e=new f.context.window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(e,{key:'ArrowRight',altKey:true});first.dispatchEvent(e);await tick();}
  assert.equal(f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH').length,1);
  release();for(let i=0;i<10;i++)await tick();
- assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['3:2','2:3','16:9','1:1']);
+ assert.deepEqual(Array.from(f.run('S.settings.quickSettings.map(p=>p.value)')),['auto','high','cli','1:1']);
  const writes=f.requests.filter(r=>r.path==='/api/settings'&&r.method==='PATCH');assert.equal(writes.length,3);
- assert.deepEqual(writes[2].body.quick_settings.map(p=>p.value),['3:2','2:3','16:9','1:1']);
+ assert.deepEqual(writes[2].body.quick_settings.map(p=>p.value),['auto','high','cli','1:1']);
 });
 test('removing and undoing a shortcut restores its original place without changing the draft',async()=>{
  const f=await fixture();f.run(`S.settings.quickSettings=[{key:'ratio',value:'1:1',label:'方形'},{key:'ratio',value:'3:2',label:'横幅'},{key:'size',value:'2048',label:'大图'}];renderPage()`);
@@ -710,7 +710,7 @@ test('failed avatar reset restores the trigger and does not change save availabi
 test('a quick backend choice persists only the selected key and inherits later global changes',async()=>{
  const f=await fixture();f.run(`StudioQuickSettings.apply({key:'image_model',value:'gpt-image-2.6-flare'});S.settings.imageBackend.quality='low';S.settings.imageBackend.transport='responses'`);
  assert.deepEqual(JSON.parse(f.run('JSON.stringify(S.composer.imageBackend)')),{image_model:'gpt-image-2.6-flare'});
- assert.deepEqual(JSON.parse(f.run('JSON.stringify(StudioQuickSettings.backend())')),{transport:'responses',fallback:true,image_model:'gpt-image-2.6-flare',quality:'low',partial_images:2});
+ assert.deepEqual(JSON.parse(f.run('JSON.stringify(StudioQuickSettings.backend())')),{source:'subscription',transport:'responses',fallback:true,image_model:'gpt-image-2.6-flare',quality:'low',partial_images:2});
  f.run("S.composer.prompt='partial backend';document.querySelector('#gen').disabled=false");await f.service.generate();
  assert.deepEqual(f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST').body.image_backend,{image_model:'gpt-image-2.6-flare'});
 });
@@ -721,5 +721,5 @@ test('a generation without backend overrides lets the server select current sett
 test('reroll uses the original task frozen backend rather than current composer or global settings',async()=>{
  const original={transport:'responses',fallback:false,image_model:'gpt-image-2.6-sunburst',quality:'high',partial_images:1};
  const f=await fixture({rerollBackend:original});f.run("S.settings.imageBackend.image_model='gpt-image-2';S.composer.imageBackend={image_model:'gpt-image-2.6-flare'}");
- await f.service.reroll('asset');const req=f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST');assert.ok(req);assert.deepEqual(req.body.image_backend,original);
+ await f.service.reroll('asset');const req=f.requests.find(r=>r.path==='/api/jobs'&&r.method==='POST');assert.ok(req);assert.deepEqual(req.body.image_backend,{source:'subscription',...original});
 });

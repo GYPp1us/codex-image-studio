@@ -3,20 +3,28 @@
 const StudioQuickSettings=(()=>{
   const HOLD=420,SLOP=8,MAX=24;
   const imageModels=[['gpt-image-2','Image 2'],['gpt-image-2.5-sunburst','2.5 Sunburst'],['gpt-image-2.5-flare','2.5 Flare'],['gpt-image-2.6-sunburst','2.6 Sunburst'],['gpt-image-2.6-flare','2.6 Flare']];
-  const groups={ratio:'画幅',size:'尺寸',count:'数量',stitch:'生成后超分',polish:'帮我润色',transparent:'透明背景',model:'文本模型',effort:'思考强度',image_model:'图片模型',quality:'图片质量',transport:'生成通道',partial_images:'显影帧',fallback:'允许 CLI 降级'};
-  const backendKeys=new Set(['image_model','quality','transport','partial_images','fallback']);
-  const labels={auto:'自动',low:'低',medium:'中',high:'高',xhigh:'极高',max:'最大',images:'图片直连',responses:'Responses',cli:'CLI'};
+  const groups={ratio:'画幅',size:'尺寸',count:'数量',stitch:'生成后超分',polish:'帮我润色',transparent:'透明背景',model:'文本模型',effort:'思考强度',image_model:'图片模型',quality:'图片质量',source:'图片模型来源',transport:'生成通道',partial_images:'显影帧',fallback:'允许 CLI 降级'};
+  const backendKeys=new Set(['image_model','quality','source','transport','partial_images','fallback']);
+  const labels={auto:'自动',low:'低',medium:'中',high:'高',xhigh:'极高',max:'最大',images:'图片直连',responses:'Responses',cli:'CLI',subscription:'ChatGPT 订阅',api:'第三方 API'};
+  const quantities={count:{min:1,max:20,unit:'张'},partial_images:{min:0,max:3,unit:'帧'}};
+  const apiQuality=new Set(['auto','low','medium','high']);
   let press=null,suppress=null,saving=false,frame=0,queue=Promise.resolve(),pending=0,sequence=0;
-  const pins=()=>S.settings.quickSettings||[];
+  const savedPins=()=>S.settings.quickSettings||[];
   const key=pin=>pin.key+'='+String(pin.value);
   const backend=()=>({...S.settings.imageBackend,...S.composer.imageBackend});
+  const source=()=>backend().source||'subscription';
+  const quality=()=>{const value=backend().quality;return source()==='api'&&!apiQuality.has(value)?'auto':value;};
   const canonical=(name,value)=>name==='ratio'?(value==='自动'?'auto':value):name==='size'?({'自动':'auto','1K':'1024','2K':'2048','4K':'4096'}[value]||value):name==='stitch'?(value==='关'?0:parseInt(value)):value;
-  const draftValue=pin=>backendKeys.has(pin.key)?backend()[pin.key]:canonical(pin.key,S.composer[pin.key]);
+  function draftValue(pin){
+    if(pin.key==='source')return source();
+    if(pin.key==='quality')return quality();
+    return backendKeys.has(pin.key)?backend()[pin.key]:canonical(pin.key,S.composer[pin.key]);
+  }
   const active=pin=>pin.value==='toggle'?!!draftValue(pin):draftValue(pin)===pin.value;
   function title(pin){
     if(pin.label)return pin.label;
     const value=pin.value;
-    if(value==='toggle')return groups[pin.key];
+    if(value==='toggle'||value==='step')return groups[pin.key];
     if(pin.key==='image_model')return imageModels.find(x=>x[0]===value)?.[1]||value;
     if(pin.key==='model')return StudioService.modelName(value);
     if(pin.key==='count')return value+' 张';
@@ -25,27 +33,107 @@ const StudioQuickSettings=(()=>{
     if(pin.key==='size')return value==='auto'?'自动尺寸':({'1024':'1K','2048':'2K','4096':'4K'}[value]||value);
     return labels[value]||value;
   }
+  function pins(){
+    const seen=new Set();
+    return savedPins().flatMap(pin=>{
+      if(!Object.hasOwn(quantities,pin.key))return [pin];
+      if(seen.has(pin.key))return [];
+      seen.add(pin.key);
+      const custom=pin.label&&pin.label!==title({...pin,label:''});
+      return [{...pin,value:'step',label:custom?pin.label:''}];
+    });
+  }
+  function entries(items){
+    const units=new Map();
+    for(const pin of items){
+      if(!units.has(pin.key))units.set(pin.key,{key:pin.key,pins:[]});
+      units.get(pin.key).pins.push(pin);
+    }
+    return [...units.values()];
+  }
+  function shift(items,name,delta){
+    const order=entries(items),from=order.findIndex(unit=>unit.key===name);
+    if(from<0)return items;
+    const to=clamp(from+delta,0,order.length-1);
+    if(from===to)return items;
+    [order[from],order[to]]=[order[to],order[from]];
+    return order.flatMap(unit=>unit.pins);
+  }
   function available(pin){
     if(pin.key==='model')return StudioService.models().some(model=>model.id===pin.value);
     if(pin.key==='effort')return StudioService.models().find(model=>model.id===S.composer.model)?.efforts.includes(pin.value);
+    if(source()==='api'&&(['image_model','transport','partial_images','fallback'].includes(pin.key)||pin.key==='quality'&&!apiQuality.has(pin.value)))return false;
     return true;
   }
   function html(){
     return '<section class="card quick-settings" aria-label="快速设置" hidden><div class="quick-strip" role="group" aria-label="固定的快速设置"></div></section><span class="quick-save-state" role="status"></span>';
   }
+  function unitHTML(unit){
+    const pin=unit.pins[0],id=esc(key(pin)),name=esc(groups[unit.key]);
+    const common=`class="quick-unit quick-chip" data-quick-unit="${unit.key}"`;
+    if(pin.value==='step'){
+      const label=esc(title(pin));
+      const control=(direction,sign)=>`<button type="button" data-quick-step="${direction}" aria-label="${direction<0?'减少':'增加'}${name}">${icon(sign,16)}</button>`;
+      return `<div ${common} data-quick-kind="number" role="group" aria-label="${label}"><button type="button" class="quick-number-label" data-quick-id="${id}" aria-label="编辑${label}"><span>${label}</span>${icon('grip',14)}</button><div class="stepper" aria-label="${name}">${control(-1,'minus')}<output aria-live="polite"></output>${control(1,'plus')}</div></div>`;
+    }
+    if(unit.pins.length===1){
+      return `<div ${common} data-quick-kind="single" role="group" aria-label="${name}"><button type="button" class="quick-single" data-quick-id="${id}"><small>${name}</small><span>${esc(title(pin))}</span></button></div>`;
+    }
+    return `<div ${common} data-quick-kind="group" role="group" aria-label="${name}"><small class="quick-group-label">${name}${icon('grip',12)}</small><div class="quick-choices">${unit.pins.map(option=>
+      `<button type="button" data-quick-id="${esc(key(option))}">${esc(title(option))}</button>`).join('')}</div></div>`;
+  }
   function render(){
+    const items=pins(),units=entries(items),byId=new Map(items.map(pin=>[key(pin),pin]));
     for(const box of document.querySelectorAll('.quick-strip')){
       if(press?.box===box)continue;
       const scroll=box.scrollLeft;
-      box.parentElement.hidden=!pins().length;
-      syncList(box,pins(),key,pin=>`<button type="button" class="quick-chip${active(pin)?' on':''}" data-quick-id="${esc(key(pin))}" aria-pressed="${active(pin)}" aria-disabled="${!available(pin)}" aria-label="${esc(groups[pin.key]+' · '+title(pin))}；长按排序或编辑"><small>${esc(groups[pin.key])}</small><span>${esc(title(pin))}</span></button>`);
+      box.parentElement.hidden=!units.length;
+      syncList(box,units,unit=>unit.key,unitHTML);
+      for(const button of box.querySelectorAll('[data-quick-id]')){
+        const pin=byId.get(button.dataset.quickId);
+        if(pin.value==='step')continue;
+        button.classList.toggle('on',active(pin));
+        button.setAttribute('aria-pressed',String(active(pin)));
+        button.setAttribute('aria-disabled',String(!available(pin)));
+      }
+      for(const unit of box.querySelectorAll('[data-quick-kind="number"]')){
+        const name=unit.dataset.quickUnit,value=draftValue({key:name}),{min,max,unit:suffix}=quantities[name],enabled=available({key:name,value:'step'});
+        const output=$('output',unit),text=value+' '+suffix;
+        if(output.textContent!==text)output.textContent=text;
+        $('[data-quick-step="-1"]',unit).disabled=!enabled||value<=min;
+        $('[data-quick-step="1"]',unit).disabled=!enabled||value>=max;
+        unit.classList.toggle('quick-unavailable',!enabled);
+      }
       box.scrollLeft=scroll;
     }
+    paintSaving();
+    paintParameters();
+  }
+  function paintSaving(){
     for(const state of document.querySelectorAll('.quick-save-state'))state.textContent=saving?'正在保存快捷项':'';
-    for(const button of document.querySelectorAll('[data-act="backend-opt"]'))button.classList.toggle('on',String(backend()[button.dataset.k])===button.dataset.v);
+  }
+  function paintParameters(root=document){
+    const external=source()==='api';
+    for(const section of root.querySelectorAll('[data-image-params]')){
+      for(const el of section.querySelectorAll('[data-for-source]'))el.hidden=el.dataset.forSource!==source();
+      for(const button of section.querySelectorAll('[data-act="backend-opt"]')){
+        const name=button.dataset.k,value=button.dataset.v,on=draftValue({key:name})===value;
+        button.classList.toggle('on',on);
+        button.setAttribute('aria-pressed',String(on));
+        if(name==='quality')button.hidden=external&&!apiQuality.has(value);
+      }
+    }
+    for(const output of root.querySelectorAll('[data-composer-count]')){
+      const value=String(S.composer.count);
+      if(output.textContent!==value)output.textContent=value;
+    }
+    StudioImageProvider.paint();
   }
   function apply(pin){
-    if(!available(pin)){toast('当前文本模型不支持此选项，长按可编辑或移除');return;}
+    if(pin.key==='source'&&pin.value==='api'&&!StudioImageProvider.current().configured){
+      StudioImageProvider.open({onSaved:()=>apply(pin)});return;
+    }
+    if(!available(pin)){toast('当前模型或来源不支持此选项');return;}
     const value=pin.value==='toggle'?!draftValue(pin):pin.value;
     if(backendKeys.has(pin.key))S.composer.imageBackend={...S.composer.imageBackend,[pin.key]:value};
     else{
@@ -55,16 +143,23 @@ const StudioQuickSettings=(()=>{
         if(!model.efforts.includes(S.composer.effort))S.composer.effort=model.default_effort;
       }
     }
-    StudioService.saveDraft();refresh();render();
-    if(typeof StudioLandscape!=='undefined')StudioLandscape.parameters();
+    StudioService.saveDraft();refresh();
+  }
+  function step(name,direction,output){
+    const {min,max}=quantities[name],value=Number(draftValue({key:name}));
+    const next=clamp(value+direction,min,max);
+    if(next===value)return;
+    apply({key:name,value:next});
+    if(output?.isConnected)animateStep(output,direction);
   }
   function commit(change,button){
     const previous=queue,scope=StudioService.sessionScope();
-    pending++;saving=true;render();
+    pending++;saving=true;paintSaving();
     const operation=StudioFeedback.run('quick-settings:save:'+ ++sequence,button,async()=>{
       await previous;
       if(scope!==StudioService.sessionScope())return false;
-      const before=pins(),next=typeof change==='function'?change(before):change;
+      const before=savedPins(),current=pins(),next=typeof change==='function'?change(current):change;
+      if(next===current)return true;
       if(next.length>MAX){toast('最多固定 '+MAX+' 个选项');return false;}
       S.settings.quickSettings=next;render();
       try{await StudioService.saveQuickSettings(next);return scope===StudioService.sessionScope();}
@@ -77,7 +172,16 @@ const StudioQuickSettings=(()=>{
   function editor(pin,source=null){
     if(saving){toast('正在保存快速设置，请稍候');return;}
     const existing=pins().find(item=>key(item)===key(pin)),original=existing||pin;
-    const layer=openSheet({stack:true,title:existing?'编辑快速设置':'固定到快速设置',cls:'quick-editor',html:`<p class="note">${esc(groups[pin.key])} · ${esc(title({...pin,label:''}))}</p><label class="field-label">显示名称<input class="input" data-quick-name value="${esc(title(original))}" maxlength="40" autocomplete="off"></label><p class="note">点按快捷项应用到本次生成。长按后左右拖动排序，原地松开可编辑。</p><div class="quick-editor-actions"><button class="primary" data-quick-save>${existing?'保存名称':'固定此选项'}</button>${existing?'<button class="secondary danger" data-quick-remove>移除快捷项</button><div class="btn-row"><button class="secondary" data-quick-shift="-1">向前移动</button><button class="secondary" data-quick-shift="1">向后移动</button></div>':''}</div>`});
+    const grouped=pins().filter(item=>item.key===pin.key).length>1,number=pin.value==='step';
+    const detail=number?groups[pin.key]:[groups[pin.key],title({...pin,label:''})].filter((value,i,all)=>all.indexOf(value)===i).join(' · ');
+    const move=grouped?['整组前移','整组后移']:['向前移动','向后移动'];
+    const layer=openSheet({stack:true,title:existing?'编辑快速设置':'固定到快速设置',cls:'quick-editor',html:`
+      <p class="note">${esc(detail)}</p>
+      <label class="field-label">显示名称<input class="input" data-quick-name value="${esc(title(original))}" maxlength="40" autocomplete="off"></label>
+      <p class="note">${number?'用加减号调整本次生成的数值。':grouped?'长按组内任一选项可拖动整组。':'长按拖动可调整顺序。'}</p>
+      <div class="quick-editor-actions"><button class="primary" data-quick-save>${existing?'保存名称':number?'固定数字控件':'固定此选项'}</button>
+        ${existing?`<div class="quick-editor-tools"><button class="secondary" data-quick-shift="-1">${move[0]}</button><button class="secondary" data-quick-shift="1">${move[1]}</button></div><button class="link-btn danger" data-quick-remove>移除快捷项</button>`:''}
+      </div>`});
     const revision=layer.dataset.revision;
     layer.cleanup=()=>{
       const target=source?.isConnected?source:document.querySelector('.gen-bar [data-act="params"]');
@@ -96,9 +200,16 @@ const StudioQuickSettings=(()=>{
         toast('已移除快捷项',{action:'撤销',run:()=>commit(current=>{if(current.some(item=>key(item)===key(pin)))return current;const next=[...current];next.splice(Math.min(index,next.length),0,original);return next;},null)});
       }
     };
-    layer.querySelectorAll('[data-quick-shift]').forEach(button=>button.onclick=async()=>{
-      if(await commit(current=>{const next=[...current],from=next.findIndex(item=>key(item)===key(pin));if(from<0)return next;const to=clamp(from+Number(button.dataset.quickShift),0,next.length-1);[next[from],next[to]]=[next[to],next[from]];return next;},button))toast('顺序已保存');
-    });
+    const arrows=$$('[data-quick-shift]',layer);
+    function paintArrows(){
+      const order=entries(pins()),index=order.findIndex(unit=>unit.key===pin.key);
+      for(const button of arrows)button.disabled=index<0||index+Number(button.dataset.quickShift)<0||index+Number(button.dataset.quickShift)>=order.length;
+    }
+    paintArrows();
+    for(const button of arrows)button.onclick=async()=>{
+      if(await commit(current=>shift(current,pin.key,Number(button.dataset.quickShift)),button))toast('顺序已保存');
+      paintArrows();
+    };
     layer.querySelector('[data-quick-name]').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){event.preventDefault();layer.querySelector('[data-quick-save]').click();}});
   }
   function fromButton(button){
@@ -108,66 +219,76 @@ const StudioQuickSettings=(()=>{
     if(action==='opt'){name=button.dataset.k;value=canonical(name,button.dataset.v);}
     if(action==='backend-opt'){name=button.dataset.k;value=button.dataset.v;if(name==='partial_images')value=Number(value);}
     if(action==='sw'){name=button.dataset.k;value='toggle';}
-    if(action==='cnt'){name='count';value=S.composer.count;}
+    if(action==='cnt'){name='count';value='step';}
     if(action==='model-select'||action==='model-default'){name='model';value=button.dataset.id;}
     if(action==='set-seg'||action==='set-toggle'||action==='set-step'){
       const path=button.dataset.p||'';
       if(path.startsWith('imageBackend.')||path.startsWith('defaults.')){
         name=path.split('.')[1];
-        value=action==='set-toggle'?'toggle':action==='set-step'?getP(path):canonical(name,button.dataset.v);
-        if(name==='partial_images')value=Number(value);
+        value=action==='set-toggle'?'toggle':action==='set-step'?'step':canonical(name,button.dataset.v);
       }
     }
-    return name in groups&&value!==undefined?{key:name,value,label:''}:null;
+    return Object.hasOwn(groups,name)&&value!==undefined?{key:name,value,label:''}:null;
   }
   function finish(cancel=false){
     const held=press;if(!held)return;
     if(!cancel&&held.ghost){cancelAnimationFrame(frame);frame=0;drag();if(press!==held)return;}
     press=null;clearTimeout(held.timer);cancelAnimationFrame(frame);frame=0;
-    held.button.classList.remove('quick-holding','quick-dragging');held.box?.classList.remove('quick-ordering');
+    (held.unit||held.button).classList.remove('quick-holding','quick-dragging');held.box?.classList.remove('quick-ordering');
     if(held.box?.hasPointerCapture?.(held.pointer))held.box.releasePointerCapture(held.pointer);
-    if(held.fired)suppress={button:held.button,until:performance.now()+650};
+    if(held.fired)suppress={button:held.unit||held.button,until:performance.now()+650};
     if(held.ghost){
-      const target=held.button.getBoundingClientRect(),moved=Math.abs(held.x-held.startX)>SLOP;
+      const target=held.unit.getBoundingClientRect(),moved=Math.abs(held.x-held.startX)>SLOP;
+      const order=[...held.box.children].map(unit=>unit.dataset.quickUnit);
       if(!cancel&&moved&&!RM)held.ghost.animate([{transform:held.ghost.style.transform},{transform:`translate3d(${target.left-held.left}px,0,0) scale(1)`}],{duration:D(180),easing:E.emph}).finished.catch(()=>{}).finally(()=>held.ghost.remove());
       else held.ghost.remove();
-      if(!cancel&&moved){const order=[...held.box.querySelectorAll('[data-quick-id]')].map(button=>button.dataset.quickId);if(order.join('|')!==pins().map(key).join('|'))commit(order.map(id=>pins().find(pin=>key(pin)===id)),held.button);}
-      else if(!cancel)editor(held.pin,held.button);
+      if(!cancel&&moved&&order.join('|')!==entries(pins()).map(unit=>unit.key).join('|')){
+        commit(current=>order.flatMap(name=>current.filter(pin=>pin.key===name)),held.button);
+        return;
+      }
+      if(!cancel&&!moved)editor(held.pin,held.button);
     }
     render();
   }
   function drag(){
     frame=0;const held=press;if(!held?.ghost)return;
-    if(!held.button.isConnected)return finish(true);
+    if(!held.unit.isConnected)return finish(true);
     const box=held.box.getBoundingClientRect();
     const speed=held.x<box.left+36?-1:held.x>box.right-36?1:0;
     if(speed)held.box.scrollLeft+=speed*7;
     const dx=clamp(held.x-held.startX,box.left-held.left-held.width*.25,box.right-held.left-held.width*.75);
     held.ghost.style.transform=`translate3d(${dx}px,0,0) scale(1.04)`;
-    const others=[...held.box.querySelectorAll('[data-quick-id]')].filter(button=>button!==held.button);
-    const next=others.find(button=>{const rect=button.getBoundingClientRect();return held.left+held.width/2+dx<rect.left+rect.width/2;});
-    const before=new Map(others.map(button=>[button,button.getBoundingClientRect().left]));
-    held.box.insertBefore(held.button,next||null);
-    for(const button of others){const offset=before.get(button)-button.getBoundingClientRect().left;if(offset)button.animate([{transform:`translateX(${offset}px)`},{transform:'none'}],{duration:D(180),easing:E.emph});}
+    const others=[...held.box.children].filter(unit=>unit!==held.unit);
+    const next=others.find(unit=>{const rect=unit.getBoundingClientRect();return held.left+held.width/2+dx<rect.left+rect.width/2;});
+    if((next||null)!==held.unit.nextElementSibling){
+      const before=new Map(others.map(unit=>[unit,unit.getBoundingClientRect().left]));
+      held.box.insertBefore(held.unit,next||null);
+      for(const unit of others){const offset=before.get(unit)-unit.getBoundingClientRect().left;if(offset&&!RM)unit.animate([{transform:`translateX(${offset}px)`},{transform:'none'}],{duration:D(180),easing:E.emph});}
+    }
     if(speed)frame=requestAnimationFrame(drag);
   }
   document.addEventListener('pointerdown',event=>{
     if(event.button>0)return;
-    const button=event.target.closest('button'),id=button?.dataset.quickId,pin=id?pins().find(pin=>key(pin)===id):fromButton(button);
+    suppress=null;
+    const unit=event.target.closest('[data-quick-unit]');
+    const control=event.target.closest('button');
+    if(control?.hasAttribute('data-quick-step'))return;
+    const button=control||unit?.querySelector('[data-quick-id]'),id=button?.dataset.quickId;
+    const pin=id?pins().find(pin=>key(pin)===id):fromButton(button);
     if(!pin)return;
     if(press){finish(true);return;}
-    button.classList.add('quick-holding');
-    const held={button,pin,box:button.closest('.quick-strip'),pointer:event.pointerId,startX:event.clientX,startY:event.clientY,x:event.clientX};
+    (unit||button).classList.add('quick-holding');
+    const held={button,pin,unit,box:unit?.parentElement,pointer:event.pointerId,startX:event.clientX,startY:event.clientY,x:event.clientX};
     press=held;
     held.timer=setTimeout(()=>{
       if(press!==held||!button.isConnected)return finish(true);
       held.fired=true;navigator.vibrate?.(8);
       if(!held.box){editor(pin,button);return;}
       if(saving){finish(true);toast('正在保存快速设置，请稍候');return;}
-      const rect=button.getBoundingClientRect();Object.assign(held,{left:rect.left,width:rect.width});
-      held.ghost=button.cloneNode(true);held.ghost.removeAttribute('data-quick-id');held.ghost.setAttribute('aria-hidden','true');held.ghost.className='quick-chip quick-drag-ghost';
+      const rect=unit.getBoundingClientRect();Object.assign(held,{left:rect.left,width:rect.width});
+      held.ghost=unit.cloneNode(true);held.ghost.removeAttribute('data-quick-unit');held.ghost.removeAttribute('data-quick-id');held.ghost.setAttribute('aria-hidden','true');held.ghost.inert=true;held.ghost.classList.remove('quick-holding');held.ghost.classList.add('quick-drag-ghost');
       Object.assign(held.ghost.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
-      document.body.append(held.ghost);button.classList.add('quick-dragging');held.box.classList.add('quick-ordering');held.box.setPointerCapture?.(event.pointerId);drag();
+      document.body.append(held.ghost);unit.classList.add('quick-dragging');held.box.classList.add('quick-ordering');held.box.setPointerCapture?.(event.pointerId);drag();
     },HOLD);
   },true);
   document.addEventListener('pointermove',event=>{
@@ -182,20 +303,28 @@ const StudioQuickSettings=(()=>{
   document.addEventListener('contextmenu',event=>{if(fromButton(event.target.closest('button'))||event.target.closest('[data-quick-id]'))event.preventDefault();});
   document.addEventListener('click',event=>{
     if(suppress&&performance.now()<suppress.until&&suppress.button.contains(event.target)){event.preventDefault();event.stopImmediatePropagation();return;}
+    const stepButton=event.target.closest('[data-quick-step]');
+    if(stepButton){
+      const unit=stepButton.closest('[data-quick-kind="number"]');
+      if(unit&&!stepButton.disabled)step(unit.dataset.quickUnit,Number(stepButton.dataset.quickStep),$('output',unit));
+      return;
+    }
     const button=event.target.closest('[data-quick-id]');if(!button)return;
     event.preventDefault();event.stopPropagation();
-    const pin=pins().find(pin=>key(pin)===button.dataset.quickId);if(pin)apply(pin);
+    const pin=pins().find(pin=>key(pin)===button.dataset.quickId);
+    if(pin?.value==='step')editor(pin,button);else if(pin)apply(pin);
   },true);
   document.addEventListener('keydown',event=>{
     if(event.key==='Escape'&&press){event.preventDefault();finish(true);}
     const button=event.target.closest('[data-quick-id]');
     if(button&&event.altKey&&['ArrowLeft','ArrowRight'].includes(event.key)){
-      event.preventDefault();const id=button.dataset.quickId,direction=event.key==='ArrowLeft'?-1:1;
-      commit(current=>{const next=[...current],from=next.findIndex(pin=>key(pin)===id);if(from<0)return current;const to=clamp(from+direction,0,next.length-1);[next[from],next[to]]=[next[to],next[from]];return next;},button);
+      event.preventDefault();const name=button.closest('[data-quick-unit]').dataset.quickUnit,direction=event.key==='ArrowLeft'?-1:1;
+      const restoreFocus=document.activeElement===button;
+      commit(current=>shift(current,name,direction),button).then(()=>{if(restoreFocus&&button.isConnected)button.focus({preventScroll:true});});
     }
     if(event.shiftKey&&event.key==='F10'){const pin=button?pins().find(pin=>key(pin)===button.dataset.quickId):fromButton(event.target.closest('button'));if(pin){event.preventDefault();editor(pin,event.target.closest('button'));}}
   });
   addEventListener('resize',()=>finish(true));
   document.addEventListener('visibilitychange',()=>{if(document.hidden)finish(true);});
-  return {html,render,backend,apply,fromButton,imageModels,cancel:()=>finish(true)};
+  return {html,render,paintParameters,backend,source,quality,apply,step,fromButton,imageModels,cancel:()=>finish(true)};
 })();

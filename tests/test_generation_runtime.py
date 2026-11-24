@@ -10,7 +10,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -91,6 +91,38 @@ class GenerationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
     async def generate(self, legacy=None):
         return await runtime.generate(self.studio, 'job1', self.output_dir, 'base', 'image brief', [], 'outer-model', 'high', legacy=legacy)
+
+    async def test_external_source_uses_frozen_model_and_never_falls_back_to_subscription(self):
+        provider = runtime.image_provider.ImageProvider('https://relay.example/v1', 'new-default', 'fixture-secret')
+        def setting(key, default=None):
+            return {'base_url': provider.base_url, 'model': provider.model, 'api_key': provider.api_key} if key == 'image_api' else default
+        self.studio.setting = setting
+        frozen = runtime.snapshot(self.studio, runtime.ImageSettings(source='api', transport='cli'))
+        frozen['api']['model'] = 'queued-model'
+        self.studio.write('UPDATE jobs SET options=?', (json.dumps({'generation': frozen, 'ratio': 'auto', 'size':'auto'}),))
+        self.assertNotIn(provider.api_key, json.dumps(frozen))
+        requests = []
+
+        class Connection:
+            def __init__(self, home, provider):
+                self.provider = provider
+            async def generate(self, request, output, event):
+                requests.append((self.provider, request))
+                raise BackendError('auth_rejected', safe_fallback=True)
+
+        legacy = AsyncMock()
+        with patch.object(runtime, 'Backend', Connection):
+            with self.assertRaisesRegex(runtime.GenerationFailure, '密钥无效'):
+                await self.generate(legacy)
+            self.studio.setting = lambda key, default=None: default
+            with self.assertRaisesRegex(runtime.GenerationFailure, 'API 地址已更改或移除'):
+                await self.generate(legacy)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0][0], provider)
+        self.assertEqual((requests[0][1].image_model, requests[0][1].quality, requests[0][1].partial_images),
+                         ('queued-model', 'auto', 0))
+        self.assertEqual(self.studio.latest()['transport'], 'api')
+        legacy.assert_not_called()
 
     async def test_direct_call_keeps_requested_provider_and_actual_separate(self):
         seen = []

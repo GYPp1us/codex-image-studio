@@ -9,7 +9,9 @@ const StudioProgress=(()=>{
     const level=task.up.levels[index],raw=level.raw||{};
     const history=task.raw?.progress?.timeline?.find(p=>p.index===(raw.index||index+1))||raw.progress||{};
     const children=history.tiles?.length?history.tiles:task.raw?.progress?.level===index+1?task.raw.progress.children||[]:[];
-    return {task,level,index,history,children,count:children.length||raw.tile_count||level.tiles.length,complete:success(raw.status),calls:task.raw?.options?.generation?(task.raw.options.generation.image_backend?.transport==='images'?['sending','generating','receiving']:['sending','dispatching','generating','receiving']):calls,key:`${task.id}:${index}`};
+    const generation=task.raw?.options?.generation,backend=generation?.image_backend;
+    const imageProgress=backend?.source==='api'||backend?.transport==='images';
+    return {task,level,index,history,children,count:children.length||raw.tile_count||level.tiles.length,complete:success(raw.status),calls:generation?(imageProgress?['sending','generating','receiving']:['sending','dispatching','generating','receiving']):calls,key:`${task.id}:${index}`};
   }
   function short(task,width){
     if(task.status==='done')return '';

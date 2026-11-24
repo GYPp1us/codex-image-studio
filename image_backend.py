@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import httpx
 from PIL import Image, UnidentifiedImageError
+from image_provider import public_target
 
 BASE = 'https://chatgpt.com/backend-api/codex/'
 MAX_IMAGE = 64 * 1024 * 1024
@@ -88,8 +89,8 @@ def _decode(value):
         raise _error('invalid_image', ambiguous=True) from None
     return raw, _image(raw)
 
-def _refs(paths):
-    if len(paths) > MAX_REFERENCE_COUNT:
+def _reference_files(paths, max_count=MAX_REFERENCE_COUNT):
+    if len(paths) > max_count:
         raise _error('too_many_references', safe_fallback=True)
     result, total = [], 0
     for path in paths:
@@ -106,8 +107,13 @@ def _refs(paths):
         except BackendError:
             raise _error('invalid_reference', safe_fallback=True) from None
         mime = {'png':'image/png', 'jpeg':'image/jpeg', 'webp':'image/webp'}[meta['format']]
-        result.append('data:' + mime + ';base64,' + base64.b64encode(raw).decode('ascii'))
+        result.append((raw, mime, meta['format']))
     return result
+
+
+def _refs(paths):
+    return ['data:' + mime + ';base64,' + base64.b64encode(raw).decode('ascii')
+            for raw, mime, _ in _reference_files(paths)]
 
 def _auth(home):
     try:
@@ -152,7 +158,7 @@ def _clean_fields(source, keys):
 
 def _scrub(value, token, account):
     if isinstance(value, str):
-        return value.replace(token, '[redacted]').replace(account, '[redacted]')
+        return value.replace(token, '[redacted]').replace(account, '[redacted]') if account else value.replace(token, '[redacted]')
     if isinstance(value, dict):
         return {k: _scrub(v, token, account) for k, v in value.items()}
     return value
@@ -214,20 +220,37 @@ async def _sse(chunks):
         raise _error('incomplete_stream', ambiguous=True)
 
 class Backend:
-    def __init__(self, codex_home, client_factory=None, deadline=900):
+    def __init__(self, codex_home, client_factory=None, deadline=900, provider=None):
         self.codex_home = Path(codex_home)
         self.client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15), follow_redirects=False, trust_env=False))
         self.deadline = deadline
+        self.provider = provider
 
-    async def _call(self, endpoint, payload, callback, mode):
-        token, account = _auth(self.codex_home)
-        turn = str(uuid.uuid4())
-        headers = {'Authorization': 'Bearer ' + token, 'ChatGPT-Account-Id': account, 'session_id': turn, 'x-client-request-id': turn, 'x-codex-image-turn-id': str(uuid.uuid4()), 'originator': 'codex-image-studio', 'OpenAI-Beta': 'responses=experimental', 'Accept': 'text/event-stream, application/json', 'Content-Type': 'application/json'}
+    async def _call(self, endpoint, payload, callback, mode, *, files=None):
+        if self.provider:
+            token, account = self.provider.api_key, ''
+            try:
+                url, headers, extensions = await public_target(self.provider.base_url + '/' + endpoint)
+            except ValueError:
+                raise _error('api_address_rejected') from None
+            except httpx.ConnectError:
+                raise _error('connection_failed', retryable=True) from None
+        else:
+            token, account = _auth(self.codex_home)
+            turn = str(uuid.uuid4())
+            url = BASE + endpoint
+            headers = {'ChatGPT-Account-Id': account, 'session_id': turn, 'x-client-request-id': turn,
+                       'x-codex-image-turn-id': str(uuid.uuid4()), 'originator': 'codex-image-studio',
+                       'OpenAI-Beta': 'responses=experimental'}
+            extensions = {}
+        headers.update(Authorization='Bearer ' + token, Accept='text/event-stream, application/json')
+        body = {'data': payload, 'files': files} if files else {'json': payload}
         await _emit(callback, {'type':'stage', 'stage':'polishing' if mode == 'polish' else 'sending'})
         try:
             async with asyncio.timeout(self.deadline):
                 async with self.client_factory() as client:
-                    async with client.stream('POST', BASE + endpoint, headers=headers, json=payload, follow_redirects=False, timeout=httpx.Timeout(connect=15, read=self.deadline, write=60, pool=15)) as response:
+                    async with client.stream('POST', url, headers=headers, extensions=extensions, **body,
+                                             follow_redirects=False, timeout=httpx.Timeout(connect=15, read=self.deadline, write=60, pool=15)) as response:
                         if response.status_code < 200 or response.status_code >= 300:
                             if response.status_code == 400:
                                 body = bytearray()
@@ -245,6 +268,13 @@ class Backend:
                                             raise _error('unsupported_parameter', safe_fallback=True)
                                     except (ValueError, UnicodeDecodeError, RecursionError):
                                         pass
+                            if self.provider:
+                                if response.status_code == 400:
+                                    raise _error('api_parameters')
+                                if response.status_code == 403:
+                                    raise _error('auth_rejected')
+                                if 300 <= response.status_code < 400:
+                                    raise _error('api_redirect')
                             raise _status(response.status_code)
                         if mode == 'image':
                             await _emit(callback, {'type':'stage', 'stage':'dispatching' if endpoint == 'responses' else 'generating'})
@@ -332,10 +362,15 @@ class Backend:
             raise _error('invalid_request', safe_fallback=True)
         if not isinstance(request.partial_images, int) or isinstance(request.partial_images, bool) or not 0 <= request.partial_images <= 3:
             raise _error('invalid_request', safe_fallback=True)
-        refs = _refs(request.reference_paths)
-        requested = {'image_model':request.image_model, 'response_model':request.response_model if request.transport == 'responses' else None, 'quality':request.quality, 'size':request.size, 'background':request.background, 'output_format':'png' if request.transport == 'responses' else None, 'transport':request.transport, 'partial_images':request.partial_images if request.partial_images or request.transport == 'responses' else None, 'effort':request.effort if request.transport == 'responses' else None, 'stream':True if request.transport == 'responses' or request.partial_images else None, 'tool_choice':'image_generation' if request.transport == 'responses' else None, 'reference_count':len(refs)}
+        files = None
+        if self.provider and request.reference_paths:
+            uploads = _reference_files(request.reference_paths, max_count=8)
+            field = 'image' if len(uploads) == 1 else 'image[]'
+            files = [(field, (f'reference-{i + 1}.{fmt}', raw, mime)) for i, (raw, mime, fmt) in enumerate(uploads)]
+        refs = [] if files else _refs(request.reference_paths)
+        requested = {'image_model':request.image_model, 'response_model':request.response_model if request.transport == 'responses' else None, 'quality':request.quality, 'size':request.size, 'background':request.background, 'output_format':'png' if request.transport == 'responses' else None, 'transport':request.transport, 'partial_images':request.partial_images if request.partial_images or request.transport == 'responses' else None, 'effort':request.effort if request.transport == 'responses' else None, 'stream':True if request.transport == 'responses' or request.partial_images else None, 'tool_choice':'image_generation' if request.transport == 'responses' else None, 'reference_count':len(files or refs)}
         if request.transport == 'images':
-            endpoint = 'images/edits' if refs else 'images/generations'
+            endpoint = 'images/edits' if refs or files else 'images/generations'
             payload = {'model':request.image_model, 'prompt':request.prompt, 'size':request.size, 'quality':request.quality, 'background':request.background}
             if request.partial_images:
                 payload.update(stream=True, partial_images=request.partial_images)
@@ -349,8 +384,8 @@ class Backend:
             payload = {'model':request.response_model, 'store':False, 'stream':True, 'instructions':'Generate the requested image.', 'input':[{'role':'user', 'content':[{'type':'input_text', 'text':request.prompt}] + [{'type':'input_image', 'image_url':r} for r in refs]}], 'tools':[tool], 'tool_choice':{'type':'image_generation'}}
             if request.effort:
                 payload['reasoning'] = {'effort':request.effort}
-        events = await self._call(endpoint, payload, on_event, 'image')
-        final, info, usage, ids, revised = None, {}, {}, {}, None
+        events = await self._call(endpoint, payload, on_event, 'image', **({'files': files} if files else {}))
+        final, final_url, info, usage, ids, revised = None, None, {}, {}, {}, None
         for event in events:
             typ = event.get('type', '')
             if typ in ('error', 'response.failed', 'response.incomplete'):
@@ -383,13 +418,20 @@ class Backend:
                     final = event['b64_json']
                 if isinstance(event.get('data'), list) and event['data']:
                     item = event['data'][0]
-                    if isinstance(item, dict) and isinstance(item.get('b64_json'), str):
-                        final = item['b64_json']
+                    if isinstance(item, dict):
+                        if isinstance(item.get('b64_json'), str):
+                            final = item['b64_json']
+                        if self.provider and isinstance(item.get('url'), str):
+                            final_url = item['url']
                         if isinstance(item.get('revised_prompt'), str):
                             revised = item['revised_prompt'][:100000]
-        if final is None:
+        if final is not None:
+            raw, actual = _decode(final)
+        elif final_url:
+            raw = await self._fetch_image(final_url)
+            actual = _image(raw)
+        else:
             raise _error('missing_final_image', ambiguous=True)
-        raw, actual = _decode(final)
         await _emit(on_event, {'type':'stage', 'stage':'receiving'})
         await _emit(on_event, {'type':'metadata', 'provider_reported':info, 'actual_image':actual, 'usage':usage, 'ids':ids})
         output_path = Path(output_path)
@@ -401,6 +443,24 @@ class Backend:
         finally:
             temporary.unlink(missing_ok=True)
         return BackendResult(output_path, requested, info, actual, usage, ids, revised)
+
+    async def _fetch_image(self, address):
+        if len(address) > 8192:
+            raise _error('image_download_failed', ambiguous=True)
+        try:
+            url, headers, extensions = await public_target(address)
+            # Signed image URLs are separate from the API request and receive no provider credentials.
+            async with self.client_factory() as client:
+                async with client.stream('GET', url, headers=headers, extensions=extensions, follow_redirects=False) as response:
+                    response.raise_for_status()
+                    raw = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        raw.extend(chunk)
+                        if len(raw) > MAX_IMAGE:
+                            raise _error('invalid_image', ambiguous=True)
+            return bytes(raw)
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError):
+            raise _error('image_download_failed', ambiguous=True) from None
 
     async def polish(self, prompt, instructions, refs=(), model='gpt-6.1', effort=None, on_event=None):
         try:

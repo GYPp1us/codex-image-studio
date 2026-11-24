@@ -17,6 +17,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from image_backend import Backend, BackendError, ImageRequest
+import image_provider
 
 EVENT_HEARTBEAT_SECONDS = 15
 EVENT_POLL_SECONDS = .5
@@ -31,6 +32,7 @@ Original brief:
 
 
 class ImageSettings(BaseModel):
+    source: Literal['subscription', 'api'] = 'subscription'
     transport: Literal['images', 'responses', 'cli'] = 'images'
     fallback: bool = True
     image_model: Literal['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'] = 'gpt-image-2.5-sunburst'
@@ -50,6 +52,19 @@ ERRORS = {
     'auth_missing': '直连订阅未登录', 'auth_expired': '订阅凭据需要刷新',
     'too_many_references': '直连通道的参考图数量超出能力',
     'invalid_image': '返回的图片未通过完整性检查',
+    'api_address_rejected': image_provider.ADDRESS_ERROR,
+    'api_profile_changed': '第三方 API 地址已更改或移除，请检查设置后重新提交任务',
+}
+API_ERRORS = {
+    'auth_rejected': '第三方 API 密钥无效或没有权限',
+    'connection_failed': image_provider.NETWORK_ERROR,
+    'quota_or_rate_limit': '第三方 API 额度不足或请求过于频繁',
+    'unsupported': '供应商不支持此图片接口，请核对 API 地址',
+    'unsupported_parameter': '供应商不支持本次图片参数，请调整后重试',
+    'api_parameters': '供应商拒绝了本次参数，请核对模型 ID、尺寸或质量',
+    'api_redirect': '供应商要求跳转，请填写最终 API 地址',
+    'missing_final_image': '供应商未返回可用的图片结果',
+    'image_download_failed': '供应商返回了图片链接，但工作台无法下载',
 }
 
 
@@ -63,16 +78,35 @@ def initialize(connection):
         connection.execute("ALTER TABLE jobs ADD COLUMN generation_detail TEXT NOT NULL DEFAULT '{}'")
 
 
-def settings_payload(studio):
+def generation_settings(studio):
     return {'image_backend': ImageSettings(**studio.setting('image_backend', {})).model_dump(),
             'image_prompt': studio.setting('image_prompt', DEFAULT_IMAGE_PROMPT),
             'polish_text_prompt': studio.setting('polish_text_prompt', DEFAULT_POLISH_PROMPT),
             'default_image_prompt': DEFAULT_IMAGE_PROMPT, 'default_polish_text_prompt': DEFAULT_POLISH_PROMPT}
 
 
-def snapshot(studio):
-    values = settings_payload(studio)
-    return {'schema': 1, **{key: values[key] for key in ('image_backend', 'image_prompt', 'polish_text_prompt')}}
+def settings_payload(studio):
+    return generation_settings(studio) | {'image_api': image_provider.public_settings(image_provider.configured(studio))}
+
+
+def snapshot(studio, overrides=None, reroll_from=None):
+    values = generation_settings(studio)
+    result = {'schema': 1, **{key: values[key] for key in ('image_backend', 'image_prompt', 'polish_text_prompt')}}
+    if overrides is not None:
+        result['image_backend'].update(overrides.model_dump(exclude_unset=True))
+    if result['image_backend']['source'] == 'api':
+        provider = image_provider.configured(studio)
+        if not provider:
+            raise HTTPException(409, '请先在设置中配置第三方图片 API')
+        profile = {'destination': provider.destination, 'model': provider.model}
+        if reroll_from:
+            original = studio.query('SELECT options FROM jobs WHERE id=?', (reroll_from,), True)
+            previous = json.loads(original['options']).get('generation', {}).get('api', {}) if original else {}
+            if previous.get('destination') != provider.destination or not previous.get('model'):
+                raise HTTPException(409, '原作的第三方 API 地址已更改。可在创作页选择当前来源后重新生成')
+            profile['model'] = previous['model']
+        result['api'] = profile
+    return result
 
 
 def image_size(options, expected=None):
@@ -235,11 +269,16 @@ async def generate(studio, jid, directory, scope, instruction, references, model
     options = json.loads(job['options'])
     frozen = options['generation']
     config = ImageSettings(**frozen['image_backend'])
-    call = Call(studio, jid, directory, scope, 'image', instruction, config.transport)
+    external = config.source == 'api'
+    transport = 'images' if external else config.transport
+    image_model = frozen.get('api', {}).get('model') if external else config.image_model
+    quality = 'auto' if external and config.quality not in image_provider.QUALITY else config.quality
+    partial_images = 0 if external else config.partial_images
+    call = Call(studio, jid, directory, scope, 'image', instruction, 'api' if external else transport)
     size = image_size(options, expected_size)
-    call.value['requested'] = {'image_model': config.image_model, 'quality': config.quality, 'size': size,
+    call.value['requested'] = {'image_model': image_model, 'quality': quality, 'size': size,
                                'background': 'transparent' if options.get('transparent') else 'auto',
-                               'partial_images': config.partial_images, 'response_model': model if config.transport == 'responses' else None}
+                               'partial_images': partial_images, 'response_model': model if transport == 'responses' else None}
     call.value['prompt_metadata'] = prompt_metadata
     call.persist()
     try:
@@ -247,27 +286,35 @@ async def generate(studio, jid, directory, scope, instruction, references, model
     except BaseException as error:
         call.failure(error)
         raise
-    if config.transport != 'cli':
+    if transport != 'cli':
         try:
             if changed: changed('等待并发名额', False, 'server')
             async with studio.cli_slot(jid, scope):
                 active(studio, jid)
+                provider = None
+                if external:
+                    provider = image_provider.configured(studio)
+                    if not provider or not image_model or provider.destination != frozen.get('api', {}).get('destination'):
+                        raise BackendError('api_profile_changed')
                 if recorder := getattr(studio, 'record_cli_call', None): recorder(True)
-                request = ImageRequest(prompt=instruction, image_model=config.image_model, size=size, quality=config.quality,
+                request = ImageRequest(prompt=instruction, image_model=image_model, size=size, quality=quality,
                     background='transparent' if options.get('transparent') else 'auto', reference_paths=tuple(references),
-                    transport=config.transport, response_model=model, effort='low', partial_images=config.partial_images)
-                result = await Backend(studio.CODEX_HOME).generate(request, Path(directory) / 'output.png',
+                    transport=transport, response_model=model, effort='low', partial_images=partial_images)
+                backend = Backend(studio.CODEX_HOME, provider=provider) if external else Backend(studio.CODEX_HOME)
+                result = await backend.generate(request, Path(directory) / 'output.png',
                     lambda event: call.event(event, changed))
             active(studio, jid)
             call.result(result)
             return result.output_path
         except BackendError as error:
             call.value.update(error=error.code, ambiguous=error.ambiguous)
-            if not (config.fallback and error.safe_fallback and not error.ambiguous and legacy):
+            if external or not (config.fallback and error.safe_fallback and not error.ambiguous and legacy):
                 call.failure(error)
-                message = ERRORS.get(error.code, '图片直连请求失败：' + error.code)
+                message = (API_ERRORS.get(error.code) if external else None) or ERRORS.get(
+                    error.code, ('第三方图片 API 请求失败：' if external else '图片直连请求失败：') + error.code)
                 if error.ambiguous: message += '。服务端可能已生成，未自动重发；请检查后手动重试。'
-                raise GenerationFailure(message, ambiguous=error.ambiguous, retryable=error.safe_fallback and error.retryable) from None
+                raise GenerationFailure(message, ambiguous=error.ambiguous,
+                                        retryable=error.retryable and (external or error.safe_fallback)) from None
             call.value['fallback'] = {'from': config.transport, 'to': 'cli', 'reason': error.code, 'image_model': None, 'quality': None}
             call.value.update(transport='cli', stage='fallback'); call.persist()
         except BaseException as error:
