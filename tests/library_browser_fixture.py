@@ -27,6 +27,10 @@ def main():
                     return {"status": "failed", "message": "供应商拒绝访问，请检查 API 密钥或权限"}
                 return {"status": "ok", "message": "连接成功，模型已在目录中找到", "elapsed_ms": 162}
             studio.image_provider.probe = probe
+            async def complete(provider, instructions, prompt, references=(), test=False):
+                from image_backend import PolishResult
+                return PolishResult("OK", {"response_model": provider.model})
+            studio.text_provider.complete = complete
         studio.initialize()
         studio.set_setting("paused",True)
         image = Path(temp)/"assets"/"fixture.png"

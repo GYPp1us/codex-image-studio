@@ -41,6 +41,7 @@ import account_profile
 import upscale_prompts
 import generation_runtime
 import image_provider
+import text_provider
 import workspace_shell
 import library_tree
 
@@ -360,7 +361,7 @@ async def lifespan(app):
     JOB_TASKS.clear();CALL_POOL=None
 
 
-app = FastAPI(title="Image Studio", version="2.0.0-rc2", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Image Studio", version="2.0.0-rc3", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.middleware("http")
@@ -1034,6 +1035,11 @@ def stage_from_event(event):
     return None
 
 
+def job_uses_subscription(body, generation):
+    needs_text = body.polish or body.stitch or body.after_upscale
+    return generation['image_backend']['source'] == 'subscription' or (needs_text and not generation.get('text_api'))
+
+
 def _create_jobs(body, generation=None):
     previous = generation_receipt(body)
     if previous:
@@ -1043,7 +1049,7 @@ def _create_jobs(body, generation=None):
     model = body.model or setting("model", MODEL)
     effort = body.effort or setting("effort", EFFORT)
     generation = generation or generation_runtime.snapshot(sys.modules[__name__], body.image_backend, body.reroll_from)
-    if generation['image_backend']['source'] == 'subscription' or body.polish or body.stitch or body.after_upscale:
+    if job_uses_subscription(body, generation):
         validate_model_choice(model, effort)
     if body.ratio not in ("1:1", "3:2", "2:3", "16:9", "9:16", "auto"):
         raise HTTPException(400, "画幅不支持")
@@ -1167,10 +1173,10 @@ async def add_jobs(body: JobInput, session=Depends(require_user)):
         return previous
     generation = generation_runtime.snapshot(sys.modules[__name__], body.image_backend, body.reroll_from)
     external = generation['image_backend']['source'] == 'api'
-    if not external or body.polish or body.stitch or body.after_upscale:
+    if job_uses_subscription(body, generation):
         code, status = await command(CODEX_BIN, "login", "status", timeout=10)
         if code != 0 or "api key" in status.lower():
-            message = "润色和超分验收需要连接 ChatGPT 订阅" if external else "请先在连接设置中完成 ChatGPT 订阅登录"
+            message = "请连接 ChatGPT 订阅，或在设置中启用自定义语言模型 API" if external else "请先在连接设置中完成 ChatGPT 订阅登录"
             raise HTTPException(409, message)
     return create_jobs(body, generation)
 
@@ -1638,6 +1644,7 @@ async def run_job(jid):
 
 generation_runtime.register(app, sys.modules[__name__])
 image_provider.register(app, sys.modules[__name__])
+text_provider.register(app, sys.modules[__name__])
 library_tree.register(app, sys.modules[__name__])
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from image_backend import Backend, BackendError, ImageRequest
 import image_provider
+import text_provider
 
 EVENT_HEARTBEAT_SECONDS = 15
 EVENT_POLL_SECONDS = .5
@@ -86,7 +87,10 @@ def generation_settings(studio):
 
 
 def settings_payload(studio):
-    return generation_settings(studio) | {'image_api': image_provider.public_settings(image_provider.configured(studio))}
+    return generation_settings(studio) | {
+        'image_api': image_provider.public_settings(image_provider.configured(studio)),
+        'text_api': text_provider.public_settings(text_provider.configured(studio)),
+    }
 
 
 def snapshot(studio, overrides=None, reroll_from=None):
@@ -94,6 +98,9 @@ def snapshot(studio, overrides=None, reroll_from=None):
     result = {'schema': 1, **{key: values[key] for key in ('image_backend', 'image_prompt', 'polish_text_prompt')}}
     if overrides is not None:
         result['image_backend'].update(overrides.model_dump(exclude_unset=True))
+    text = text_provider.configured(studio)
+    if text and text.enabled:
+        result['text_api'] = text.frozen()
     if result['image_backend']['source'] == 'api':
         provider = image_provider.configured(studio)
         if not provider:
@@ -336,24 +343,40 @@ async def generate(studio, jid, directory, scope, instruction, references, model
         raise
 
 
+async def custom_text(studio, jid, scope, profile, instructions, prompt, references, event, stage):
+    async with studio.cli_slot(jid, scope):
+        active(studio, jid)
+        provider = text_provider.for_job(studio, profile)
+        await event({'type': 'stage', 'stage': stage})
+        return await text_provider.complete(provider, instructions, prompt, references)
+
+
 async def polish(studio, jid, directory, prompt, references, model, effort, legacy):
     job = studio.query('SELECT options FROM jobs WHERE id=?', (jid,), True)
     frozen = json.loads(job['options'])['generation']
     config = ImageSettings(**frozen['image_backend'])
+    profile = frozen.get('text_api')
     instruction = render(frozen['polish_text_prompt'], {'prompt': prompt})
-    call = Call(studio, jid, directory, 'polish', 'polish', instruction, 'responses')
-    call.value.update(stage='polishing', requested={'response_model': model, 'effort': effort})
+    call = Call(studio, jid, directory, 'polish', 'polish', instruction, 'text_api' if profile else 'responses')
+    requested = {'response_model': text_provider.model_for(profile, bool(references))} if profile else {'response_model': model, 'effort': effort}
+    call.value.update(stage='polishing', requested=requested)
     call.persist(); studio.set_job_stage(jid, 'polishing', 'server')
     try:
         try:
-            if config.transport == 'cli': raise BackendError('cli_selected', safe_fallback=True)
-            async with studio.cli_slot(jid, 'polish'):
-                result = await Backend(studio.CODEX_HOME, deadline=180).polish(prompt, instruction,
-                    refs=tuple(references), model=model, effort=effort, on_event=lambda event: call.event(event))
+            if profile:
+                result = await custom_text(studio, jid, 'polish', profile, instruction, prompt, references, call.event, 'polishing')
+            else:
+                if config.transport == 'cli': raise BackendError('cli_selected', safe_fallback=True)
+                async with studio.cli_slot(jid, 'polish'):
+                    result = await Backend(studio.CODEX_HOME, deadline=180).polish(prompt, instruction,
+                        refs=tuple(references), model=model, effort=effort, on_event=call.event)
             active(studio, jid)
             text = result.text.strip(); call.result(result)
-            source = 'dedicated_responses'
+            source = 'text_api' if profile else 'dedicated_responses'
         except BackendError as error:
+            if profile:
+                call.value.update(error=error.code, ambiguous=error.ambiguous)
+                raise GenerationFailure(text_provider.error_text(error), ambiguous=error.ambiguous) from None
             if not ((config.fallback or config.transport == 'cli') and error.safe_fallback and not error.ambiguous):
                 raise GenerationFailure('独立润色失败：' + error.code, ambiguous=error.ambiguous) from None
             call.value.update(transport='cli', fallback={'from': 'responses', 'to': 'cli', 'reason': error.code})
@@ -370,12 +393,14 @@ async def polish(studio, jid, directory, prompt, references, model, effort, lega
 
 
 async def text_call(studio, jid, directory, scope, instruction, references, model, effort, legacy, changed=None):
-    """Run an inspection with a text-only Responses call, or the supplied text-only CLI."""
+    """Run visual inspection with the language model source frozen at submission."""
     job = studio.query('SELECT options FROM jobs WHERE id=?', (jid,), True)
     frozen = json.loads(job['options'])['generation']
     config = ImageSettings(**frozen['image_backend'])
-    call = Call(studio, jid, directory, scope, 'inspection', instruction, 'responses')
-    call.value.update(stage='inspecting', requested={'response_model': model, 'effort': effort, 'reference_count':len(references)})
+    profile = frozen.get('text_api')
+    call = Call(studio, jid, directory, scope, 'inspection', instruction, 'text_api' if profile else 'responses')
+    requested = {'response_model': text_provider.model_for(profile, bool(references))} if profile else {'response_model': model, 'effort': effort}
+    call.value.update(stage='inspecting', requested={**requested, 'reference_count': len(references)})
     call.persist()
 
     async def event(value):
@@ -390,19 +415,25 @@ async def text_call(studio, jid, directory, scope, instruction, references, mode
 
     try:
         try:
-            if config.transport == 'cli':
-                raise BackendError('cli_selected', safe_fallback=True)
-            async with studio.cli_slot(jid, scope):
-                active(studio, jid)
-                result = await Backend(studio.CODEX_HOME, deadline=180).polish(
-                    instruction, 'Inspect the supplied references and follow the user instruction. Return only the requested text. Do not generate an image or use tools.',
-                    refs=tuple(references), model=model, effort=effort, on_event=event)
+            instructions = 'Inspect the supplied references and follow the user instruction. Return only the requested text. Do not generate an image or use tools.'
+            if profile:
+                result = await custom_text(studio, jid, scope, profile, instructions, instruction, references, event, 'inspecting')
+            else:
+                if config.transport == 'cli':
+                    raise BackendError('cli_selected', safe_fallback=True)
+                async with studio.cli_slot(jid, scope):
+                    active(studio, jid)
+                    result = await Backend(studio.CODEX_HOME, deadline=180).polish(
+                        instruction, instructions, refs=tuple(references), model=model, effort=effort, on_event=event)
             active(studio, jid)
             text = result.text.strip()
             if not text or len(text) > 24000:
                 raise GenerationFailure('Inspection returned invalid text')
             call.result(result, stage='inspecting')
         except BackendError as error:
+            if profile:
+                call.value.update(error=error.code, ambiguous=error.ambiguous)
+                raise GenerationFailure(text_provider.error_text(error), ambiguous=error.ambiguous) from None
             if not ((config.fallback or config.transport == 'cli') and error.safe_fallback and not error.ambiguous and legacy):
                 call.value.update(error=error.code, ambiguous=error.ambiguous)
                 raise GenerationFailure('Inspection failed: ' + error.code, ambiguous=error.ambiguous) from None

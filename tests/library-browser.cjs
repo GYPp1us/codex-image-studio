@@ -7,7 +7,7 @@ const root=path.join(__dirname,'..');
 const port=Number(process.env.STUDIO_QA_PORT||18788),base='http://127.0.0.1:'+port;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function run(){
-  const rc2=process.argv.includes('--rc2')?require('./rc2-browser.cjs'):null;
+  const rc2=process.argv.some(arg=>arg==='--rc2'||arg==='--rc3')?require('./rc2-browser.cjs'):null;
   const server=cp.spawn(process.env.STUDIO_QA_PYTHON||'python',['tests/library_browser_fixture.py','--port',String(port),...(rc2?['--rc2']:[])],{cwd:root,windowsHide:true,stdio:['ignore','ignore','inherit']});
   let browser;
   try{

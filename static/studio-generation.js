@@ -1,7 +1,7 @@
 "use strict";
 /* Provider observations stay separate from requested settings and real image bytes. */
 const StudioGeneration=(()=>{
-  const sessions=new Set(),names={images:'图片直连',responses:'Responses 直连',cli:'CLI 兼容',api:'第三方 API'},states={running:'进行中',succeeded:'已完成',failed:'失败',cancelled:'已取消'};
+  const sessions=new Set(),names={images:'图片直连',responses:'Responses 直连',cli:'CLI 兼容',api:'第三方图片 API',text_api:'自定义语言模型 API'},states={running:'进行中',succeeded:'已完成',failed:'失败',cancelled:'已取消'};
   const val=v=>v===undefined||v===null||v===''?'未回显':String(v),wanted=v=>v===undefined||v===null||v===''?'未设置':String(v);
   const callTitle=call=>call.kind==='polish'?'独立润色':call.kind==='inspection'?'视觉验收':call.scope||'图片';
   const callMeta=call=>[states[call.status]||call.status||'等待',names[call.transport]||call.transport].filter(Boolean).join(' · ');

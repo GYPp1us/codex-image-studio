@@ -45,7 +45,7 @@ def public_settings(provider):
             'model': provider.model if provider else MODEL}
 
 
-def parse_profile(body, current=None):
+def parse_profile(body, current=None, default_path='/v1', *, model_pattern=r'[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}', require_key=True):
     address, model, key = (body.get(name, '') for name in ('base_url', 'model', 'api_key'))
     if not all(isinstance(value, str) for value in (address, model, key)):
         raise ValueError('请检查 API 地址、模型 ID 和密钥')
@@ -60,16 +60,16 @@ def parse_profile(body, current=None):
                 or any(segment in ('.', '..') for segment in path.split('/'))):
             raise ValueError()
         validate_host(url)
-        address = str(url.copy_with(path=path or '/v1'))
+        address = str(url.copy_with(path=path or default_path))
     except (httpx.InvalidURL, ValueError) as error:
         raise ValueError(ADDRESS_ERROR) from error
-    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}', model):
+    if not re.fullmatch(model_pattern, model):
         raise ValueError('请输入有效的供应商模型 ID')
     if not key and current and address == current.base_url:
         key = current.api_key
-    if not re.fullmatch(r'[!-~]{1,2048}', key):
+    if require_key and not re.fullmatch(r'[!-~]{1,2048}', key):
         raise ValueError('请输入供应商的 API 密钥。更换地址时需重新填写')
-    return ImageProvider(address, model, key)
+    return ImageProvider(address, model, key if require_key else '')
 
 
 def public_ip(host):
@@ -146,23 +146,28 @@ async def probe(provider):
             'message': '连接成功，模型已在目录中找到' if listed else '连接成功，目录中未找到此模型 ID'}
 
 
+async def read_config(request):
+    # Do not reflect credentials in framework-generated validation errors.
+    content = bytearray()
+    async for chunk in request.stream():
+        content.extend(chunk)
+        if len(content) > 8192:
+            raise HTTPException(413, '配置内容过长')
+    try:
+        body = json.loads(content)
+        if not isinstance(body, dict):
+            raise ValueError()
+    except (ValueError, RecursionError):
+        raise HTTPException(400, '配置格式无效') from None
+    return body
+
+
 def register(app, studio):
     def connection_response(provider):
         return JSONResponse(public_settings(provider), headers={'Cache-Control': 'no-store'})
 
     async def read_profile(request):
-        # Parse here so validation failures never reflect a submitted secret in a FastAPI error body.
-        content = bytearray()
-        async for chunk in request.stream():
-            content.extend(chunk)
-            if len(content) > 8192:
-                raise HTTPException(413, '配置内容过长')
-        try:
-            body = json.loads(content)
-            if not isinstance(body, dict):
-                raise ValueError()
-        except (ValueError, RecursionError):
-            raise HTTPException(400, '配置格式无效') from None
+        body = await read_config(request)
         try:
             return parse_profile(body, configured(studio))
         except ValueError as error:

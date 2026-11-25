@@ -76,7 +76,7 @@ async function check(page,context,base){
   await settingsGroup.scrollIntoViewIfNeeded();
   await capture('03-settings-entry');
   await activate(settingsGroup.locator('[data-act=image-api]'));
-  const form=page.locator('.provider-form'),address=form.getByLabel('API 地址'),model=form.getByLabel('模型 ID'),key=form.getByLabel('API 密钥');
+  const form=page.locator('.provider-form'),address=form.getByLabel('API 地址'),model=form.getByLabel('模型 ID',{exact:true}),key=form.getByLabel('API 密钥');
   await address.fill('https://api.example.com/v1/');
   await model.fill('gpt-image-2');
   await key.fill('fixture-invalid-key');
@@ -106,6 +106,26 @@ async function check(page,context,base){
   assert.equal(await key.inputValue(),'');
   await activate(page.locator('.provider-sheet button[aria-label=关闭]'));
   await form.waitFor({state:'hidden'});
+  const rc3=process.argv.includes('--rc3');
+  if(rc3){
+    const row=page.locator('#set-text-source [data-act=text-api]');
+    await activate(row);
+    await form.getByLabel('接口协议').selectOption('gemini');
+    await address.fill('https://language.example.com');
+    await model.fill('example/custom-text:latest');
+    await form.getByLabel('带图模型 ID', {exact:false}).fill('example/custom-vision');
+    await key.fill('fixture-text-key');
+    await activate(test);
+    await form.locator('[data-tone=ok]').waitFor();
+    await capture('08-language-provider');
+    await activate(form.getByRole('button',{name:'保存',exact:true}));
+    await form.waitFor({state:'hidden'});
+    assert.equal(await row.locator('[data-text-api-label]').textContent(),'example/custom-text:latest');
+    const prefs=await (await context.request.get(base+'/api/settings')).json();
+    assert.equal(prefs.text_api.base_url,'https://language.example.com/v1beta');
+    assert.equal(prefs.text_api.auth,'x-goog-api-key');
+    assert.equal(JSON.stringify(prefs).includes('fixture-text-key'),false);
+  }
   await activate(page.locator('.settings [data-act=scr-back]'));
   await page.locator('.settings').waitFor({state:'hidden'});
 
@@ -118,6 +138,7 @@ async function check(page,context,base){
   assert.equal(await parameters.locator('[data-k=image_model]:visible').count(),0);
   assert.equal(await parameters.locator('[data-k=quality]:visible').count(),4);
   assert.equal(await parameters.locator('[data-k=quality][data-v=auto]').getAttribute('aria-pressed'),'true');
+  if(rc3)await activate(parameters.locator('[data-act=sw][data-k=polish]'));
   await capture('06-composer-api');
   await activate(parameters.getByRole('button',{name:'关闭',exact:true}));
   await parameters.waitFor({state:'hidden'});
@@ -128,7 +149,15 @@ async function check(page,context,base){
   const response=await queued;
   assert.equal(response.status(),200,await response.text());
   assert.equal(response.request().postDataJSON().image_backend.source,'api');
-  assert.equal((await response.json()).ids.length,2);
+  const {ids}=await response.json();
+  assert.equal(ids.length,2);
+  if(rc3){
+    assert.equal(response.request().postDataJSON().polish,true);
+    const job=await (await context.request.get(base+'/api/jobs/'+ids[0])).json();
+    assert.equal(job.options.generation.text_api.model,'example/custom-text:latest');
+    assert.equal(job.options.generation.text_api.vision_model,'example/custom-vision');
+    assert.equal(JSON.stringify(job).includes('fixture-text-key'),false);
+  }
   assert.equal(probes,2);
 
   await page.setViewportSize({width:844,height:390});

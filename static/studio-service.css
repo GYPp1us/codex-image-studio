@@ -103,7 +103,15 @@ html[data-theme="dark"] #prompt::placeholder,html[data-theme="dark"] .input::pla
 .provider-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .provider-actions .primary,.provider-actions .secondary{height:46px;width:100%;margin:0;justify-content:center}
 .provider-disconnect{justify-self:center;min-height:44px;margin-top:-6px}
+.provider-fields .field-label small{font-size:11px;color:var(--ink-3)}
+.provider-advanced,.provider-enable{font-size:13px;color:var(--ink-2)}
+.provider-advanced summary{padding-block:8px;cursor:pointer}
+.provider-enable{display:flex;align-items:center;gap:9px;min-height:44px}
+.provider-enable input{width:18px;height:18px;accent-color:var(--sage-ink)}
+.s-row[data-act=text-api] .s-r{max-width:42%;min-width:0}
+[data-text-api-label]{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(min-width:600px) and (min-aspect-ratio:4/3){
   .provider-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
   .provider-fields .field-label:first-child{grid-column:1/-1}
+  .provider-advanced,.provider-enable{grid-column:1/-1}
 }

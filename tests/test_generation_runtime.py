@@ -92,6 +92,36 @@ class GenerationRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def generate(self, legacy=None):
         return await runtime.generate(self.studio, 'job1', self.output_dir, 'base', 'image brief', [], 'outer-model', 'high', legacy=legacy)
 
+    async def test_custom_language_api_routes_polish_and_visual_review_without_cli(self):
+        provider = {'base_url': 'https://relay.example/v1', 'model': 'custom/text',
+                    'vision_model': 'custom/vision', 'api_key': 'fixture-key', 'protocol': 'chat', 'auth': 'bearer'}
+        self.studio.setting = lambda key, default=None: provider if key == 'text_api' else default
+        frozen = runtime.snapshot(self.studio, runtime.ImageSettings(transport='cli'))
+        self.studio.write('UPDATE jobs SET options=?', (json.dumps({'generation': frozen}),))
+        # Editing a default after submission must not change the already queued model.
+        provider['model'] = 'new-default'
+        provider['enabled'] = False
+        requests = []
+        async def complete(config, instructions, prompt, refs):
+            requests.append((config.model, config.vision_model, tuple(refs), prompt))
+            selected = config.vision_model if refs else config.model
+            return PolishResult('verified text', {'response_model': selected})
+        legacy = AsyncMock()
+        with patch.object(runtime.text_provider, 'complete', complete):
+            polished = await runtime.polish(self.studio, 'job1', self.output_dir, 'brief', [], 'sub-model', 'high', legacy)
+            inspection = await runtime.text_call(self.studio, 'job1', self.output_dir, 'inspection', 'review', ['tile.png'],
+                                                 'sub-model', 'high', legacy)
+            provider['base_url'] = 'https://other.example/v1'
+            with self.assertRaisesRegex(runtime.GenerationFailure, '地址、协议或鉴权方式已变更'):
+                await runtime.text_call(self.studio, 'job1', self.output_dir, 'inspection', 'review', ['tile.png'],
+                                        'sub-model', 'high', legacy)
+        self.assertEqual((polished, inspection), ('verified text', 'verified text'))
+        self.assertEqual(requests, [('custom/text', 'custom/vision', (), 'brief'),
+                                    ('custom/text', 'custom/vision', ('tile.png',), 'review')])
+        self.assertEqual(self.studio.latest()['transport'], 'text_api')
+        self.assertNotIn('fixture-key', json.dumps(frozen))
+        legacy.assert_not_called()
+
     async def test_external_source_uses_frozen_model_and_never_falls_back_to_subscription(self):
         provider = runtime.image_provider.ImageProvider('https://relay.example/v1', 'new-default', 'fixture-secret')
         def setting(key, default=None):

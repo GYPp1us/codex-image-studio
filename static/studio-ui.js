@@ -200,8 +200,9 @@ function updateChrome(){
     const retryHidden=!hint&&!S.offline;
     const viewerRetry=$('#viewer .net-retry');if(viewerRetry)viewerRetry.hidden=retryHidden;
     const menuRetry=$('.art-actions .art-retry');if(menuRetry)menuRetry.hidden=retryHidden;
-    const needsSubscription=typeof StudioQuickSettings==='undefined'||StudioQuickSettings.source()==='subscription'||
-      S.tab==='create'&&(S.mode==='up'||S.composer.polish||S.composer.stitch!=='关');
+    const imageSource=S.tab==='create'&&S.mode==='up'?S.settings.imageBackend?.source:StudioQuickSettings.source();
+    const needsText=S.tab==='create'&&(S.mode==='up'||S.composer.polish||S.composer.stitch!=='关');
+    const needsSubscription=imageSource!=='api'||(needsText&&!S.settings.textAPI?.enabled);
     const want=hint?`<div class="banner net-status" role="status"><span>${hint}</span><button class="icon-btn" data-act="reconnect" aria-label="重新连接工作台" title="重新连接工作台">${icon('refresh',18)}</button></div>`:S.disconnected&&needsSubscription?`<div class="banner">${icon("alert",18)}<span>订阅尚未连接</span><button data-act="reconnect-set">连接订阅</button></div>`:S.offline?`<div class="banner">${icon("alert",18)}<span>与服务器的连接已断开</span><button data-act="reconnect">重新连接</button></div>`:S.paused&&S.tab!=="queue"?`<div class="banner">${icon("clock",18)}<span>调度已暂停，新任务不会开始</span><button data-act="unpause">恢复</button></div>`:"";
     if(slot.dataset.h!==want){slot.innerHTML=want;slot.dataset.h=want;}}
   placeToast();

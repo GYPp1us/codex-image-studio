@@ -1,6 +1,6 @@
 {
   "name": "codex-image-studio-ui-tests",
-  "version": "2.0.0-rc2",
+  "version": "2.0.0-rc3",
   "private": true,
   "scripts": {"test": "node --test tests/*.test.cjs"},
   "devDependencies": {"linkedom": "0.18.14"}
